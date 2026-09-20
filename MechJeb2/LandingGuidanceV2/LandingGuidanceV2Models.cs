@@ -94,6 +94,38 @@ namespace MuMech
         }
     }
 
+    public enum LandingGuidanceV2PreflightState
+    {
+        NotFlight,
+        UnsupportedBody,
+        WaitingForImpactTrajectory,
+        Rejected,
+        NeedsCompletePlan
+    }
+
+    public sealed class LandingGuidanceV2PreflightAssessment
+    {
+        public readonly long SnapshotVersion;
+        public readonly LandingGuidanceV2PreflightState State;
+        public readonly double LocalGravity;
+        public readonly double BrakingDeltaVLowerBound;
+        public readonly double DeltaVAboveLowerBound;
+        public readonly string Reason;
+
+        public bool CommandAuthorized => false;
+
+        public LandingGuidanceV2PreflightAssessment(long snapshotVersion, LandingGuidanceV2PreflightState state,
+            double localGravity, double brakingDeltaVLowerBound, double deltaVAboveLowerBound, string reason)
+        {
+            SnapshotVersion = snapshotVersion;
+            State = state;
+            LocalGravity = localGravity;
+            BrakingDeltaVLowerBound = brakingDeltaVLowerBound;
+            DeltaVAboveLowerBound = deltaVAboveLowerBound;
+            Reason = reason;
+        }
+    }
+
     /// <summary>
     /// Preview-only assessment.  It intentionally exposes a lower bound instead of a
     /// false feasibility verdict until V2 owns a complete deorbit, braking, and reserve plan.
@@ -103,17 +135,20 @@ namespace MuMech
         public readonly LandingGuidanceV2Snapshot Snapshot;
         public readonly LandingGuidanceV2Estimate Estimate;
         public readonly LandingGuidanceV2EstimatorValidation EstimatorValidation;
+        public readonly LandingGuidanceV2PreflightAssessment Assessment;
         public readonly double BrakingDeltaVLowerBound;
         public readonly double DeltaVAboveLowerBound;
 
         public bool CanAssess => Snapshot != null && Estimate != null;
 
         public LandingGuidanceV2Preflight(LandingGuidanceV2Snapshot snapshot, LandingGuidanceV2Estimate estimate,
-            LandingGuidanceV2EstimatorValidation estimatorValidation, double brakingDeltaVLowerBound)
+            LandingGuidanceV2EstimatorValidation estimatorValidation, LandingGuidanceV2PreflightAssessment assessment,
+            double brakingDeltaVLowerBound)
         {
             Snapshot = snapshot;
             Estimate = estimate;
             EstimatorValidation = estimatorValidation;
+            Assessment = assessment;
             BrakingDeltaVLowerBound = brakingDeltaVLowerBound;
             DeltaVAboveLowerBound = snapshot == null ? double.NaN : snapshot.AvailableDeltaV - brakingDeltaVLowerBound;
         }
