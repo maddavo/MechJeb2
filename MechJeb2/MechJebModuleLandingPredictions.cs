@@ -127,6 +127,19 @@ namespace MuMech
 
         protected ReentrySimulation.Result result;
         protected ReentrySimulation.Result errorResult;
+        private ReentrySimulation.Result candidateResult;
+
+        // A landing result is consumed by both the map marker and the landing autopilot.
+        // Keep a monotonically increasing version so the autopilot can distinguish a new,
+        // accepted prediction from another physics frame using the same result.
+        public long ResultVersion { get; private set; }
+
+        // A simulation branch change can move an airless-body impact point by hundreds of
+        // metres.  Do not immediately replace a usable result with such an outlier: require
+        // the next prediction to corroborate it first.  The tolerance is based on the time
+        // between the two input snapshots, rather than several seconds of vessel travel.
+        private const double MinimumResultAcceptanceDistance = 35;
+        private const double MaximumResultAcceptanceDistance = 200;
 
         public ManeuverNode aerobrakeNode;
 
@@ -177,6 +190,12 @@ namespace MuMech
 
             errorStopwatch.Stop();
             errorStopwatch.Reset();
+
+            if (candidateResult != null)
+            {
+                candidateResult.Release();
+                candidateResult = null;
+            }
         }
 
         public override void OnFixedUpdate()
@@ -245,8 +264,11 @@ namespace MuMech
             }
 
             Orbit patch = GetReenteringPatch() ?? Orbit;
-            // Work out what the landing altitude was of the last prediction, and use that to pass into the next simulation
-            if (result != null)
+            // The atmosphere/parachute model needs an estimate of terrain height for
+            // deployment timing.  On an airless body it is only a simulated landing
+            // radius; feeding the last endpoint's terrain height back into the next
+            // simulation creates a self-exciting position/terrain feedback loop.
+            if (patch.referenceBody.atmosphere && result != null)
             {
                 if (result.Outcome == ReentrySimulation.Outcome.LANDED && result.Body != null)
                 {
@@ -301,9 +323,11 @@ namespace MuMech
 
                     errorStopwatch.Reset();
 
-                    //set the delay before the next simulation
-                    millisecondsBetweenErrorSimulations = Math.Min(Math.Max(4 * millisecondsToCompletion, 400), 5);
-                    // Note that we are going to run the simulations with error in less often that the real simulations
+                    // Run error simulations at half the normal rate.  A fast vacuum
+                    // simulation used to restart after 5 ms, which made the error
+                    // result churn much faster than the physics update.
+                    millisecondsBetweenErrorSimulations =
+                        Math.Max(2 * 1000 / interationsPerSecond - millisecondsToCompletion, 5);
 
                     //start the stopwatch that will count off this delay
                     errorStopwatch.Start();
@@ -316,8 +340,12 @@ namespace MuMech
                     long millisecondsToCompletion = stopwatch.ElapsedMilliseconds;
                     stopwatch.Reset();
 
-                    //set the delay before the next simulation
-                    millisecondsBetweenSimulations = Math.Min(Math.Max(2 * millisecondsToCompletion, 200), 5);
+                    // Maintain the intended five predictions per second, including
+                    // the time spent simulating.  A low-cost vacuum prediction can
+                    // complete in a few milliseconds; immediately restarting it
+                    // makes the landing marker and its control feedback flicker.
+                    millisecondsBetweenSimulations =
+                        Math.Max(1000 / interationsPerSecond - millisecondsToCompletion, 5);
                     lastSimTime = millisecondsToCompletion * 0.001;
                     lastSimSteps = newResult.Steps;
                     // Do not wait for too long before running another simulation, but also give the processor a rest.
@@ -377,9 +405,7 @@ namespace MuMech
                         }
                         else
                         {
-                            if (result != null)
-                                result.Release();
-                            result = newResult;
+                            AcceptNormalResult(newResult);
                         }
                     }
                     else
@@ -390,6 +416,86 @@ namespace MuMech
                     }
                 }
             }
+        }
+
+        private double ResultAcceptanceDistance(ReentrySimulation.Result first, ReentrySimulation.Result second)
+        {
+            if (first.Body == null || first.Body != second.Body)
+                return double.PositiveInfinity;
+
+            Vector3d firstPosition = first.Body.GetWorldSurfacePosition(first.EndPosition.Latitude, first.EndPosition.Longitude, 0);
+            Vector3d secondPosition = second.Body.GetWorldSurfacePosition(second.EndPosition.Latitude, second.EndPosition.Longitude, 0);
+            return Vector3d.Distance(firstPosition, secondPosition);
+        }
+
+        private bool ResultsAgree(ReentrySimulation.Result first, ReentrySimulation.Result second)
+        {
+            double inputTimeDifference = Math.Abs(second.InputUT - first.InputUT);
+            double expectedSnapshotMotion = VesselState.SpeedSurface * inputTimeDifference;
+            double acceptanceDistance = Math.Min(MaximumResultAcceptanceDistance,
+                Math.Max(MinimumResultAcceptanceDistance, 25 + 0.5 * expectedSnapshotMotion));
+            return ResultAcceptanceDistance(first, second) <= acceptanceDistance;
+        }
+
+        private void TraceNormalResultDecision(string decision, ReentrySimulation.Result comparedResult,
+            ReentrySimulation.Result newResult)
+        {
+            if (!Core.Landing.LandingTraceEnabled || !Core.Landing.LandAtTarget)
+                return;
+
+            double inputTimeDifference = comparedResult == null ? double.NaN :
+                Math.Abs(newResult.InputUT - comparedResult.InputUT);
+            double expectedSnapshotMotion = VesselState.SpeedSurface * inputTimeDifference;
+            double acceptanceDistance = Math.Min(MaximumResultAcceptanceDistance,
+                Math.Max(MinimumResultAcceptanceDistance, 25 + 0.5 * expectedSnapshotMotion));
+            double resultDistance = comparedResult == null ? double.NaN :
+                ResultAcceptanceDistance(comparedResult, newResult);
+            Core.Landing.TraceLanding($"predictor {decision} inputDt={inputTimeDifference:F3} " +
+                $"distance={resultDistance:F1} acceptance={acceptanceDistance:F1} " +
+                $"newLat={newResult.EndPosition.Latitude:F6} newLon={newResult.EndPosition.Longitude:F6}");
+        }
+
+        private void PublishNormalResult(ReentrySimulation.Result newResult)
+        {
+            if (result != null)
+                result.Release();
+
+            result = newResult;
+            ResultVersion++;
+        }
+
+        private void AcceptNormalResult(ReentrySimulation.Result newResult)
+        {
+            // The initial prediction has nothing to compare against.
+            if (result == null || ResultsAgree(result, newResult))
+            {
+                TraceNormalResultDecision("publish-agree", result, newResult);
+                if (candidateResult != null)
+                {
+                    candidateResult.Release();
+                    candidateResult = null;
+                }
+
+                PublishNormalResult(newResult);
+                return;
+            }
+
+            // A large movement must be observed twice in succession before it can alter
+            // the marker or steer the vessel.  Alternating branch results therefore leave
+            // the last coherent prediction in control rather than inducing a feedback loop.
+            if (candidateResult != null && ResultsAgree(candidateResult, newResult))
+            {
+                TraceNormalResultDecision("publish-candidate-agree", candidateResult, newResult);
+                candidateResult.Release();
+                candidateResult = null;
+                PublishNormalResult(newResult);
+                return;
+            }
+
+            if (candidateResult != null)
+                candidateResult.Release();
+            TraceNormalResultDecision("hold-candidate", result, newResult);
+            candidateResult = newResult;
         }
 
         protected Orbit GetReenteringPatch()

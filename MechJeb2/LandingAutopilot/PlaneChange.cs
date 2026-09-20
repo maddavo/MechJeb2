@@ -82,7 +82,13 @@ namespace MuMech
                     if (_planeChangeDVLeft < 0.1F)
                     {
                         Core.Thrust.ThrustOff();
-                        return new LowDeorbitBurn(Core); //DecelerationBurn(Core); would by cool to immediately proceed to DecelerationBurn instead, can't figure out how to convince trajectory predicted to do so with Pe>0, must be done in ReentrySimulation.cs somewhere.
+                        // This is the low-orbit path.  It must hand off to the low-orbit
+                        // deorbit controller, which knows how to create the first surface
+                        // intersection from a circular low orbit.  The high-orbit planner
+                        // deliberately refuses plans outside its valid geometry; sending this
+                        // path there can otherwise leave Course Correction running with no
+                        // re-entry trajectory at all.
+                        return new LowDeorbitBurn(Core);
                     }
                 }
                 else

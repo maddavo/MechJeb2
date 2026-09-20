@@ -15,22 +15,26 @@ namespace MuMech
 
             public override AutopilotStep Drive(FlightCtrlState s)
             {
-                if (!Core.Landing.PredictionReady)
-                    return this;
-
-                Vector3d deltaV = Core.Landing.ComputeCourseCorrection(true);
-
-                if (!Core.Landing.RCSAdjustment) return this;
-
-                if (deltaV.magnitude > 3)
-                    Core.RCS.Enabled = true;
-                else if (deltaV.magnitude < 0.01)
+                // Coast owns attitude and warp only.  Translational RCS correction here
+                // competes with the planned orbital approach and turns prediction noise
+                // into visible oscillation.  Terminal stages enable RCS when local
+                // velocity control, rather than orbital targeting, is appropriate.
+                if (Core.Landing.RCSAdjustment)
                     Core.RCS.Enabled = false;
-
-                if (Core.RCS.Enabled)
-                    Core.RCS.SetWorldVelocityError(deltaV);
-
                 return this;
+            }
+
+            private static Vector3d LimitMagnitude(Vector3d vector, double maximumMagnitude)
+            {
+                double magnitude = vector.magnitude;
+                return magnitude > maximumMagnitude ? vector * (maximumMagnitude / magnitude) : vector;
+            }
+
+            private static Vector3d MoveTowards(Vector3d current, Vector3d target, double maximumChange)
+            {
+                Vector3d difference = target - current;
+                double distance = difference.magnitude;
+                return distance > maximumChange ? current + difference * (maximumChange / distance) : target;
             }
 
             private bool _warpReady;

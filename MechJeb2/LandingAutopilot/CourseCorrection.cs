@@ -1,3 +1,4 @@
+using System;
 using KSP.Localization;
 
 namespace MuMech
@@ -6,10 +7,43 @@ namespace MuMech
     {
         public class CourseCorrection : AutopilotStep
         {
+            private const double MaxCorrectionPulseDv = 1.0;
+            private const double PulseCompletionDv = 0.05;
+            private const double MinimumUsefulCorrectionDv = 0.05;
+            private const double PostBurnPredictionSettlingTime = 0.75;
+            private const double CandidateDirectionAgreementAngle = 20;
+            private const int RequiredCandidatePredictions = 2;
+
             private bool _courseCorrectionBurning;
+            private bool _waitingForPostBurnPrediction;
+            private double _remainingPulseDv;
+            private Vector3d _pulseDirection;
+            private long _predictionVersionAtPulseCompletion = -1;
+            private double _postBurnCompletionUT;
+            private bool _hasPendingCorrection;
+            private Vector3d _pendingCorrection;
+            private int _pendingPredictionCount;
 
             public CourseCorrection(MechJebCore core) : base(core)
             {
+            }
+
+            public override string TraceDetails
+            {
+                get
+                {
+                    double targetError = Core.Landing.PredictionReady
+                        ? Vector3d.Distance(Core.Target.GetPositionTargetPosition(), Core.Landing.LandingSite)
+                        : double.NaN;
+                    double downrangeError = Core.Landing.LastCourseCorrectionDownrangeError;
+                    double longBias = Core.Landing.LastCourseCorrectionLongBias;
+                    return $" targetError={targetError:F1} downrangeError={downrangeError:F1} longBias={longBias:F1} " +
+                        $"handoffLimit={Core.Landing.LastCourseCorrectionHandoffLimit:F1} pulseDv={_remainingPulseDv:F3} " +
+                        $"pulseDir=({_pulseDirection.x:F4},{_pulseDirection.y:F4},{_pulseDirection.z:F4}) " +
+                        $"burning={_courseCorrectionBurning} waiting={_waitingForPostBurnPrediction} " +
+                        $"waitForPredictionVersion={_predictionVersionAtPulseCompletion} " +
+                        $"pendingPredictions={_pendingPredictionCount}";
+                }
             }
 
             public override AutopilotStep Drive(FlightCtrlState s)
@@ -28,7 +62,7 @@ namespace MuMech
 
                 double currentError = Vector3d.Distance(Core.Target.GetPositionTargetPosition(), Core.Landing.LandingSite);
 
-                if (currentError < 150)
+                if (currentError < CompletionError)
                 {
                     Core.Thrust.TargetThrottle = 0;
                     if (Core.Landing.RCSAdjustment)
@@ -56,12 +90,58 @@ namespace MuMech
                     return new CoastToDeceleration(Core);
                 }
 
-                Vector3d deltaV = Core.Landing.ComputeCourseCorrection(true);
+                if (_waitingForPostBurnPrediction)
+                {
+                    Core.Thrust.TargetThrottle = 0;
 
-                Status = Localizer.Format("#MechJeb_LandingGuidance_Status3",
-                    deltaV.magnitude.ToString("F1")); //"Performing course correction of about " +  + " m/s"
+                    // Do not turn a prediction made during, or immediately after, a burn into
+                    // the next command. A result version only says when a simulation completed;
+                    // its input snapshot can still predate the engine cut-off.
+                    if (Core.Landing.PredictionVersion <= _predictionVersionAtPulseCompletion ||
+                        Core.Landing.Prediction.InputUT < _postBurnCompletionUT + PostBurnPredictionSettlingTime)
+                        return this;
 
-                Core.Attitude.attitudeTo(deltaV.normalized, AttitudeReference.INERTIAL, Core.Landing);
+                    Vector3d candidateCorrection = Core.Landing.ComputeCourseCorrection(true, DownrangeCaptureDistance,
+                        MaximumDownrangeHandoffDistance);
+                    if (candidateCorrection.magnitude <= MinimumUsefulCorrectionDv)
+                        return new CoastToDeceleration(Core);
+
+                    _predictionVersionAtPulseCompletion = Core.Landing.PredictionVersion;
+                    if (_hasPendingCorrection &&
+                        Vector3d.Angle(_pendingCorrection, candidateCorrection) <= CandidateDirectionAgreementAngle)
+                    {
+                        _pendingCorrection = candidateCorrection;
+                        _pendingPredictionCount++;
+                    }
+                    else
+                    {
+                        _pendingCorrection = candidateCorrection;
+                        _pendingPredictionCount = 1;
+                        _hasPendingCorrection = true;
+                    }
+
+                    // A single nonlinear prediction can legitimately choose the other
+                    // branch of the finite-difference solution. Require a second,
+                    // independent post-burn snapshot before aiming the vehicle at it.
+                    if (_pendingPredictionCount < RequiredCandidatePredictions)
+                        return this;
+
+                    _waitingForPostBurnPrediction = false;
+                    _courseCorrectionBurning = false;
+                    _hasPendingCorrection = false;
+                    BeginPulse(_pendingCorrection, currentError);
+                }
+                else if (_remainingPulseDv <= 0)
+                {
+                    Vector3d deltaV = Core.Landing.ComputeCourseCorrection(true, DownrangeCaptureDistance,
+                        MaximumDownrangeHandoffDistance);
+                    if (deltaV.magnitude <= MinimumUsefulCorrectionDv)
+                        return new CoastToDeceleration(Core);
+
+                    BeginPulse(deltaV, currentError);
+                }
+
+                Core.Attitude.attitudeTo(_pulseDirection, AttitudeReference.INERTIAL, Core.Landing);
 
                 if (Core.Attitude.attitudeAngleFromTarget() < 2)
                     _courseCorrectionBurning = true;
@@ -70,8 +150,21 @@ namespace MuMech
 
                 if (_courseCorrectionBurning)
                 {
-                    const double TIME_CONSTANT = 2.0;
-                    Core.Thrust.ThrustForDv(deltaV.magnitude, TIME_CONSTANT);
+                    const double TIME_CONSTANT = 0.5;
+                    Core.Thrust.ThrustForDv(_remainingPulseDv, TIME_CONSTANT);
+                    _remainingPulseDv -= VesselState.CurrentThrustAcceleration * TimeWarp.fixedDeltaTime;
+
+                    if (_remainingPulseDv <= PulseCompletionDv)
+                    {
+                        Core.Thrust.TargetThrottle = 0;
+                        _remainingPulseDv = 0;
+                        _courseCorrectionBurning = false;
+                        _waitingForPostBurnPrediction = true;
+                        _predictionVersionAtPulseCompletion = Core.Landing.PredictionVersion;
+                        _postBurnCompletionUT = VesselState.Time;
+                        _hasPendingCorrection = false;
+                        _pendingPredictionCount = 0;
+                    }
                 }
                 else
                 {
@@ -79,6 +172,37 @@ namespace MuMech
                 }
 
                 return this;
+            }
+
+            private double CompletionError => Math.Max(200, MainBody.Radius * 0.0005);
+
+            private double DownrangeCaptureDistance => Math.Max(100, MainBody.Radius * 0.005);
+
+            private double MaximumDownrangeHandoffDistance
+            {
+                get
+                {
+                    double availableAcceleration = Math.Max(0.1, VesselState.LimitedMaxThrustAcceleration);
+                    double brakingDistance = VesselState.SpeedSurface * VesselState.SpeedSurface / (2 * availableAcceleration);
+                    return Math.Max(DownrangeCaptureDistance, Math.Min(MainBody.Radius * 0.01, brakingDistance));
+                }
+            }
+
+            private void BeginPulse(Vector3d deltaV, double targetError)
+            {
+                double maximumPulseDv = MaxCorrectionPulseDv;
+                double nearTargetDistance = Math.Max(250, MainBody.Radius * 0.01);
+
+                if (targetError < nearTargetDistance)
+                    maximumPulseDv = 0.1;
+                else if (targetError < 4 * nearTargetDistance)
+                    maximumPulseDv = 0.25;
+
+                Vector3d direction = deltaV.normalized;
+                _remainingPulseDv = Math.Min(deltaV.magnitude, maximumPulseDv);
+                _pulseDirection = direction;
+                Status = Localizer.Format("#MechJeb_LandingGuidance_Status3",
+                    deltaV.magnitude.ToString("F1")); //"Performing course correction of about " +  + " m/s"
             }
         }
     }

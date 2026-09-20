@@ -7,6 +7,11 @@ namespace MuMech
     {
         public class KillHorizontalVelocity : AutopilotStep
         {
+            // Do not hand a low-gravity, high-TWR vessel to FinalDescent while it is
+            // still translating materially sideways.  FinalDescent controls the
+            // vertical approach; this step owns the hover-and-translation phase.
+            private const double FinalDescentHorizontalSpeed = 1.0;
+
             public KillHorizontalVelocity(MechJebCore core) : base(core)
             {
             }
@@ -18,7 +23,7 @@ namespace MuMech
                     return this;
 
                 Vector3d horizontalPointingDirection = Vector3d.Exclude(VesselState.Up, VesselState.Forward).normalized;
-                if (Vector3d.Dot(horizontalPointingDirection, VesselState.SurfaceVelocity) > 0)
+                if (VesselState.SpeedSurfaceHorizontal <= FinalDescentHorizontalSpeed)
                 {
                     Core.Thrust.RequestActiveThrottle(0.0f);
                     Core.Attitude.attitudeTo(Vector3.up, AttitudeReference.SURFACE_NORTH, Core.Landing);

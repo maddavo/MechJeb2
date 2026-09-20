@@ -63,6 +63,7 @@ namespace MuMech
 
         public virtual AutopilotStep Drive(FlightCtrlState s) => this;
         public virtual AutopilotStep OnFixedUpdate()          => this;
+        public virtual string        TraceDetails              => string.Empty;
         public         string        Status                   { get; protected set; }
     }
 }
