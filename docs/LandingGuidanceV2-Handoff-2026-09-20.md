@@ -101,13 +101,30 @@ When both V2 toggles are enabled, V2 writes to this file, **not** `KSP.log`:
 C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program\GameData\MechJeb2\Plugins\PluginData\MechJeb2\LandingGuidanceV2.trace.jsonl
 ```
 
-Each line is a JSON object with:
+Each line is a JSON object. The correlated records include:
 
 - `snapshotVersion`, `ut`, `body`, `targetLat`, `targetLon`
 - inertial `position` and `velocity`
-- `availableDeltaV`, `maxAcceleration`
+- `mass`, `availableDeltaV`, `maxAcceleration`
 - estimator `outcome`, `impactUT`, `targetError`
 - `brakingDeltaVLowerBound`, `deltaVAboveLowerBound`
+- V1 `v1Phase`, `v1Status`, `v1PredictionVersion`, `v1PredictionOutcome`,
+  predicted endpoint latitude/longitude/UT, and `v1TargetError`
+- `warpRate`, `attitudeErrorDegrees`, commanded and flight-control throttle,
+  actual thrust-acceleration magnitude and forward component, MechJeb and
+  action-group RCS state, and the current RCS control command
+- `isLandedOrSplashed`, `estimatorApplicable`, `flightDataValid`, and
+  `validityReason`
+
+Regular rows use `recordType: "sample"`. Transition rows use
+`recordType: "event"` and identify `phase_transition`, `burn_start`,
+`burn_end`, `warp_enter`, or `warp_exit`, with `eventFrom`/`eventTo` and the
+same correlated state fields. Transition detection is sampled at the V2
+refresh cadence (0.5 seconds of vessel UT); it is not a higher-frequency event
+hook. `v1PredictionVersion` is a trace-local counter that advances when the
+published V1 prediction result object changes; it is not a V1-native version.
+The V2 `snapshotVersion` identifies the exact V2 snapshot carried by each
+sample and transition record. V2 remains passive and records no V2 commands.
 
 ### Evidence from the 2026-09-20 landing
 
@@ -246,4 +263,3 @@ needs recorded evidence and an explicit user review.
 - Do not change V1 or move its UI while doing a V2 logging-only change.
 - Do not ask the user to perform subjective timing observations when a trace can
   measure the event.  Improve the trace first.
-
