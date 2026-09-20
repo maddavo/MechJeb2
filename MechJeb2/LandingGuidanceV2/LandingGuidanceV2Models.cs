@@ -19,10 +19,11 @@ namespace MuMech
         public readonly double MaximumAcceleration;
         public readonly double TargetLatitude;
         public readonly double TargetLongitude;
+        public readonly bool IsLandedOrSplashed;
 
         public LandingGuidanceV2Snapshot(long version, double ut, CelestialBody body, Vector3d position,
             Vector3d velocity, double mass, double availableDeltaV, double maximumAcceleration,
-            double targetLatitude, double targetLongitude)
+            double targetLatitude, double targetLongitude, bool isLandedOrSplashed)
         {
             Version = version;
             UT = ut;
@@ -34,6 +35,7 @@ namespace MuMech
             MaximumAcceleration = maximumAcceleration;
             TargetLatitude = targetLatitude;
             TargetLongitude = targetLongitude;
+            IsLandedOrSplashed = isLandedOrSplashed;
         }
     }
 
@@ -41,6 +43,7 @@ namespace MuMech
     {
         NotAvailable,
         AtmosphericBody,
+        NotFlight,
         NoImpact,
         Impact,
         InvalidSnapshot
@@ -76,6 +79,21 @@ namespace MuMech
         }
     }
 
+    public sealed class LandingGuidanceV2EstimatorValidation
+    {
+        public readonly LandingGuidanceV2Estimate RepeatedEstimate;
+        public readonly bool IsDeterministic;
+        public readonly string Detail;
+
+        public LandingGuidanceV2EstimatorValidation(LandingGuidanceV2Estimate repeatedEstimate, bool isDeterministic,
+            string detail)
+        {
+            RepeatedEstimate = repeatedEstimate;
+            IsDeterministic = isDeterministic;
+            Detail = detail;
+        }
+    }
+
     /// <summary>
     /// Preview-only assessment.  It intentionally exposes a lower bound instead of a
     /// false feasibility verdict until V2 owns a complete deorbit, braking, and reserve plan.
@@ -84,16 +102,18 @@ namespace MuMech
     {
         public readonly LandingGuidanceV2Snapshot Snapshot;
         public readonly LandingGuidanceV2Estimate Estimate;
+        public readonly LandingGuidanceV2EstimatorValidation EstimatorValidation;
         public readonly double BrakingDeltaVLowerBound;
         public readonly double DeltaVAboveLowerBound;
 
         public bool CanAssess => Snapshot != null && Estimate != null;
 
         public LandingGuidanceV2Preflight(LandingGuidanceV2Snapshot snapshot, LandingGuidanceV2Estimate estimate,
-            double brakingDeltaVLowerBound)
+            LandingGuidanceV2EstimatorValidation estimatorValidation, double brakingDeltaVLowerBound)
         {
             Snapshot = snapshot;
             Estimate = estimate;
+            EstimatorValidation = estimatorValidation;
             BrakingDeltaVLowerBound = brakingDeltaVLowerBound;
             DeltaVAboveLowerBound = snapshot == null ? double.NaN : snapshot.AvailableDeltaV - brakingDeltaVLowerBound;
         }

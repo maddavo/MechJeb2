@@ -209,6 +209,8 @@ namespace MuMech
             LandingGuidanceV2Estimate estimate = preflight.Estimate;
             GUILayout.Label("V2 estimator: " + estimate.Outcome);
             GUILayout.Label(estimate.Detail);
+            GUILayout.Label("V2 deterministic replay: " +
+                (preflight.EstimatorValidation != null && preflight.EstimatorValidation.IsDeterministic ? "pass" : "failed"));
             GUILayout.Label("Available vacuum Delta-V: " + preflight.Snapshot.AvailableDeltaV.ToSI() + "m/s");
 
             if (estimate.HasImpact)
