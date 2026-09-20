@@ -21,7 +21,6 @@ namespace MuMech
         private long _v1PredictionVersion;
         private ReentrySimulation.Result _lastV1Prediction;
         private string _lastV1Phase;
-        private string _lastV1Status;
         private bool? _lastV1Burning;
         private bool? _lastWarped;
 
@@ -155,7 +154,7 @@ namespace MuMech
                     landed ? "true" : "false", estimateApplicable ? "true" : "false", !landed ? "true" : "false", JsonString(validityReason));
 
                 var lines = new System.Collections.Generic.List<string>();
-                if (_lastV1Phase != phase || _lastV1Status != status)
+                if (_lastV1Phase != phase)
                     lines.Add(TraceRecord(baseFields, "phase_transition", _lastV1Phase, phase));
                 if (_lastV1Burning != burning && (_lastV1Burning.HasValue || burning))
                     lines.Add(TraceRecord(baseFields, burning ? "burn_start" : "burn_end", _lastV1Burning.HasValue && _lastV1Burning.Value ? "burning" : "not_burning", burning ? "burning" : "not_burning"));
@@ -163,7 +162,6 @@ namespace MuMech
                 if (_lastWarped != warped && (_lastWarped.HasValue || warped))
                     lines.Add(TraceRecord(baseFields, warped ? "warp_enter" : "warp_exit", _lastWarped.HasValue && _lastWarped.Value ? "warped" : "1x", warped ? "warped" : "1x"));
                 _lastV1Phase = phase;
-                _lastV1Status = status;
                 _lastV1Burning = burning;
                 _lastWarped = warped;
                 lines.Add("{\"recordType\":\"sample\"," + baseFields + "}");
@@ -181,7 +179,12 @@ namespace MuMech
 
         private static string JsonString(string value) => value == null ? "null" : "\"" + EscapeJson(value) + "\"";
 
-        private static string EscapeJson(string value) => (value ?? string.Empty).Replace("\\", "\\\\").Replace("\"", "\\\"");
+        private static string EscapeJson(string value) => (value ?? string.Empty)
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"")
+            .Replace("\r", "\\r")
+            .Replace("\n", "\\n")
+            .Replace("\t", "\\t");
 
         private static string JsonNumber(double value) => double.IsNaN(value) || double.IsInfinity(value)
             ? "null"
