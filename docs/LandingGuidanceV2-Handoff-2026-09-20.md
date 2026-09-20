@@ -118,6 +118,9 @@ Each line is a JSON object. The correlated records include:
 - `estimatorRepeatOutcome`, `estimatorRepeatImpactUT`,
   `estimatorDeterministic`, and `estimatorValidationDetail`; these describe a
   second independent evaluation of the same immutable V2 snapshot
+- `preflightState`, `preflightLocalGravity`, `preflightReason`, and the fixed
+  `v2CommandAuthorized: false`; the current preflight screen rejects only hard
+  lower-bound failures and labels all other airless cases `NeedsCompletePlan`
 
 Regular rows use `recordType: "sample"`. Transition rows use
 `recordType: "event"` and identify `phase_transition`, `burn_start`,
@@ -130,6 +133,10 @@ The V2 `snapshotVersion` identifies the exact V2 snapshot carried by each
 sample and transition record. V2 remains passive and records no V2 commands.
 Landed or splashed snapshots now return the explicit `NotFlight` estimator
 outcome instead of a ballistic impact estimate.
+
+The current preflight screen is not a landing-feasibility verdict. It has no
+strategic deorbit, trim, terminal-divert, terrain, contingency, or protected
+reserve plan, so it cannot authorize any V2 command.
 
 ### Evidence from the 2026-09-20 landing
 

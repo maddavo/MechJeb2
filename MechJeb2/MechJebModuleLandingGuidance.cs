@@ -213,6 +213,15 @@ namespace MuMech
                 (preflight.EstimatorValidation != null && preflight.EstimatorValidation.IsDeterministic ? "pass" : "failed"));
             GUILayout.Label("Available vacuum Delta-V: " + preflight.Snapshot.AvailableDeltaV.ToSI() + "m/s");
 
+            LandingGuidanceV2PreflightAssessment assessment = preflight.Assessment;
+            if (assessment != null)
+            {
+                GUILayout.Label("V2 preflight: " + assessment.State);
+                GUILayout.Label(assessment.Reason);
+                if (!double.IsNaN(assessment.LocalGravity))
+                    GUILayout.Label("Local gravity: " + assessment.LocalGravity.ToSI() + "m/s²");
+            }
+
             if (estimate.HasImpact)
             {
                 GUILayout.Label("Sea-level target error: " + estimate.TargetError.ToSI() + "m");

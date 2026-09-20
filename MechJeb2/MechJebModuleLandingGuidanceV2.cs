@@ -68,7 +68,9 @@ namespace MuMech
             // not a landing feasibility claim.  A real plan must additionally account for
             // gravity losses, finite-throttle constraints, terrain, trims, and reserve.
             double brakingLowerBound = estimate.HasImpact ? estimate.ImpactVelocity.magnitude : double.NaN;
-            Preflight = new LandingGuidanceV2Preflight(snapshot, estimate, estimatorValidation, brakingLowerBound);
+            LandingGuidanceV2PreflightAssessment assessment =
+                LandingGuidanceV2PreflightEvaluator.Evaluate(snapshot, estimate, brakingLowerBound);
+            Preflight = new LandingGuidanceV2Preflight(snapshot, estimate, estimatorValidation, assessment, brakingLowerBound);
             WriteCorrelatedTrace(Preflight);
         }
 
@@ -95,6 +97,7 @@ namespace MuMech
                 LandingGuidanceV2Snapshot snapshot = preflight.Snapshot;
                 LandingGuidanceV2Estimate estimate = preflight.Estimate;
                 LandingGuidanceV2EstimatorValidation estimatorValidation = preflight.EstimatorValidation;
+                LandingGuidanceV2PreflightAssessment assessment = preflight.Assessment;
                 MechJebModuleLandingAutopilot landing = Core.Landing;
                 AutopilotStep step = landing?.CurrentStep;
                 string phase = step?.GetType().Name;
@@ -142,7 +145,8 @@ namespace MuMech
                     "\"actualThrustAcceleration\":{31},\"forwardThrustAcceleration\":{32},\"mechjebRcsEnabled\":{33}," +
                     "\"rcsActionGroupEnabled\":{34},\"rcsCommand\":[{35},{36},{37}],\"burnActive\":{38}," +
                     "\"isLandedOrSplashed\":{39},\"estimatorApplicable\":{40},\"flightDataValid\":{41},\"validityReason\":{42}," +
-                    "\"estimatorRepeatOutcome\":{43},\"estimatorRepeatImpactUT\":{44},\"estimatorDeterministic\":{45},\"estimatorValidationDetail\":{46}",
+                    "\"estimatorRepeatOutcome\":{43},\"estimatorRepeatImpactUT\":{44},\"estimatorDeterministic\":{45},\"estimatorValidationDetail\":{46}," +
+                    "\"preflightState\":{47},\"preflightLocalGravity\":{48},\"preflightReason\":{49},\"v2CommandAuthorized\":false",
                     snapshot.Version, JsonNumber(snapshot.UT), EscapeJson(snapshot.Body.bodyName), JsonNumber(snapshot.TargetLatitude),
                     JsonNumber(snapshot.TargetLongitude), JsonNumber(snapshot.Position.x), JsonNumber(snapshot.Position.y),
                     JsonNumber(snapshot.Position.z), JsonNumber(snapshot.Velocity.x), JsonNumber(snapshot.Velocity.y),
@@ -160,7 +164,8 @@ namespace MuMech
                     JsonString(estimatorValidation?.RepeatedEstimate?.Outcome.ToString()),
                     JsonNumber(estimatorValidation?.RepeatedEstimate?.ImpactUT ?? double.NaN),
                     estimatorValidation != null && estimatorValidation.IsDeterministic ? "true" : "false",
-                    JsonString(estimatorValidation?.Detail));
+                    JsonString(estimatorValidation?.Detail), JsonString(assessment?.State.ToString()),
+                    JsonNumber(assessment?.LocalGravity ?? double.NaN), JsonString(assessment?.Reason));
 
                 var lines = new System.Collections.Generic.List<string>();
                 if (_lastV1Phase != phase)
