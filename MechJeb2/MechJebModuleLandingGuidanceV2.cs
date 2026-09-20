@@ -61,12 +61,14 @@ namespace MuMech
 
             LandingGuidanceV2Snapshot snapshot = CaptureSnapshot();
             LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(snapshot);
+            LandingGuidanceV2EstimatorValidation estimatorValidation =
+                AirlessImpactEstimator.ValidateDeterminism(snapshot, estimate);
 
             // Cancelling the predicted inertial impact velocity is a physical lower bound,
             // not a landing feasibility claim.  A real plan must additionally account for
             // gravity losses, finite-throttle constraints, terrain, trims, and reserve.
             double brakingLowerBound = estimate.HasImpact ? estimate.ImpactVelocity.magnitude : double.NaN;
-            Preflight = new LandingGuidanceV2Preflight(snapshot, estimate, brakingLowerBound);
+            Preflight = new LandingGuidanceV2Preflight(snapshot, estimate, estimatorValidation, brakingLowerBound);
             WriteCorrelatedTrace(Preflight);
         }
 
@@ -77,7 +79,8 @@ namespace MuMech
 
             return new LandingGuidanceV2Snapshot(++_snapshotVersion, VesselState.Time, MainBody,
                 VesselState.OrbitalPosition, VesselState.OrbitalVelocity, VesselState.Mass, availableDeltaV,
-                VesselState.LimitedMaxThrustAcceleration, Core.Target.targetLatitude, Core.Target.targetLongitude);
+                VesselState.LimitedMaxThrustAcceleration, Core.Target.targetLatitude, Core.Target.targetLongitude,
+                Vessel.LandedOrSplashed);
         }
 
         private void WriteCorrelatedTrace(LandingGuidanceV2Preflight preflight)
@@ -91,6 +94,7 @@ namespace MuMech
                 MuUtils.FileExistsCreateDirectory(path);
                 LandingGuidanceV2Snapshot snapshot = preflight.Snapshot;
                 LandingGuidanceV2Estimate estimate = preflight.Estimate;
+                LandingGuidanceV2EstimatorValidation estimatorValidation = preflight.EstimatorValidation;
                 MechJebModuleLandingAutopilot landing = Core.Landing;
                 AutopilotStep step = landing?.CurrentStep;
                 string phase = step?.GetType().Name;
@@ -137,7 +141,8 @@ namespace MuMech
                     "\"warpRate\":{27},\"attitudeErrorDegrees\":{28},\"commandedThrottle\":{29},\"flightControlThrottle\":{30}," +
                     "\"actualThrustAcceleration\":{31},\"forwardThrustAcceleration\":{32},\"mechjebRcsEnabled\":{33}," +
                     "\"rcsActionGroupEnabled\":{34},\"rcsCommand\":[{35},{36},{37}],\"burnActive\":{38}," +
-                    "\"isLandedOrSplashed\":{39},\"estimatorApplicable\":{40},\"flightDataValid\":{41},\"validityReason\":{42}",
+                    "\"isLandedOrSplashed\":{39},\"estimatorApplicable\":{40},\"flightDataValid\":{41},\"validityReason\":{42}," +
+                    "\"estimatorRepeatOutcome\":{43},\"estimatorRepeatImpactUT\":{44},\"estimatorDeterministic\":{45},\"estimatorValidationDetail\":{46}",
                     snapshot.Version, JsonNumber(snapshot.UT), EscapeJson(snapshot.Body.bodyName), JsonNumber(snapshot.TargetLatitude),
                     JsonNumber(snapshot.TargetLongitude), JsonNumber(snapshot.Position.x), JsonNumber(snapshot.Position.y),
                     JsonNumber(snapshot.Position.z), JsonNumber(snapshot.Velocity.x), JsonNumber(snapshot.Velocity.y),
@@ -151,7 +156,11 @@ namespace MuMech
                     JsonNumber(VesselState.CurrentThrustAcceleration), mechjebRcsEnabled ? "true" : "false",
                     rcsActionGroupEnabled ? "true" : "false", JsonNumber(rcsCommand.x), JsonNumber(rcsCommand.y),
                     JsonNumber(rcsCommand.z), burning ? "true" : "false",
-                    landed ? "true" : "false", estimateApplicable ? "true" : "false", !landed ? "true" : "false", JsonString(validityReason));
+                    landed ? "true" : "false", estimateApplicable ? "true" : "false", !landed ? "true" : "false", JsonString(validityReason),
+                    JsonString(estimatorValidation?.RepeatedEstimate?.Outcome.ToString()),
+                    JsonNumber(estimatorValidation?.RepeatedEstimate?.ImpactUT ?? double.NaN),
+                    estimatorValidation != null && estimatorValidation.IsDeterministic ? "true" : "false",
+                    JsonString(estimatorValidation?.Detail));
 
                 var lines = new System.Collections.Generic.List<string>();
                 if (_lastV1Phase != phase)

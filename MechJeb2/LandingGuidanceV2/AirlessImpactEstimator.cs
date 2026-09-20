@@ -21,6 +21,13 @@ namespace MuMech
                     double.NaN, "Snapshot did not contain a valid inertial state.");
             }
 
+            if (snapshot.IsLandedOrSplashed)
+            {
+                return new LandingGuidanceV2Estimate(snapshot.Version, LandingGuidanceV2EstimateOutcome.NotFlight,
+                    double.NaN, Vector3d.zero, Vector3d.zero, double.NaN,
+                    "Landed or splashed snapshots are non-flight data and are not ballistic estimates.");
+            }
+
             if (snapshot.Body.atmosphere)
             {
                 return new LandingGuidanceV2Estimate(snapshot.Version, LandingGuidanceV2EstimateOutcome.AtmosphericBody,
@@ -66,6 +73,17 @@ namespace MuMech
             }
         }
 
+        public static LandingGuidanceV2EstimatorValidation ValidateDeterminism(LandingGuidanceV2Snapshot snapshot,
+            LandingGuidanceV2Estimate firstEstimate)
+        {
+            LandingGuidanceV2Estimate repeatedEstimate = Estimate(snapshot);
+            bool deterministic = Equivalent(firstEstimate, repeatedEstimate);
+            return new LandingGuidanceV2EstimatorValidation(repeatedEstimate, deterministic,
+                deterministic
+                    ? "Repeated evaluation of the same immutable snapshot matched."
+                    : "Repeated evaluation of the same immutable snapshot differed.");
+        }
+
         private static Vector3d TargetPositionAtUT(LandingGuidanceV2Snapshot snapshot, double ut)
         {
             Vector3d target = snapshot.Body.GetWorldSurfacePosition(snapshot.TargetLatitude, snapshot.TargetLongitude, 0) -
@@ -77,5 +95,20 @@ namespace MuMech
         private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
 
         private static bool IsFinite(Vector3d value) => IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+
+        private static bool Equivalent(LandingGuidanceV2Estimate first, LandingGuidanceV2Estimate second) =>
+            first != null && second != null &&
+            first.SnapshotVersion == second.SnapshotVersion &&
+            first.Outcome == second.Outcome &&
+            SameNumber(first.ImpactUT, second.ImpactUT) &&
+            SameVector(first.ImpactPosition, second.ImpactPosition) &&
+            SameVector(first.ImpactVelocity, second.ImpactVelocity) &&
+            SameNumber(first.TargetError, second.TargetError);
+
+        private static bool SameVector(Vector3d first, Vector3d second) =>
+            SameNumber(first.x, second.x) && SameNumber(first.y, second.y) && SameNumber(first.z, second.z);
+
+        private static bool SameNumber(double first, double second) =>
+            first == second || (double.IsNaN(first) && double.IsNaN(second));
     }
 }

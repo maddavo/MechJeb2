@@ -115,6 +115,9 @@ Each line is a JSON object. The correlated records include:
   action-group RCS state, and the current RCS control command
 - `isLandedOrSplashed`, `estimatorApplicable`, `flightDataValid`, and
   `validityReason`
+- `estimatorRepeatOutcome`, `estimatorRepeatImpactUT`,
+  `estimatorDeterministic`, and `estimatorValidationDetail`; these describe a
+  second independent evaluation of the same immutable V2 snapshot
 
 Regular rows use `recordType: "sample"`. Transition rows use
 `recordType: "event"` and identify `phase_transition`, `burn_start`,
@@ -125,6 +128,8 @@ hook. `v1PredictionVersion` is a trace-local counter that advances when the
 published V1 prediction result object changes; it is not a V1-native version.
 The V2 `snapshotVersion` identifies the exact V2 snapshot carried by each
 sample and transition record. V2 remains passive and records no V2 commands.
+Landed or splashed snapshots now return the explicit `NotFlight` estimator
+outcome instead of a ballistic impact estimate.
 
 ### Evidence from the 2026-09-20 landing
 
