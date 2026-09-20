@@ -1,0 +1,13 @@
+namespace MuMech;
+
+public enum PSGStatus
+{
+	ENABLED,
+	INITIALIZED,
+	BURNING,
+	COASTING,
+	TERMINAL,
+	TERMINAL_RCS,
+	TERMINAL_STAGING,
+	FINISHED
+}

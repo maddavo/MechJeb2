@@ -1,0 +1,6 @@
+namespace MuMech;
+
+public interface IVisibility
+{
+	bool Visible { get; }
+}
