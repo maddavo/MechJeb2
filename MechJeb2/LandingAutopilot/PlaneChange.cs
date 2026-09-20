@@ -82,13 +82,7 @@ namespace MuMech
                     if (_planeChangeDVLeft < 0.1F)
                     {
                         Core.Thrust.ThrustOff();
-                        // This is the low-orbit path.  It must hand off to the low-orbit
-                        // deorbit controller, which knows how to create the first surface
-                        // intersection from a circular low orbit.  The high-orbit planner
-                        // deliberately refuses plans outside its valid geometry; sending this
-                        // path there can otherwise leave Course Correction running with no
-                        // re-entry trajectory at all.
-                        return new LowDeorbitBurn(Core);
+                        return new DeorbitBurn(Core);
                     }
                 }
                 else

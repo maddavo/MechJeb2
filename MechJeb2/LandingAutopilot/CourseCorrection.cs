@@ -23,6 +23,8 @@ namespace MuMech
             private bool _hasPendingCorrection;
             private Vector3d _pendingCorrection;
             private int _pendingPredictionCount;
+            private bool _hasLastPulseDirection;
+            private Vector3d _lastPulseDirection;
 
             public CourseCorrection(MechJebCore core) : base(core)
             {
@@ -199,8 +201,13 @@ namespace MuMech
                     maximumPulseDv = 0.25;
 
                 Vector3d direction = deltaV.normalized;
+                if (_hasLastPulseDirection && Vector3d.Angle(_lastPulseDirection, direction) > 90)
+                    maximumPulseDv = Math.Min(maximumPulseDv, 0.1);
+
                 _remainingPulseDv = Math.Min(deltaV.magnitude, maximumPulseDv);
                 _pulseDirection = direction;
+                _lastPulseDirection = direction;
+                _hasLastPulseDirection = true;
                 Status = Localizer.Format("#MechJeb_LandingGuidance_Status3",
                     deltaV.magnitude.ToString("F1")); //"Performing course correction of about " +  + " m/s"
             }

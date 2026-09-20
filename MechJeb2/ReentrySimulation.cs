@@ -171,16 +171,11 @@ namespace MuMech
             _referenceFrame.UpdateAtCurrentTime(initialOrbit.referenceBody);
             _orbitReenters = OrbitReenters(initialOrbit);
 
-            // Set the snapshot time before deriving the integration start position.
-            // Using the default value of _startUT here compared each simulation with
-            // its orbit at UT zero, defeating the intended high-precision first part
-            // of the integration and making nearby input snapshots diverge.
-            _startUT = ut;
-            _t = _startUT;
             _startX = _initialOrbit.WorldBCIPositionAtUT(_startUT);
-            // This calls some Unity function so it should be done outside the thread
             if (_orbitReenters)
             {
+                _startUT = ut;
+                _t = _startUT;
                 AdvanceToFreefallEnd(_initialOrbit);
             }
 

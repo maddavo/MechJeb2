@@ -9,18 +9,47 @@ namespace MuMech
     {
         public class CoastToDeceleration : AutopilotStep
         {
+            private const double RcsEnableCorrectionDv = 1.5;
+            private const double RcsDisableCorrectionDv = 0.5;
+            private const double MaximumRcsCorrectionDv = 3.0;
+            private const double MaximumRcsCommandChange = 0.5;
+
+            private bool _haveRcsCommand;
+            private long _lastRcsPredictionVersion = -1;
+            private Vector3d _rcsCorrectionCommand;
+
             public CoastToDeceleration(MechJebCore core) : base(core)
             {
             }
 
             public override AutopilotStep Drive(FlightCtrlState s)
             {
-                // Coast owns attitude and warp only.  Translational RCS correction here
-                // competes with the planned orbital approach and turns prediction noise
-                // into visible oscillation.  Terminal stages enable RCS when local
-                // velocity control, rather than orbital targeting, is appropriate.
-                if (Core.Landing.RCSAdjustment)
+                if (!Core.Landing.PredictionReady)
+                    return this;
+                if (!Core.Landing.RCSAdjustment)
+                    return this;
+
+                if (Core.Landing.PredictionVersion != _lastRcsPredictionVersion)
+                {
+                    _lastRcsPredictionVersion = Core.Landing.PredictionVersion;
+                    Vector3d correction = LimitMagnitude(Core.Landing.ComputeCourseCorrection(true), MaximumRcsCorrectionDv);
+                    _rcsCorrectionCommand = _haveRcsCommand
+                        ? MoveTowards(_rcsCorrectionCommand, correction, MaximumRcsCommandChange)
+                        : correction;
+                    _haveRcsCommand = true;
+                }
+
+                if (!_haveRcsCommand)
+                    return this;
+
+                if (_rcsCorrectionCommand.magnitude > RcsEnableCorrectionDv)
+                    Core.RCS.Enabled = true;
+                else if (_rcsCorrectionCommand.magnitude < RcsDisableCorrectionDv)
                     Core.RCS.Enabled = false;
+
+                if (Core.RCS.Enabled)
+                    Core.RCS.SetWorldVelocityError(_rcsCorrectionCommand);
+
                 return this;
             }
 

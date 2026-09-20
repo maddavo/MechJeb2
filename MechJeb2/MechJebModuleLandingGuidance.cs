@@ -111,7 +111,6 @@ namespace MuMech
             }
 
             DrawGUITogglePredictions();
-            DrawV2Preview();
 
             if (Core.Landing != null)
             {
@@ -175,6 +174,7 @@ namespace MuMech
                 }
             }
 
+            DrawV2Preview();
             GUILayout.EndVertical();
 
             base.WindowGUI(windowID);
