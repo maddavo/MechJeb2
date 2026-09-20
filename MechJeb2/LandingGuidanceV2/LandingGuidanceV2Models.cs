@@ -134,6 +134,54 @@ namespace MuMech
         }
     }
 
+    public enum AirlessLandingPlanState
+    {
+        NotApplicable,
+        Rejected,
+        Candidate
+    }
+
+    /// <summary>
+    /// Immutable strategic-deorbit candidate. It is data only: V2 does not yet
+    /// hand this vector to attitude, throttle, RCS, staging, target, or warp.
+    /// </summary>
+    public sealed class AirlessLandingPlan
+    {
+        public readonly long SnapshotVersion;
+        public readonly AirlessLandingPlanState State;
+        public readonly Vector3d StrategicDeorbitDeltaV;
+        public readonly double StrategicDeorbitDeltaVMagnitude;
+        public readonly double TerminalBrakingLowerBound;
+        public readonly double TotalLowerBound;
+        public readonly double LowerBoundMargin;
+        public readonly double SignedDownrange;
+        public readonly double CrossRange;
+        public readonly double CorridorLimit;
+        public readonly LandingGuidanceV2Estimate CandidateEstimate;
+        public readonly string Reason;
+
+        public bool CommandAuthorized => false;
+
+        public AirlessLandingPlan(long snapshotVersion, AirlessLandingPlanState state, Vector3d strategicDeorbitDeltaV,
+            double terminalBrakingLowerBound, double signedDownrange, double crossRange, double corridorLimit,
+            LandingGuidanceV2Estimate candidateEstimate, double availableDeltaV, string reason)
+        {
+            SnapshotVersion = snapshotVersion;
+            State = state;
+            StrategicDeorbitDeltaV = strategicDeorbitDeltaV;
+            StrategicDeorbitDeltaVMagnitude = strategicDeorbitDeltaV.magnitude;
+            TerminalBrakingLowerBound = terminalBrakingLowerBound;
+            TotalLowerBound = StrategicDeorbitDeltaVMagnitude + terminalBrakingLowerBound;
+            LowerBoundMargin = availableDeltaV - TotalLowerBound;
+            SignedDownrange = signedDownrange;
+            CrossRange = crossRange;
+            CorridorLimit = corridorLimit;
+            CandidateEstimate = candidateEstimate;
+            Reason = reason;
+        }
+
+    }
+
     /// <summary>
     /// Preview-only assessment.  It intentionally exposes a lower bound instead of a
     /// false feasibility verdict until V2 owns a complete deorbit, braking, and reserve plan.
@@ -144,6 +192,7 @@ namespace MuMech
         public readonly LandingGuidanceV2Estimate Estimate;
         public readonly LandingGuidanceV2EstimatorValidation EstimatorValidation;
         public readonly LandingGuidanceV2PreflightAssessment Assessment;
+        public readonly AirlessLandingPlan AirlessPlan;
         public readonly double BrakingDeltaVLowerBound;
         public readonly double DeltaVAboveLowerBound;
 
@@ -151,12 +200,13 @@ namespace MuMech
 
         public LandingGuidanceV2Preflight(LandingGuidanceV2Snapshot snapshot, LandingGuidanceV2Estimate estimate,
             LandingGuidanceV2EstimatorValidation estimatorValidation, LandingGuidanceV2PreflightAssessment assessment,
-            double brakingDeltaVLowerBound)
+            AirlessLandingPlan airlessPlan, double brakingDeltaVLowerBound)
         {
             Snapshot = snapshot;
             Estimate = estimate;
             EstimatorValidation = estimatorValidation;
             Assessment = assessment;
+            AirlessPlan = airlessPlan;
             BrakingDeltaVLowerBound = brakingDeltaVLowerBound;
             DeltaVAboveLowerBound = snapshot == null ? double.NaN : snapshot.AvailableDeltaV - brakingDeltaVLowerBound;
         }

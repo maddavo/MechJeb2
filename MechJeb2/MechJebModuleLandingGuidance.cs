@@ -222,6 +222,15 @@ namespace MuMech
                     GUILayout.Label("Local gravity: " + assessment.LocalGravity.ToSI() + "m/s²");
             }
 
+            AirlessLandingPlan airlessPlan = preflight.AirlessPlan;
+            if (airlessPlan != null)
+            {
+                GUILayout.Label("V2 airless plan: " + airlessPlan.State);
+                GUILayout.Label(airlessPlan.Reason);
+                if (!double.IsNaN(airlessPlan.StrategicDeorbitDeltaVMagnitude))
+                    GUILayout.Label("Strategic deorbit candidate: " + airlessPlan.StrategicDeorbitDeltaVMagnitude.ToSI() + "m/s");
+            }
+
             if (estimate.HasImpact)
             {
                 GUILayout.Label("Sea-level target error: " + estimate.TargetError.ToSI() + "m");

@@ -70,7 +70,9 @@ namespace MuMech
             double brakingLowerBound = estimate.HasImpact ? estimate.ImpactVelocity.magnitude : double.NaN;
             LandingGuidanceV2PreflightAssessment assessment =
                 LandingGuidanceV2PreflightEvaluator.Evaluate(snapshot, estimate, brakingLowerBound);
-            Preflight = new LandingGuidanceV2Preflight(snapshot, estimate, estimatorValidation, assessment, brakingLowerBound);
+            AirlessLandingPlan airlessPlan = AirlessLandingPlanner.Plan(snapshot);
+            Preflight = new LandingGuidanceV2Preflight(snapshot, estimate, estimatorValidation, assessment, airlessPlan,
+                brakingLowerBound);
             WriteCorrelatedTrace(Preflight);
         }
 
@@ -98,6 +100,7 @@ namespace MuMech
                 LandingGuidanceV2Estimate estimate = preflight.Estimate;
                 LandingGuidanceV2EstimatorValidation estimatorValidation = preflight.EstimatorValidation;
                 LandingGuidanceV2PreflightAssessment assessment = preflight.Assessment;
+                AirlessLandingPlan airlessPlan = preflight.AirlessPlan;
                 MechJebModuleLandingAutopilot landing = Core.Landing;
                 AutopilotStep step = landing?.CurrentStep;
                 string phase = step?.GetType().Name;
@@ -146,7 +149,9 @@ namespace MuMech
                     "\"rcsActionGroupEnabled\":{34},\"rcsCommand\":[{35},{36},{37}],\"burnActive\":{38}," +
                     "\"isLandedOrSplashed\":{39},\"estimatorApplicable\":{40},\"flightDataValid\":{41},\"validityReason\":{42}," +
                     "\"estimatorRepeatOutcome\":{43},\"estimatorRepeatImpactUT\":{44},\"estimatorDeterministic\":{45},\"estimatorValidationDetail\":{46}," +
-                    "\"preflightState\":{47},\"preflightLocalGravity\":{48},\"preflightReason\":{49},\"v2CommandAuthorized\":false",
+                    "\"preflightState\":{47},\"preflightLocalGravity\":{48},\"preflightReason\":{49}," +
+                    "\"airlessPlanState\":{50},\"strategicDeorbitDeltaV\":{51},\"planTerminalLowerBound\":{52},\"planLowerBoundMargin\":{53}," +
+                    "\"planDownrange\":{54},\"planCrossRange\":{55},\"planCorridorLimit\":{56},\"planReason\":{57},\"v2CommandAuthorized\":false",
                     snapshot.Version, JsonNumber(snapshot.UT), EscapeJson(snapshot.Body.bodyName), JsonNumber(snapshot.TargetLatitude),
                     JsonNumber(snapshot.TargetLongitude), JsonNumber(snapshot.Position.x), JsonNumber(snapshot.Position.y),
                     JsonNumber(snapshot.Position.z), JsonNumber(snapshot.Velocity.x), JsonNumber(snapshot.Velocity.y),
@@ -165,7 +170,11 @@ namespace MuMech
                     JsonNumber(estimatorValidation?.RepeatedEstimate?.ImpactUT ?? double.NaN),
                     estimatorValidation != null && estimatorValidation.IsDeterministic ? "true" : "false",
                     JsonString(estimatorValidation?.Detail), JsonString(assessment?.State.ToString()),
-                    JsonNumber(assessment?.LocalGravity ?? double.NaN), JsonString(assessment?.Reason));
+                    JsonNumber(assessment?.LocalGravity ?? double.NaN), JsonString(assessment?.Reason),
+                    JsonString(airlessPlan?.State.ToString()), JsonNumber(airlessPlan?.StrategicDeorbitDeltaVMagnitude ?? double.NaN),
+                    JsonNumber(airlessPlan?.TerminalBrakingLowerBound ?? double.NaN), JsonNumber(airlessPlan?.LowerBoundMargin ?? double.NaN),
+                    JsonNumber(airlessPlan?.SignedDownrange ?? double.NaN), JsonNumber(airlessPlan?.CrossRange ?? double.NaN),
+                    JsonNumber(airlessPlan?.CorridorLimit ?? double.NaN), JsonString(airlessPlan?.Reason));
 
                 var lines = new System.Collections.Generic.List<string>();
                 if (_lastV1Phase != phase)
