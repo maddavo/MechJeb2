@@ -12,6 +12,7 @@ namespace MuMech
     public class MechJebModuleLandingGuidance : DisplayModule
     {
         private MechJebModuleLandingPredictions _predictor;
+        private MechJebModuleLandingGuidanceV2 _v2;
         public static List<LandingSite> LandingSites;
 
         [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
@@ -28,6 +29,7 @@ namespace MuMech
         public override void OnStart(PartModule.StartState state)
         {
             _predictor = Core.GetComputerModule<MechJebModuleLandingPredictions>();
+            _v2 = Core.GetComputerModule<MechJebModuleLandingGuidanceV2>();
 
             if (LandingSites == null && HighLogic.LoadedSceneIsFlight)
                 InitLandingSitesList();
@@ -109,6 +111,7 @@ namespace MuMech
             }
 
             DrawGUITogglePredictions();
+            DrawV2Preview();
 
             if (Core.Landing != null)
             {
@@ -175,6 +178,47 @@ namespace MuMech
             GUILayout.EndVertical();
 
             base.WindowGUI(windowID);
+        }
+
+        private void DrawV2Preview()
+        {
+            if (_v2 == null || !HighLogic.LoadedSceneIsFlight)
+                return;
+
+            GUILayout.Space(4);
+            GUILayout.Label("Landing Guidance V2 — planning preview");
+            _v2.PreviewEnabled = GUILayout.Toggle(_v2.PreviewEnabled,
+                "Enable V2 estimator and preflight diagnostics");
+
+            if (!_v2.PreviewEnabled)
+                return;
+
+            _v2.StructuredTraceEnabled = GUILayout.Toggle(_v2.StructuredTraceEnabled,
+                "Write V2 structured trace");
+
+            if (GUILayout.Button("Refresh V2 preflight"))
+                _v2.RefreshPreflight();
+
+            LandingGuidanceV2Preflight preflight = _v2.Preflight;
+            if (preflight == null)
+            {
+                GUILayout.Label("Waiting for a target and flight snapshot.");
+                return;
+            }
+
+            LandingGuidanceV2Estimate estimate = preflight.Estimate;
+            GUILayout.Label("V2 estimator: " + estimate.Outcome);
+            GUILayout.Label(estimate.Detail);
+            GUILayout.Label("Available vacuum Delta-V: " + preflight.Snapshot.AvailableDeltaV.ToSI() + "m/s");
+
+            if (estimate.HasImpact)
+            {
+                GUILayout.Label("Sea-level target error: " + estimate.TargetError.ToSI() + "m");
+                GUILayout.Label("Braking Delta-V lower bound: " + preflight.BrakingDeltaVLowerBound.ToSI() + "m/s");
+                GUILayout.Label("Delta-V above lower bound: " + preflight.DeltaVAboveLowerBound.ToSI() + "m/s");
+            }
+
+            GUILayout.Label("Preview only — V2 cannot command engines or warp yet.");
         }
 
         public void SetAndLandTargetKSC()
