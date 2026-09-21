@@ -9,9 +9,8 @@ using UnityEngine;
 namespace MuMech
 {
     /// <summary>
-    /// V2 foundation module.  It is intentionally passive: it captures snapshots,
-    /// estimates airless impacts, assesses a delta-V lower bound, and emits opt-in
-    /// structured trace records.  It does not own warp, attitude, RCS, or throttle.
+    /// V2 airless landing module.  Preview remains opt-in; the controller is a
+    /// separate opt-in path and never starts or changes the restored V1 controller.
     /// </summary>
     public class MechJebModuleLandingGuidanceV2 : ComputerModule
     {
@@ -23,6 +22,12 @@ namespace MuMech
         private string _lastV1Phase;
         private bool? _lastV1Burning;
         private bool? _lastWarped;
+        private V2FlightPhase _flightPhase;
+        private AirlessLandingPlan _activePlan;
+        private Vector3d _burnTargetVelocity;
+        private string _lastV2Phase;
+
+        public enum V2FlightPhase { Idle, AlignStrategicBurn, StrategicBurn, TerminalHandover, Complete, Rejected }
 
         [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
         public bool PreviewEnabled;
@@ -30,9 +35,16 @@ namespace MuMech
         [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
         public bool StructuredTraceEnabled;
 
+        [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
+        public bool V2AutoWarp = true;
+
         public LandingGuidanceV2Preflight Preflight { get; private set; }
 
-        public bool IsPreviewOnly => true;
+        public bool IsPreviewOnly => _flightPhase == V2FlightPhase.Idle || _flightPhase == V2FlightPhase.Rejected || _flightPhase == V2FlightPhase.Complete;
+        public bool ControllerActive => _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.TerminalHandover;
+        public V2FlightPhase FlightPhase => _flightPhase;
+        public string ControllerStatus { get; private set; } = "Idle";
+        private MechJebModuleHoverslamAutopilot TerminalAutopilot => Core.GetComputerModule<MechJebModuleHoverslamAutopilot>();
 
         public MechJebModuleLandingGuidanceV2(MechJebCore core) : base(core)
         {
@@ -41,14 +53,115 @@ namespace MuMech
 
         public override void OnFixedUpdate()
         {
-            if (!PreviewEnabled || !HighLogic.LoadedSceneIsFlight || !Core.Target.PositionTargetExists)
-                return;
+            if (ControllerActive)
+                TickController();
 
-            if (VesselState.Time < _nextRefreshUT)
-                return;
+            if ((PreviewEnabled || ControllerActive) && HighLogic.LoadedSceneIsFlight && Core.Target.PositionTargetExists && VesselState.Time >= _nextRefreshUT)
+            {
+                _nextRefreshUT = VesselState.Time + RefreshInterval;
+                RefreshPreflight();
+            }
+        }
 
-            _nextRefreshUT = VesselState.Time + RefreshInterval;
+        public bool StartAirlessLanding()
+        {
             RefreshPreflight();
+            if (Core.Landing != null && Core.Landing.Enabled)
+                return RejectController("V1 Landing Guidance is active. Disengage it before starting V2.");
+            if (TerminalAutopilot != null && TerminalAutopilot.Enabled)
+                return RejectController("Hoverslam is active. Disengage it before starting V2.");
+            if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate)
+                return RejectController("V2 requires a current airless strategic-deorbit candidate.");
+
+            _activePlan = Preflight.AirlessPlan;
+            _burnTargetVelocity = Preflight.Snapshot.Velocity + _activePlan.StrategicDeorbitDeltaV;
+            Core.Thrust.Users.Add(this);
+            Core.Attitude.Users.Add(this);
+            TransitionTo(V2FlightPhase.AlignStrategicBurn, "Aligning for V2 strategic deorbit burn.");
+            return true;
+        }
+
+        public void AbortAirlessLanding()
+        {
+            if (TerminalAutopilot != null && TerminalAutopilot.Enabled)
+                TerminalAutopilot.Enabled = false;
+            ReleaseV2Control();
+            TransitionTo(V2FlightPhase.Idle, "V2 landing aborted.");
+        }
+
+        private bool RejectController(string reason)
+        {
+            ReleaseV2Control();
+            TransitionTo(V2FlightPhase.Rejected, reason);
+            return false;
+        }
+
+        private void TickController()
+        {
+            if (Vessel == null || Vessel.LandedOrSplashed)
+            {
+                ReleaseV2Control();
+                TransitionTo(V2FlightPhase.Complete, "V2 landing completed: vessel is landed or splashed.");
+                return;
+            }
+            if (Core.Landing != null && Core.Landing.Enabled)
+            {
+                RejectController("V1 Landing Guidance was engaged; V2 relinquished control.");
+                return;
+            }
+
+            switch (_flightPhase)
+            {
+                case V2FlightPhase.AlignStrategicBurn:
+                    Core.Thrust.ThrustOff();
+                    Core.Attitude.attitudeTo(_activePlan.StrategicDeorbitDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    if (Core.Attitude.attitudeError < 2.0)
+                        TransitionTo(V2FlightPhase.StrategicBurn, "Executing V2 strategic deorbit burn.");
+                    break;
+                case V2FlightPhase.StrategicBurn:
+                    Core.Attitude.attitudeTo(_activePlan.StrategicDeorbitDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    double remainingDv = Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity,
+                        _activePlan.StrategicDeorbitDeltaV.normalized);
+                    if (remainingDv <= 0.5)
+                    {
+                        Core.Thrust.ThrustOff();
+                        ReleaseV2Control();
+                        if (TerminalAutopilot == null)
+                        {
+                            RejectController("V2 terminal executor is unavailable.");
+                            return;
+                        }
+                        TerminalAutopilot.AutoWarp = V2AutoWarp;
+                        TerminalAutopilot.HoldUpright = false;
+                        TerminalAutopilot.Enabled = true;
+                        TransitionTo(V2FlightPhase.TerminalHandover, "V2 deorbit complete; V2 terminal hoverslam is active.");
+                    }
+                    else
+                        Core.Thrust.ThrustForDv(remainingDv, 0.5);
+                    break;
+                case V2FlightPhase.TerminalHandover:
+                    if (TerminalAutopilot == null || !TerminalAutopilot.Enabled)
+                    {
+                        if (Vessel.LandedOrSplashed)
+                            TransitionTo(V2FlightPhase.Complete, "V2 landing completed.");
+                        else
+                            RejectController("V2 terminal executor stopped before touchdown.");
+                    }
+                    break;
+            }
+        }
+
+        private void ReleaseV2Control()
+        {
+            Core.Thrust.ThrustOff();
+            Core.Thrust.Users.Remove(this);
+            Core.Attitude.Users.Remove(this);
+        }
+
+        private void TransitionTo(V2FlightPhase next, string status)
+        {
+            _flightPhase = next;
+            ControllerStatus = status;
         }
 
         public void RefreshPreflight()
@@ -151,7 +264,7 @@ namespace MuMech
                     "\"estimatorRepeatOutcome\":{43},\"estimatorRepeatImpactUT\":{44},\"estimatorDeterministic\":{45},\"estimatorValidationDetail\":{46}," +
                     "\"preflightState\":{47},\"preflightLocalGravity\":{48},\"preflightReason\":{49}," +
                     "\"airlessPlanState\":{50},\"strategicDeorbitDeltaV\":{51},\"planTerminalLowerBound\":{52},\"planLowerBoundMargin\":{53}," +
-                    "\"planDownrange\":{54},\"planCrossRange\":{55},\"planCorridorLimit\":{56},\"planReason\":{57},\"v2CommandAuthorized\":false",
+                    "\"planDownrange\":{54},\"planCrossRange\":{55},\"planCorridorLimit\":{56},\"planReason\":{57},\"v2CommandAuthorized\":{58},\"v2Phase\":{59},\"v2Status\":{60},\"v2AutoWarp\":{61}",
                     snapshot.Version, JsonNumber(snapshot.UT), EscapeJson(snapshot.Body.bodyName), JsonNumber(snapshot.TargetLatitude),
                     JsonNumber(snapshot.TargetLongitude), JsonNumber(snapshot.Position.x), JsonNumber(snapshot.Position.y),
                     JsonNumber(snapshot.Position.z), JsonNumber(snapshot.Velocity.x), JsonNumber(snapshot.Velocity.y),
@@ -174,17 +287,22 @@ namespace MuMech
                     JsonString(airlessPlan?.State.ToString()), JsonNumber(airlessPlan?.StrategicDeorbitDeltaVMagnitude ?? double.NaN),
                     JsonNumber(airlessPlan?.TerminalBrakingLowerBound ?? double.NaN), JsonNumber(airlessPlan?.LowerBoundMargin ?? double.NaN),
                     JsonNumber(airlessPlan?.SignedDownrange ?? double.NaN), JsonNumber(airlessPlan?.CrossRange ?? double.NaN),
-                    JsonNumber(airlessPlan?.CorridorLimit ?? double.NaN), JsonString(airlessPlan?.Reason));
+                    JsonNumber(airlessPlan?.CorridorLimit ?? double.NaN), JsonString(airlessPlan?.Reason),
+                    ControllerActive ? "true" : "false", JsonString(_flightPhase.ToString()), JsonString(ControllerStatus), V2AutoWarp ? "true" : "false");
 
                 var lines = new System.Collections.Generic.List<string>();
                 if (_lastV1Phase != phase)
                     lines.Add(TraceRecord(baseFields, "phase_transition", _lastV1Phase, phase));
+                string v2Phase = _flightPhase.ToString();
+                if (_lastV2Phase != v2Phase)
+                    lines.Add(TraceRecord(baseFields, "v2_phase_transition", _lastV2Phase, v2Phase));
                 if (_lastV1Burning != burning && (_lastV1Burning.HasValue || burning))
                     lines.Add(TraceRecord(baseFields, burning ? "burn_start" : "burn_end", _lastV1Burning.HasValue && _lastV1Burning.Value ? "burning" : "not_burning", burning ? "burning" : "not_burning"));
                 bool warped = warpRate > 1.0;
                 if (_lastWarped != warped && (_lastWarped.HasValue || warped))
                     lines.Add(TraceRecord(baseFields, warped ? "warp_enter" : "warp_exit", _lastWarped.HasValue && _lastWarped.Value ? "warped" : "1x", warped ? "warped" : "1x"));
                 _lastV1Phase = phase;
+                _lastV2Phase = v2Phase;
                 _lastV1Burning = burning;
                 _lastWarped = warped;
                 lines.Add("{\"recordType\":\"sample\"," + baseFields + "}");
