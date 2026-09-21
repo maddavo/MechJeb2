@@ -622,7 +622,12 @@ namespace MuMech
             double divertCost = 4.0 * distance / timeToGround;
             Core.StageStats.RequestUpdate();
             double remainingDeltaV = Core.StageStats.VacStats.Sum(s => s.DeltaV);
-            double reserve = _activePlan == null ? 20.0 : _activePlan.TerminalDivertReserve;
+            // The player-facing local adjustment is paid from the plan's
+            // protected reserve on both body types. A fixed atmospheric value
+            // would bypass the uncertainty-based entry budget.
+            double reserve = _activePlan != null
+                ? _activePlan.TerminalDivertReserve
+                : Preflight?.AtmosphericPlan?.TerminalReserve ?? 20.0;
             if (remainingDeltaV < reserve + divertCost)
             {
                 reason = "V2 target movement rejected: it would consume the protected terminal-divert reserve.";
