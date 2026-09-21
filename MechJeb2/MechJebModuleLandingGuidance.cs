@@ -189,7 +189,7 @@ namespace MuMech
                 return;
 
             GUILayout.Space(4);
-            GUILayout.Label("Landing Guidance V2 — planning preview");
+            GUILayout.Label("Landing Guidance V2 — airless landing plan");
             _v2.PreviewEnabled = GUILayout.Toggle(_v2.PreviewEnabled,
                 "Enable V2 estimator and preflight diagnostics");
 
@@ -222,7 +222,7 @@ namespace MuMech
                 "Write V2 structured trace");
 
             if (GUILayout.Button("Refresh V2 preflight"))
-                _v2.RefreshPreflight();
+                _v2.RefreshPreflight(true);
 
             LandingGuidanceV2Preflight preflight = _v2.Preflight;
             if (preflight == null)
@@ -250,15 +250,15 @@ namespace MuMech
             AirlessLandingPlan airlessPlan = preflight.AirlessPlan;
             if (airlessPlan != null)
             {
-                GUILayout.Label("V2 airless plan: " + airlessPlan.State);
+                GUILayout.Label("LANDING PLAN: " + (airlessPlan.State == AirlessLandingPlanState.Candidate ? "FEASIBLE" : "NOT FEASIBLE"));
                 GUILayout.Label(airlessPlan.Reason);
                 if (!double.IsNaN(airlessPlan.StrategicDeorbitDeltaVMagnitude))
-                    GUILayout.Label("Strategic deorbit candidate: " + airlessPlan.StrategicDeorbitDeltaVMagnitude.ToSI() + "m/s");
+                    GUILayout.Label("Strategic burn: " + airlessPlan.StrategicDeorbitDeltaVMagnitude.ToSI() + "m/s");
                 if (!double.IsNaN(airlessPlan.StrategicBurnUT))
                     GUILayout.Label("Strategic burn in: " + Math.Max(0, airlessPlan.StrategicBurnUT - Planetarium.GetUniversalTime()).ToSI() + "s");
-                GUILayout.Label("V2 trim budget: " + airlessPlan.TrimBudget.ToSI() + "m/s");
-                GUILayout.Label("V2 terminal reserve: " + airlessPlan.TerminalDivertReserve.ToSI() + "m/s");
-                GUILayout.Label("V2 landing margin: " + airlessPlan.LowerBoundMargin.ToSI() + "m/s");
+                GUILayout.Label("Planned landing Delta-V: " + airlessPlan.TotalLowerBound.ToSI() + "m/s");
+                GUILayout.Label("Protected terminal reserve: " + airlessPlan.TerminalDivertReserve.ToSI() + "m/s");
+                GUILayout.Label("Landing margin: " + airlessPlan.LowerBoundMargin.ToSI() + "m/s");
             }
 
             if (estimate.HasImpact)

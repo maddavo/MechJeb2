@@ -16,7 +16,9 @@ namespace MuMech
     public class MechJebModuleLandingGuidanceV2 : ComputerModule
     {
         private const double RefreshInterval = 0.5;
+        private const double PlanRefreshInterval = 30.0;
         private double _nextRefreshUT;
+        private double _nextPlanRefreshUT;
         private long _snapshotVersion;
         private long _v1PredictionVersion;
         private ReentrySimulation.Result _lastV1Prediction;
@@ -91,7 +93,7 @@ namespace MuMech
             _selectedTargetLongitude = Core.Target.targetLongitude;
             _visualRebaseDone = false;
             _siteAssessment = null;
-            RefreshPreflight();
+            RefreshPreflight(true);
             if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate) return RejectController("V2 requires a current airless strategic-deorbit candidate.");
             _activePlan = Preflight.AirlessPlan;
             Core.Thrust.Users.Add(this); Core.Attitude.Users.Add(this);
@@ -121,7 +123,7 @@ namespace MuMech
                         break;
                     }
                     Core.Warp.MinimumWarp(true);
-                    RefreshPreflight();
+                    RefreshPreflight(true);
                     if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate)
                     {
                         RejectController("V2 plan failed fresh validation at the strategic-burn gate.");
@@ -148,7 +150,7 @@ namespace MuMech
                     if (Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _activePlan.PlaneAlignmentDeltaV.normalized) <= 0.5)
                     {
                         Core.Thrust.ThrustOff();
-                        RefreshPreflight();
+                        RefreshPreflight(true);
                         if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate)
                         {
                             RejectController("V2 plan failed fresh validation after plane alignment.");
@@ -173,7 +175,7 @@ namespace MuMech
                     if (remainingDv <= 0.5)
                     {
                         Core.Thrust.ThrustOff();
-                        RefreshPreflight();
+                        RefreshPreflight(true);
                         if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact)
                         {
                             RejectController("V2 strategic burn did not produce a fresh valid impact trajectory.");
@@ -283,7 +285,7 @@ namespace MuMech
             Vector3d brakingError = TerminalVelocityError();
             Core.Attitude.attitudeTo(-brakingError, AttitudeReference.INERTIAL_COT, this);
             Core.Thrust.TargetThrottle = 1.0f;
-            RefreshPreflight();
+            RefreshPreflight(false);
             if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact)
             {
                 RejectController("V2 local visual assessment has no valid impact estimate.");
@@ -433,7 +435,7 @@ namespace MuMech
                 RefreshPreflight();
         }
 
-        public void RefreshPreflight()
+        public void RefreshPreflight(bool forcePlan = false)
         {
             if (!HighLogic.LoadedSceneIsFlight || !Core.Target.PositionTargetExists || Vessel == null || MainBody == null)
             {
@@ -452,7 +454,20 @@ namespace MuMech
             double brakingLowerBound = estimate.HasImpact ? estimate.ImpactVelocity.magnitude : double.NaN;
             LandingGuidanceV2PreflightAssessment assessment =
                 LandingGuidanceV2PreflightEvaluator.Evaluate(snapshot, estimate, brakingLowerBound);
-            AirlessLandingPlan airlessPlan = AirlessLandingPlanner.Plan(snapshot);
+            // Snapshot/estimator diagnostics may run at a short cadence. The
+            // complete strategic search is intentionally less frequent in the
+            // preview, but every start and command gate forces a plan from this
+            // exact snapshot before V2 can request thrust or attitude.
+            AirlessLandingPlan airlessPlan;
+            if (forcePlan || Preflight?.AirlessPlan == null || VesselState.Time >= _nextPlanRefreshUT)
+            {
+                airlessPlan = AirlessLandingPlanner.Plan(snapshot);
+                _nextPlanRefreshUT = VesselState.Time + PlanRefreshInterval;
+            }
+            else
+            {
+                airlessPlan = Preflight.AirlessPlan;
+            }
             Preflight = new LandingGuidanceV2Preflight(snapshot, estimate, estimatorValidation, assessment, airlessPlan,
                 brakingLowerBound);
             WriteCorrelatedTrace(Preflight);
