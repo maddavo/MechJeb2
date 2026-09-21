@@ -64,21 +64,29 @@ namespace MuMech
             Vector3d position = coast.WorldBCIPositionAtUT(burnUT);
             Vector3d velocity = coast.WorldOrbitalVelocityAtUT(burnUT);
             var burnOrbit = new Orbit(); burnOrbit.UpdateFromStateVectors(position, velocity, source.Body, burnUT);
-            Vector3d burn = OrbitalManeuverCalculator.DeltaVToChangePeriapsis(burnOrbit, burnUT, source.Body.Radius * 0.9);
-            var state = new LandingGuidanceV2Snapshot(source.Version, burnUT, source.Body, position, velocity + burn,
-                source.Mass, source.AvailableDeltaV, source.MaximumAcceleration, source.TargetLatitude, source.TargetLongitude, false);
-            LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(state);
-            if (!estimate.HasImpact) return default(Candidate);
-
-            Vector3d error = estimate.ImpactPosition - TargetAt(source, estimate.ImpactUT);
-            Vector3d direction = Vector3d.Exclude(estimate.ImpactPosition.normalized, estimate.ImpactVelocity);
-            if (direction.sqrMagnitude < 1e-9) return default(Candidate);
-            direction.Normalize();
-            double downrange = Vector3d.Dot(error, direction);
-            double crossRange = Math.Sqrt(Math.Max(0, error.sqrMagnitude - downrange * downrange));
-            double corridor = Math.Max(100.0, source.Body.Radius * 0.002);
-            return downrange >= 0 && downrange <= corridor && crossRange <= corridor
-                ? new Candidate(burnUT, burn, estimate, downrange, crossRange, corridor) : default(Candidate);
+            Vector3d baselineBurn = OrbitalManeuverCalculator.DeltaVToChangePeriapsis(burnOrbit, burnUT, source.Body.Radius * 0.9);
+            Vector3d normal = Vector3d.Cross(position, velocity).normalized;
+            double normalStep = Math.Max(5.0, Math.Min(100.0, baselineBurn.magnitude));
+            Candidate best = default(Candidate);
+            for (int i = -4; i <= 4; ++i)
+            {
+                Vector3d burn = baselineBurn + i * normalStep * normal;
+                var state = new LandingGuidanceV2Snapshot(source.Version, burnUT, source.Body, position, velocity + burn,
+                    source.Mass, source.AvailableDeltaV, source.MaximumAcceleration, source.TargetLatitude, source.TargetLongitude, false);
+                LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(state);
+                if (!estimate.HasImpact) continue;
+                Vector3d error = estimate.ImpactPosition - TargetAt(source, estimate.ImpactUT);
+                Vector3d direction = Vector3d.Exclude(estimate.ImpactPosition.normalized, estimate.ImpactVelocity);
+                if (direction.sqrMagnitude < 1e-9) continue;
+                direction.Normalize();
+                double downrange = Vector3d.Dot(error, direction);
+                double crossRange = Math.Sqrt(Math.Max(0, error.sqrMagnitude - downrange * downrange));
+                double corridor = Math.Max(100.0, source.Body.Radius * 0.002);
+                if (downrange < 0 || downrange > corridor || crossRange > corridor) continue;
+                Candidate candidate = new Candidate(burnUT, burn, estimate, downrange, crossRange, corridor);
+                if (!best.Valid || candidate.Burn.magnitude < best.Burn.magnitude) best = candidate;
+            }
+            return best;
         }
 
         private static AirlessLandingPlan Reject(LandingGuidanceV2Snapshot s, string reason) => Reject(s, Vector3d.zero, null, double.NaN, double.NaN, double.NaN, reason);
