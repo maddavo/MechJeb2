@@ -32,6 +32,7 @@ namespace MuMech
         private bool _atmosphericCandidateSimulationRunning;
         private double _nextAtmosphericCandidateSimulationUT;
         private long _atmosphericCandidateGeneration;
+        private bool _atmosphericWarpIssued;
         private string _lastV1Phase;
         private bool? _lastV1Burning;
         private bool? _lastWarped;
@@ -248,9 +249,15 @@ namespace MuMech
                         : _activePlan.StrategicBurnUT;
                     if (nextBurnUT > VesselState.Time + 25.0)
                         break;
-                    _burnTargetVelocity = VesselState.OrbitalVelocity + _activePlan.PlaneAlignmentDeltaV;
-                    TransitionTo(_activePlan.PlaneAlignmentDeltaVMagnitude > 0.5 ? V2FlightPhase.AlignPlane : V2FlightPhase.AlignStrategicBurn,
-                        _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5 ? "Aligning for the validated V2 plane-alignment burn." : "Aligning for the validated V2 strategic deorbit burn.");
+                    bool needsPlaneAlignment = _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5;
+                    // Each finite-burn phase owns its own target velocity. In
+                    // particular, a plan with no plane change must start the
+                    // strategic burn from its strategic vector, never inherit
+                    // a zero plane-alignment vector and falsely finish.
+                    _burnTargetVelocity = VesselState.OrbitalVelocity +
+                        (needsPlaneAlignment ? _activePlan.PlaneAlignmentDeltaV : _activePlan.StrategicDeorbitDeltaV);
+                    TransitionTo(needsPlaneAlignment ? V2FlightPhase.AlignPlane : V2FlightPhase.AlignStrategicBurn,
+                        needsPlaneAlignment ? "Aligning for the validated V2 plane-alignment burn." : "Aligning for the validated V2 strategic deorbit burn.");
                     break;
                 case V2FlightPhase.AlignPlane:
                     Core.Thrust.ThrustOff();
@@ -376,9 +383,21 @@ namespace MuMech
                     if (VesselState.Time < _atmosphericCandidatePlan.StrategicEntryBurnUT - 20.0 && V2AutoWarp)
                     {
                         Core.Warp.WarpToUT(_atmosphericCandidatePlan.StrategicEntryBurnUT - 20.0);
+                        _atmosphericWarpIssued = true;
                         break;
                     }
                     Core.Warp.MinimumWarp(true);
+                    if (_atmosphericWarpIssued)
+                    {
+                        // Candidate dynamics may not cross a warp boundary.
+                        // Rebuild the snapshot and run a new V2 simulation
+                        // before asking for attitude or throttle.
+                        _atmosphericWarpIssued = false;
+                        ReleaseV2Control();
+                        TransitionTo(V2FlightPhase.Preflight,
+                            "V2 exited warp at the atmospheric burn gate; acquiring a fresh candidate simulation.");
+                        break;
+                    }
                     RefreshPreflight(true);
                     if (Preflight?.AtmosphericPlan?.State != AtmosphericLandingPlanState.Candidate ||
                         Preflight.AtmosphericPlan.StrategicEntryDeltaV.magnitude <= 0.5 ||
@@ -437,6 +456,7 @@ namespace MuMech
                         TransitionTo(V2FlightPhase.BrakingApproach, "V2 atmospheric powered braking has begun.");
                     break;
                 case V2FlightPhase.BrakingApproach:
+                    Core.Warp.MinimumWarp(true);
                     if (VesselState.AltitudeBottom <= VisualAssessmentAltitude && !_visualRebaseDone)
                     {
                         Core.Warp.MinimumWarp(true);
@@ -651,11 +671,13 @@ namespace MuMech
 
         private void ReleaseV2Control()
         {
+            Core.Warp.MinimumWarp(true);
             Core.Thrust.ThrustOff();
             Core.Thrust.Users.Remove(this);
             Core.Attitude.Users.Remove(this);
             Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Users.Remove(this);
             ClearAtmosphericCandidateResult();
+            _atmosphericWarpIssued = false;
         }
         private void BeginFiniteBurn(string name, double plannedDeltaV)
         {
