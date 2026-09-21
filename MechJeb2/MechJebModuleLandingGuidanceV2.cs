@@ -759,6 +759,10 @@ namespace MuMech
                     JsonNumber(_siteAssessment?.Roughness ?? double.NaN), JsonString(_siteAssessment?.Detail), JsonString(_phaseBurnName),
                     JsonNumber(_phaseBurnPlannedDeltaV), JsonNumber(_phaseBurnStartVelocity.sqrMagnitude > 0
                         ? (VesselState.OrbitalVelocity - _phaseBurnStartVelocity).magnitude : double.NaN));
+                baseFields += string.Format(CultureInfo.InvariantCulture,
+                    ",\"airlessPlanSnapshotVersion\":{0},\"activeAirlessPlanSnapshotVersion\":{1},\"atmosphericPlanSnapshotVersion\":{2}",
+                    airlessPlan?.SnapshotVersion ?? -1, _activePlan?.SnapshotVersion ?? -1,
+                    atmosphericPlan?.SnapshotVersion ?? -1);
 
                 var lines = new System.Collections.Generic.List<string>();
                 if (_lastV1Phase != phase)
