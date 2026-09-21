@@ -3,8 +3,9 @@ using System;
 namespace MuMech
 {
     /// <summary>
-    /// Applies only hard physical lower-bound checks. Strategic deorbit, trim,
-    /// terrain, terminal-divert, and contingency budgets remain unplanned.
+    /// Applies fast snapshot lower-bound checks alongside the complete planner.
+    /// It is diagnostic context only; the AirlessLandingPlan or
+    /// AtmosphericLandingPlan is the V2 feasibility authority.
     /// </summary>
     public static class LandingGuidanceV2PreflightEvaluator
     {
@@ -22,7 +23,7 @@ namespace MuMech
 
             if (snapshot.Body.atmosphere)
                 return New(version, LandingGuidanceV2PreflightState.UnsupportedBody, double.NaN,
-                    brakingDeltaVLowerBound, double.NaN, "Atmospheric V2 preflight is not implemented.");
+                    brakingDeltaVLowerBound, double.NaN, "Atmospheric lower-bound check is deferred to the entry-corridor plan.");
 
             if (!estimate.HasImpact)
                 return New(version, LandingGuidanceV2PreflightState.WaitingForImpactTrajectory, double.NaN,
@@ -44,7 +45,7 @@ namespace MuMech
                     margin, "Usable delta-V is below the inertial impact-velocity lower bound.");
 
             return New(version, LandingGuidanceV2PreflightState.NeedsCompletePlan, localGravity, brakingDeltaVLowerBound,
-                margin, "Lower bounds pass; strategic deorbit, trim, reserve, and terminal profile are not planned yet.");
+                margin, "Snapshot lower bounds pass; use the landing plan below for strategic, trim, reserve, and terminal feasibility.");
         }
 
         private static LandingGuidanceV2PreflightAssessment New(long version, LandingGuidanceV2PreflightState state,

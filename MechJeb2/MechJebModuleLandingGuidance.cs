@@ -241,7 +241,7 @@ namespace MuMech
             LandingGuidanceV2PreflightAssessment assessment = preflight.Assessment;
             if (assessment != null)
             {
-                GUILayout.Label("V2 preflight: " + assessment.State);
+                GUILayout.Label("V2 snapshot check: " + assessment.State);
                 GUILayout.Label(assessment.Reason);
                 if (!double.IsNaN(assessment.LocalGravity))
                     GUILayout.Label("Local gravity: " + assessment.LocalGravity.ToSI() + "m/s²");
