@@ -190,6 +190,16 @@ namespace MuMech
             _v2.PreviewEnabled = GUILayout.Toggle(_v2.PreviewEnabled,
                 "Enable V2 estimator and preflight diagnostics");
 
+            GUILayout.Space(2);
+            GUILayout.Label("V2 airless landing controller: " + _v2.FlightPhase);
+            GUILayout.Label(_v2.ControllerStatus);
+            _v2.V2AutoWarp = GUILayout.Toggle(_v2.V2AutoWarp, "V2 terminal auto-warp");
+            if (_v2.ControllerActive)
+            {
+                if (GUILayout.Button("Abort V2 airless landing")) _v2.AbortAirlessLanding();
+            }
+            else if (GUILayout.Button("Start V2 airless landing")) _v2.StartAirlessLanding();
+
             if (!_v2.PreviewEnabled)
                 return;
 
@@ -238,7 +248,7 @@ namespace MuMech
                 GUILayout.Label("Delta-V above lower bound: " + preflight.DeltaVAboveLowerBound.ToSI() + "m/s");
             }
 
-            GUILayout.Label("Preview only — V2 cannot command engines or warp yet.");
+            GUILayout.Label("V2 controller uses its own strategic burn and terminal hoverslam path. V1 Landing Guidance remains separate.");
         }
 
         public void SetAndLandTargetKSC()
