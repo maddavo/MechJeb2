@@ -25,15 +25,27 @@ namespace MuMech
                 var candidateSnapshot = new LandingGuidanceV2Snapshot(s.Version, s.UT, s.Body, s.Position, s.Velocity + burn,
                     s.Mass, s.AvailableDeltaV, s.MaximumAcceleration, s.TargetLatitude, s.TargetLongitude, false);
                 LandingGuidanceV2Estimate e = AirlessImpactEstimator.Estimate(candidateSnapshot);
-                if (!e.HasImpact) return Reject(s, burn, double.NaN, double.NaN, double.NaN, double.NaN, e, "The strategic deorbit candidate has no valid impact trajectory.");
+                bool targetCorrectionDeferred = false;
+                if (!e.HasImpact)
+                {
+                    // A full target turn can erase the planned periapsis reduction. Keep
+                    // the independently verified sub-surface deorbit so V2 can land.
+                    burn = periapsisBurn;
+                    candidateSnapshot = new LandingGuidanceV2Snapshot(s.Version, s.UT, s.Body, s.Position, s.Velocity + burn,
+                        s.Mass, s.AvailableDeltaV, s.MaximumAcceleration, s.TargetLatitude, s.TargetLongitude, false);
+                    e = AirlessImpactEstimator.Estimate(candidateSnapshot);
+                    targetCorrectionDeferred = true;
+                    if (!e.HasImpact) return Reject(s, burn, double.NaN, double.NaN, double.NaN, double.NaN, e, "The strategic deorbit candidate has no valid impact trajectory.");
+                }
                 Vector3d delta = e.ImpactPosition - TargetAt(s, e.ImpactUT);
                 Vector3d down = Vector3d.Exclude(e.ImpactPosition.normalized, e.ImpactVelocity).normalized;
                 double downrange = Vector3d.Dot(delta, down), cross = Math.Sqrt(Math.Max(0, delta.sqrMagnitude - downrange * downrange));
                 double limit = Math.Max(100, s.Body.Radius * 0.002), terminal = e.ImpactVelocity.magnitude;
-                if (downrange < 0) return Reject(s, burn, terminal, downrange, cross, limit, e, "Candidate is on the short side of the target.");
-                if (downrange > limit || cross > limit) return Reject(s, burn, terminal, downrange, cross, limit, e, "Candidate is outside the permitted long-side or cross-range corridor.");
                 if (s.AvailableDeltaV < burn.magnitude + terminal) return Reject(s, burn, terminal, downrange, cross, limit, e, "Usable delta-V is below the strategic-deorbit plus impact-cancellation lower bound.");
-                return new AirlessLandingPlan(s.Version, AirlessLandingPlanState.Candidate, burn, terminal, downrange, cross, limit, e, s.AvailableDeltaV, "Candidate meets the current long-side corridor and lower-bound budget; trim, reserve, and terminal profile remain unplanned.");
+                return new AirlessLandingPlan(s.Version, AirlessLandingPlanState.Candidate, burn, terminal, downrange, cross, limit, e, s.AvailableDeltaV,
+                    targetCorrectionDeferred
+                        ? "Ballistic deorbit is valid; target correction is deferred because the full target turn would miss the body."
+                        : "Target-directed ballistic deorbit is valid; terminal hoverslam will manage touchdown.");
             }
             catch (Exception ex) { return Reject(s, Vector3d.zero, double.NaN, double.NaN, double.NaN, double.NaN, null, "Airless strategic-deorbit planning failed: " + ex.GetType().Name); }
         }
