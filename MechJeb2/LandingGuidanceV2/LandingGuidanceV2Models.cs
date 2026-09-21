@@ -197,11 +197,17 @@ namespace MuMech
         public readonly double EndpointUncertainty;
         public readonly double TerminalReserve;
         public readonly double LandingMargin;
+        public readonly Vector3d StrategicEntryDeltaV;
+        public readonly double StrategicEntryBurnUT;
+        public readonly double EntryUT;
+        public readonly double EntryTargetError;
         public readonly string Reason;
 
         public AtmosphericLandingPlan(long snapshotVersion, AtmosphericLandingPlanState state,
             double predictedTargetError, double entryCorridorRadius, double endpointUncertainty,
-            double terminalReserve, double landingMargin, string reason)
+            double terminalReserve, double landingMargin, string reason,
+            Vector3d strategicEntryDeltaV = default(Vector3d), double strategicEntryBurnUT = double.NaN,
+            double entryUT = double.NaN, double entryTargetError = double.NaN)
         {
             SnapshotVersion = snapshotVersion;
             State = state;
@@ -210,6 +216,10 @@ namespace MuMech
             EndpointUncertainty = endpointUncertainty;
             TerminalReserve = terminalReserve;
             LandingMargin = landingMargin;
+            StrategicEntryDeltaV = strategicEntryDeltaV;
+            StrategicEntryBurnUT = strategicEntryBurnUT;
+            EntryUT = entryUT;
+            EntryTargetError = entryTargetError;
             Reason = reason;
         }
     }

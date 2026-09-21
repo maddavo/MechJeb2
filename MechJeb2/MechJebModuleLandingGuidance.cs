@@ -274,6 +274,11 @@ namespace MuMech
                     GUILayout.Label("Robust entry corridor: " + atmosphericPlan.EntryCorridorRadius.ToSI() + "m");
                 if (!double.IsNaN(atmosphericPlan.EndpointUncertainty))
                     GUILayout.Label("Atmospheric endpoint uncertainty: " + atmosphericPlan.EndpointUncertainty.ToSI() + "m");
+                if (!double.IsNaN(atmosphericPlan.StrategicEntryBurnUT))
+                {
+                    GUILayout.Label("Strategic entry burn: " + atmosphericPlan.StrategicEntryDeltaV.magnitude.ToSI() + "m/s");
+                    GUILayout.Label("Strategic entry burn in: " + Math.Max(0, atmosphericPlan.StrategicEntryBurnUT - Planetarium.GetUniversalTime()).ToSI() + "s");
+                }
             }
 
             if (estimate.HasImpact)

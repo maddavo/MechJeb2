@@ -728,11 +728,13 @@ namespace MuMech
                     JsonNumber(airlessPlan?.PlaneAlignmentBurnUT ?? double.NaN), JsonNumber(airlessPlan?.StrategicBurnUT ?? double.NaN),
                     JsonNumber(airlessPlan?.BrakingEntryUT ?? double.NaN));
                 baseFields += string.Format(CultureInfo.InvariantCulture,
-                    ",\"atmosphericPlanState\":{0},\"atmosphericTargetError\":{1},\"atmosphericEntryCorridor\":{2},\"atmosphericEndpointUncertainty\":{3},\"atmosphericTerminalReserve\":{4},\"atmosphericLandingMargin\":{5},\"atmosphericPlanReason\":{6}",
+                    ",\"atmosphericPlanState\":{0},\"atmosphericTargetError\":{1},\"atmosphericEntryCorridor\":{2},\"atmosphericEndpointUncertainty\":{3},\"atmosphericTerminalReserve\":{4},\"atmosphericLandingMargin\":{5},\"atmosphericPlanReason\":{6},\"atmosphericStrategicEntryDeltaV\":{7},\"atmosphericStrategicEntryBurnUT\":{8},\"atmosphericEntryUT\":{9},\"atmosphericEntryTargetError\":{10}",
                     JsonString(atmosphericPlan?.State.ToString()), JsonNumber(atmosphericPlan?.PredictedTargetError ?? double.NaN),
                     JsonNumber(atmosphericPlan?.EntryCorridorRadius ?? double.NaN), JsonNumber(atmosphericPlan?.EndpointUncertainty ?? double.NaN),
                     JsonNumber(atmosphericPlan?.TerminalReserve ?? double.NaN), JsonNumber(atmosphericPlan?.LandingMargin ?? double.NaN),
-                    JsonString(atmosphericPlan?.Reason));
+                    JsonString(atmosphericPlan?.Reason), JsonNumber(atmosphericPlan?.StrategicEntryDeltaV.magnitude ?? double.NaN),
+                    JsonNumber(atmosphericPlan?.StrategicEntryBurnUT ?? double.NaN), JsonNumber(atmosphericPlan?.EntryUT ?? double.NaN),
+                    JsonNumber(atmosphericPlan?.EntryTargetError ?? double.NaN));
                 baseFields += ",\"terrainAltitude\":" + JsonNumber(estimate.TerrainAltitude);
                 baseFields += string.Format(CultureInfo.InvariantCulture,
                     ",\"v2OriginalTargetLat\":{0},\"v2OriginalTargetLon\":{1},\"v2ActiveTargetLat\":{2},\"v2ActiveTargetLon\":{3},\"v2PredictedTargetLat\":{4},\"v2PredictedTargetLon\":{5},\"v2PredictionSnapshotVersion\":{6},\"v2VisualRebaseDone\":{7},\"v2SiteAccepted\":{8},\"v2SiteSlopeDegrees\":{9},\"v2SiteRoughness\":{10},\"v2SiteDetail\":{11},\"v2FiniteBurn\":{12},\"v2PlannedBurnDeltaV\":{13},\"v2DeliveredBurnDeltaV\":{14}",
