@@ -52,6 +52,38 @@ namespace MuMech
             catch (Exception ex) { return Reject(snapshot, "Airless strategic-deorbit planning failed: " + ex.GetType().Name); }
         }
 
+        public static bool TryPlanBoundedTrim(LandingGuidanceV2Snapshot snapshot, double trimBudget,
+            out Vector3d correction, out LandingGuidanceV2Estimate improvedEstimate)
+        {
+            correction = Vector3d.zero;
+            improvedEstimate = null;
+            if (snapshot == null || trimBudget <= 0) return false;
+            LandingGuidanceV2Estimate current = AirlessImpactEstimator.Estimate(snapshot);
+            if (!current.HasImpact) return false;
+            Vector3d direction = Vector3d.Exclude(snapshot.Position.normalized,
+                TargetAt(snapshot, current.ImpactUT) - snapshot.Position);
+            if (direction.sqrMagnitude < 1e-9) return false;
+            direction.Normalize();
+            double bestError = current.TargetError;
+            for (int i = 1; i <= 8; ++i)
+            {
+                double magnitude = trimBudget * i / 8.0;
+                for (int sign = -1; sign <= 1; sign += 2)
+                {
+                    Vector3d candidateBurn = sign * magnitude * direction;
+                    var candidateSnapshot = new LandingGuidanceV2Snapshot(snapshot.Version, snapshot.UT, snapshot.Body,
+                        snapshot.Position, snapshot.Velocity + candidateBurn, snapshot.Mass, snapshot.AvailableDeltaV,
+                        snapshot.MaximumAcceleration, snapshot.TargetLatitude, snapshot.TargetLongitude, false);
+                    LandingGuidanceV2Estimate candidate = AirlessImpactEstimator.Estimate(candidateSnapshot);
+                    if (!candidate.HasImpact || candidate.TargetError >= bestError) continue;
+                    correction = candidateBurn;
+                    improvedEstimate = candidate;
+                    bestError = candidate.TargetError;
+                }
+            }
+            return improvedEstimate != null;
+        }
+
         private static void Consider(Candidate candidate, ref Candidate best, ref double bestMiss)
         {
             if (!candidate.Valid) return;

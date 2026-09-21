@@ -26,11 +26,12 @@ namespace MuMech
         private V2FlightPhase _flightPhase;
         private AirlessLandingPlan _activePlan;
         private Vector3d _burnTargetVelocity;
+        private Vector3d _trimDeltaV;
         private Vector3d _lastAdjustedVelocity;
         private string _lastV2Phase;
         private readonly DeltaSigmaThrottleModulator _terminalPwm = new DeltaSigmaThrottleModulator(0.02, 0.50);
 
-        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, Coast, BrakingApproach, TerminalDescent, Complete, Rejected }
+        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, AlignTrim, BoundedTrim, Coast, BrakingApproach, TerminalDescent, Complete, Rejected }
 
         [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
         public bool PreviewEnabled;
@@ -44,7 +45,7 @@ namespace MuMech
         public LandingGuidanceV2Preflight Preflight { get; private set; }
 
         public bool IsPreviewOnly => _flightPhase == V2FlightPhase.Idle || _flightPhase == V2FlightPhase.Rejected || _flightPhase == V2FlightPhase.Complete;
-        public bool ControllerActive => _flightPhase == V2FlightPhase.Preflight || _flightPhase == V2FlightPhase.WarpToStrategic || _flightPhase == V2FlightPhase.AlignPlane || _flightPhase == V2FlightPhase.PlaneAlignment || _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.Coast || _flightPhase == V2FlightPhase.BrakingApproach || _flightPhase == V2FlightPhase.TerminalDescent;
+        public bool ControllerActive => _flightPhase == V2FlightPhase.Preflight || _flightPhase == V2FlightPhase.WarpToStrategic || _flightPhase == V2FlightPhase.AlignPlane || _flightPhase == V2FlightPhase.PlaneAlignment || _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.AlignTrim || _flightPhase == V2FlightPhase.BoundedTrim || _flightPhase == V2FlightPhase.Coast || _flightPhase == V2FlightPhase.BrakingApproach || _flightPhase == V2FlightPhase.TerminalDescent;
         public V2FlightPhase FlightPhase => _flightPhase;
         public string ControllerStatus { get; private set; } = "Idle";
 
@@ -143,9 +144,39 @@ namespace MuMech
                             RejectController("V2 strategic burn did not produce a fresh valid impact trajectory.");
                             break;
                         }
-                        TransitionTo(V2FlightPhase.Coast, "Strategic deorbit complete; coasting to V2 braking approach.");
+                        LandingGuidanceV2Snapshot trimSnapshot = CaptureSnapshot();
+                        if (Preflight.Estimate.TargetError > _activePlan.CorridorLimit &&
+                            AirlessLandingPlanner.TryPlanBoundedTrim(trimSnapshot, _activePlan.TrimBudget, out _trimDeltaV, out LandingGuidanceV2Estimate trimEstimate))
+                        {
+                            _burnTargetVelocity = VesselState.OrbitalVelocity + _trimDeltaV;
+                            TransitionTo(V2FlightPhase.AlignTrim, "A bounded V2 trim improved the fresh target estimate.");
+                        }
+                        else if (Preflight.Estimate.TargetError <= _activePlan.CorridorLimit)
+                            TransitionTo(V2FlightPhase.Coast, "Strategic deorbit complete; coasting to V2 braking approach.");
+                        else
+                            RejectController("V2 target error is outside the corridor and no bounded trim is feasible.");
                     }
                     else Core.Thrust.ThrustForDv(remainingDv, 0.5);
+                    break;
+                case V2FlightPhase.AlignTrim:
+                    Core.Thrust.ThrustOff();
+                    Core.Attitude.attitudeTo(_trimDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    if (Core.Attitude.attitudeError < 2.0) TransitionTo(V2FlightPhase.BoundedTrim, "Executing one bounded V2 trim burn.");
+                    break;
+                case V2FlightPhase.BoundedTrim:
+                    Core.Attitude.attitudeTo(_trimDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    if (Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _trimDeltaV.normalized) <= 0.25)
+                    {
+                        Core.Thrust.ThrustOff();
+                        RefreshPreflight();
+                        if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact)
+                        {
+                            RejectController("V2 trim did not retain a valid impact trajectory.");
+                            break;
+                        }
+                        TransitionTo(V2FlightPhase.Coast, "Bounded V2 trim complete; coasting to braking approach.");
+                    }
+                    else Core.Thrust.ThrustForDv(Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _trimDeltaV.normalized), 0.5);
                     break;
                 case V2FlightPhase.Coast:
                     Core.Thrust.ThrustOff();
