@@ -896,7 +896,8 @@ namespace MuMech
 
             return new LandingGuidanceV2Snapshot(++_snapshotVersion, VesselState.Time, MainBody,
                 VesselState.OrbitalPosition, VesselState.OrbitalVelocity, VesselState.Mass, availableDeltaV,
-                VesselState.LimitedMaxThrustAcceleration, V2ActiveTargetLatitude, V2ActiveTargetLongitude,
+                VesselState.LimitedMaxThrustAcceleration, VesselState.MinThrustAcceleration,
+                V2ActiveTargetLatitude, V2ActiveTargetLongitude,
                 Vessel.LandedOrSplashed);
         }
 
@@ -955,23 +956,23 @@ namespace MuMech
                 string baseFields = string.Format(CultureInfo.InvariantCulture,
                     "\"snapshotVersion\":{0},\"ut\":{1},\"body\":\"{2}\",\"targetLat\":{3},\"targetLon\":{4}," +
                     "\"position\":[{5},{6},{7}],\"velocity\":[{8},{9},{10}],\"mass\":{11}," +
-                    "\"availableDeltaV\":{12},\"maxAcceleration\":{13},\"outcome\":\"{14}\",\"impactUT\":{15}," +
-                    "\"targetError\":{16},\"brakingDeltaVLowerBound\":{17},\"deltaVAboveLowerBound\":{18}," +
-                    "\"v1Phase\":{19},\"v1Status\":{20},\"v1PredictionVersion\":{21},\"v1PredictionOutcome\":{22}," +
-                    "\"v1PredictionEndLat\":{23},\"v1PredictionEndLon\":{24},\"v1PredictionEndUT\":{25},\"v1TargetError\":{26}," +
-                    "\"warpRate\":{27},\"attitudeErrorDegrees\":{28},\"commandedThrottle\":{29},\"flightControlThrottle\":{30}," +
-                    "\"actualThrustAcceleration\":{31},\"forwardThrustAcceleration\":{32},\"mechjebRcsEnabled\":{33}," +
-                    "\"rcsActionGroupEnabled\":{34},\"rcsCommand\":[{35},{36},{37}],\"burnActive\":{38}," +
-                    "\"isLandedOrSplashed\":{39},\"estimatorApplicable\":{40},\"flightDataValid\":{41},\"validityReason\":{42}," +
-                    "\"estimatorRepeatOutcome\":{43},\"estimatorRepeatImpactUT\":{44},\"estimatorDeterministic\":{45},\"estimatorValidationDetail\":{46}," +
-                    "\"preflightState\":{47},\"preflightLocalGravity\":{48},\"preflightReason\":{49}," +
-                    "\"airlessPlanState\":{50},\"strategicDeorbitDeltaV\":{51},\"planTerminalLowerBound\":{52},\"planLowerBoundMargin\":{53}," +
-                    "\"planDownrange\":{54},\"planCrossRange\":{55},\"planCorridorLimit\":{56},\"planReason\":{57},\"v2CommandAuthorized\":{58},\"v2Phase\":{59},\"v2Status\":{60},\"v2AutoWarp\":{61},\"planPlaneBurnUT\":{62},\"planStrategicBurnUT\":{63},\"planBrakingEntryUT\":{64}",
+                    "\"availableDeltaV\":{12},\"maxAcceleration\":{13},\"minAcceleration\":{14},\"outcome\":\"{15}\",\"impactUT\":{16}," +
+                    "\"targetError\":{17},\"brakingDeltaVLowerBound\":{18},\"deltaVAboveLowerBound\":{19}," +
+                    "\"v1Phase\":{20},\"v1Status\":{21},\"v1PredictionVersion\":{22},\"v1PredictionOutcome\":{23}," +
+                    "\"v1PredictionEndLat\":{24},\"v1PredictionEndLon\":{25},\"v1PredictionEndUT\":{26},\"v1TargetError\":{27}," +
+                    "\"warpRate\":{28},\"attitudeErrorDegrees\":{29},\"commandedThrottle\":{30},\"flightControlThrottle\":{31}," +
+                    "\"actualThrustAcceleration\":{32},\"forwardThrustAcceleration\":{33},\"mechjebRcsEnabled\":{34}," +
+                    "\"rcsActionGroupEnabled\":{35},\"rcsCommand\":[{36},{37},{38}],\"burnActive\":{39}," +
+                    "\"isLandedOrSplashed\":{40},\"estimatorApplicable\":{41},\"flightDataValid\":{42},\"validityReason\":{43}," +
+                    "\"estimatorRepeatOutcome\":{44},\"estimatorRepeatImpactUT\":{45},\"estimatorDeterministic\":{46},\"estimatorValidationDetail\":{47}," +
+                    "\"preflightState\":{48},\"preflightLocalGravity\":{49},\"preflightReason\":{50}," +
+                    "\"airlessPlanState\":{51},\"strategicDeorbitDeltaV\":{52},\"planTerminalLowerBound\":{53},\"planLowerBoundMargin\":{54}," +
+                    "\"planDownrange\":{55},\"planCrossRange\":{56},\"planCorridorLimit\":{57},\"planReason\":{58},\"v2CommandAuthorized\":{59},\"v2Phase\":{60},\"v2Status\":{61},\"v2AutoWarp\":{62},\"planPlaneBurnUT\":{63},\"planStrategicBurnUT\":{64},\"planBrakingEntryUT\":{65}",
                     snapshot.Version, JsonNumber(snapshot.UT), EscapeJson(snapshot.Body.bodyName), JsonNumber(snapshot.TargetLatitude),
                     JsonNumber(snapshot.TargetLongitude), JsonNumber(snapshot.Position.x), JsonNumber(snapshot.Position.y),
                     JsonNumber(snapshot.Position.z), JsonNumber(snapshot.Velocity.x), JsonNumber(snapshot.Velocity.y),
                     JsonNumber(snapshot.Velocity.z), JsonNumber(snapshot.Mass), JsonNumber(snapshot.AvailableDeltaV),
-                    JsonNumber(snapshot.MaximumAcceleration), estimate.Outcome, JsonNumber(estimate.ImpactUT), JsonNumber(estimate.TargetError),
+                    JsonNumber(snapshot.MaximumAcceleration), JsonNumber(snapshot.MinimumAcceleration), estimate.Outcome, JsonNumber(estimate.ImpactUT), JsonNumber(estimate.TargetError),
                     JsonNumber(preflight.BrakingDeltaVLowerBound), JsonNumber(preflight.DeltaVAboveLowerBound), v1Phase, v1Status,
                     _v1PredictionVersion, predOutcome, JsonNumber(predictionLat), JsonNumber(predictionLon),
                     JsonNumber(prediction?.EndUT ?? double.NaN), JsonNumber(predictionError), JsonNumber(warpRate),

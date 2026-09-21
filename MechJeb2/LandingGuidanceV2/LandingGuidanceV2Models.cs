@@ -48,12 +48,13 @@ namespace MuMech
         public readonly double Mass;
         public readonly double AvailableDeltaV;
         public readonly double MaximumAcceleration;
+        public readonly double MinimumAcceleration;
         public readonly double TargetLatitude;
         public readonly double TargetLongitude;
         public readonly bool IsLandedOrSplashed;
 
         public LandingGuidanceV2Snapshot(long version, double ut, CelestialBody body, Vector3d position,
-            Vector3d velocity, double mass, double availableDeltaV, double maximumAcceleration,
+            Vector3d velocity, double mass, double availableDeltaV, double maximumAcceleration, double minimumAcceleration,
             double targetLatitude, double targetLongitude, bool isLandedOrSplashed)
         {
             Version = version;
@@ -64,6 +65,7 @@ namespace MuMech
             Mass = mass;
             AvailableDeltaV = availableDeltaV;
             MaximumAcceleration = maximumAcceleration;
+            MinimumAcceleration = minimumAcceleration;
             TargetLatitude = targetLatitude;
             TargetLongitude = targetLongitude;
             IsLandedOrSplashed = isLandedOrSplashed;

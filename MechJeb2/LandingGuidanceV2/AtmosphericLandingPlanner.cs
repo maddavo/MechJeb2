@@ -73,7 +73,7 @@ namespace MuMech
             double radius = snapshot.Body.Radius + Math.Max(0, estimate.EndASL);
             double gravity = snapshot.Body.gravParameter / (radius * radius);
             AirlessLandingBudget terminalBudget = AirlessLandingBudget.For(strategic.DeltaV.magnitude, endpointSpeed,
-                snapshot.MaximumAcceleration, gravity, uncertainty, corridor);
+                snapshot.MaximumAcceleration, gravity, uncertainty, corridor, snapshot.MinimumAcceleration);
             double margin = snapshot.AvailableDeltaV - terminalBudget.Total;
             if (targetError > corridor)
                 return new AtmosphericLandingPlan(snapshot.Version, AtmosphericLandingPlanState.Rejected,

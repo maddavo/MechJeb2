@@ -53,5 +53,15 @@ namespace MechJebLibTest
             Assert.True(lowTwr.BrakingTime > highTwr.BrakingTime);
             Assert.True(lowTwr.Contingency > highTwr.Contingency);
         }
+
+        [Fact]
+        public void HighMinimumThrottleRetainsPulseResponseReserve()
+        {
+            AirlessLandingBudget throttleable = AirlessLandingBudget.For(120, 520, 25, 1.63, 40, 400, 0);
+            AirlessLandingBudget highMinimumThrottle = AirlessLandingBudget.For(120, 520, 25, 1.63, 40, 400, 8);
+
+            Assert.True(highMinimumThrottle.MinimumThrottleResponse > 0);
+            Assert.True(highMinimumThrottle.Total > throttleable.Total);
+        }
     }
 }

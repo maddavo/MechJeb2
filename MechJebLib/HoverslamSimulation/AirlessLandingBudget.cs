@@ -14,17 +14,19 @@ namespace MechJebLib.HoverslamSimulation
         public readonly double Trim;
         public readonly double Reserve;
         public readonly double Contingency;
+        public readonly double MinimumThrottleResponse;
         public readonly double BrakingTime;
         public readonly double Total;
 
         private AirlessLandingBudget(double strategic, double terminal, double trim, double reserve, double contingency,
-            double brakingTime)
+            double minimumThrottleResponse, double brakingTime)
         {
             Strategic = strategic;
             Terminal = terminal;
             Trim = trim;
             Reserve = reserve;
             Contingency = contingency;
+            MinimumThrottleResponse = minimumThrottleResponse;
             BrakingTime = brakingTime;
             Total = strategic + terminal + trim + reserve + contingency;
         }
@@ -36,11 +38,12 @@ namespace MechJebLib.HoverslamSimulation
         /// </summary>
         public static AirlessLandingBudget For(double strategic, double impactSpeed,
             double maximumAcceleration, double localGravity, double targetUncertainty,
-            double corridorRadius)
+            double corridorRadius, double minimumAcceleration = 0)
         {
             if (maximumAcceleration <= localGravity || localGravity < 0 || double.IsNaN(impactSpeed))
                 return new AirlessLandingBudget(strategic, double.PositiveInfinity,
-                    double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity);
+                    double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity,
+                    double.PositiveInfinity);
 
             double netDeceleration = maximumAcceleration - localGravity;
             double brakingTime = Math.Max(0, impactSpeed) / netDeceleration;
@@ -55,7 +58,13 @@ namespace MechJebLib.HoverslamSimulation
 
             double thrustMargin = Math.Max(0.05, netDeceleration / maximumAcceleration);
             double contingency = localGravity * (1.0 + 1.0 / thrustMargin);
-            return new AirlessLandingBudget(strategic, terminal, trim, reserve, contingency, brakingTime);
+            // The terminal PWM can pulse an engine whose minimum throttle is
+            // above hover, but it needs an explicit response allocation. This
+            // replaces the old ideal continuous-throttle assumption.
+            double minimumThrottleResponse = Math.Max(0, minimumAcceleration - localGravity) * 0.50;
+            contingency += minimumThrottleResponse;
+            return new AirlessLandingBudget(strategic, terminal, trim, reserve, contingency,
+                minimumThrottleResponse, brakingTime);
         }
 
         public bool Fits(double availableDeltaV) => availableDeltaV >= Total;
