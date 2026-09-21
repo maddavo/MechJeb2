@@ -22,6 +22,7 @@ namespace MuMech
         private long _snapshotVersion;
         private long _v1PredictionVersion;
         private ReentrySimulation.Result _lastV1Prediction;
+        private ReentrySimulation.Result _lastAtmosphericPlanPrediction;
         private string _lastV1Phase;
         private bool? _lastV1Burning;
         private bool? _lastWarped;
@@ -616,7 +617,19 @@ namespace MuMech
                 airlessPlan = Preflight.AirlessPlan;
             }
             ReentrySimulation.Result atmosphericEstimate = Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Result;
-            AtmosphericLandingPlan atmosphericPlan = AtmosphericLandingPlanner.Plan(snapshot, atmosphericEstimate);
+            AtmosphericLandingPlan atmosphericPlan;
+            bool refreshAtmosphericPlan = forcePlan || Preflight?.AtmosphericPlan == null ||
+                VesselState.Time >= _nextPlanRefreshUT || !ReferenceEquals(atmosphericEstimate, _lastAtmosphericPlanPrediction);
+            if (refreshAtmosphericPlan)
+            {
+                atmosphericPlan = AtmosphericLandingPlanner.Plan(snapshot, atmosphericEstimate);
+                _lastAtmosphericPlanPrediction = atmosphericEstimate;
+                _nextPlanRefreshUT = VesselState.Time + PlanRefreshInterval;
+            }
+            else
+            {
+                atmosphericPlan = Preflight.AtmosphericPlan;
+            }
             Preflight = new LandingGuidanceV2Preflight(snapshot, estimate, estimatorValidation, assessment, airlessPlan,
                 brakingLowerBound, atmosphericPlan);
             WriteCorrelatedTrace(Preflight);
