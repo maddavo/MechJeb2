@@ -15,12 +15,26 @@ namespace MuMech
 
         public static AtmosphericLandingPlan Plan(LandingGuidanceV2Snapshot snapshot, ReentrySimulation.Result estimate)
         {
+            return Plan(snapshot, estimate, FindStrategicEntry(snapshot));
+        }
+
+        // A candidate simulator is launched from a particular immutable plan.
+        // Use that same burn in the acceptance calculation: recomputing a new
+        // burn while reading the old simulation would falsely correlate them.
+        public static AtmosphericLandingPlan Plan(LandingGuidanceV2Snapshot snapshot, ReentrySimulation.Result estimate,
+            Vector3d strategicDeltaV, double strategicBurnUT, double entryUT, double entryTargetError)
+        {
+            return Plan(snapshot, estimate, new AtmosphericEntryCandidate(strategicDeltaV, strategicBurnUT, entryUT, entryTargetError));
+        }
+
+        private static AtmosphericLandingPlan Plan(LandingGuidanceV2Snapshot snapshot, ReentrySimulation.Result estimate,
+            AtmosphericEntryCandidate strategic)
+        {
             if (snapshot == null || snapshot.Body == null || !snapshot.Body.atmosphere)
                 return new AtmosphericLandingPlan(snapshot?.Version ?? -1, AtmosphericLandingPlanState.NotApplicable,
                     double.NaN, double.NaN, double.NaN, double.NaN, double.NaN,
                     "An atmospheric body snapshot is required.");
 
-            AtmosphericEntryCandidate strategic = FindStrategicEntry(snapshot);
             if (estimate == null || estimate.Body != snapshot.Body)
                 return new AtmosphericLandingPlan(snapshot.Version, AtmosphericLandingPlanState.WaitingForEstimate,
                     double.NaN, double.NaN, double.NaN, double.NaN, double.NaN,
@@ -92,6 +106,22 @@ namespace MuMech
                 double entryRadius = snapshot.Body.Radius + interfaceAltitude;
                 double desiredPe = snapshot.Body.Radius + Math.Max(1000.0, snapshot.Body.RealMaxAtmosphereAltitude() * 0.15);
                 double entryCorridor = Math.Max(5000.0, Math.Min(25000.0, snapshot.Body.RealMaxAtmosphereAltitude() * 0.25));
+                // Once the actual orbit already enters the atmosphere there is
+                // no second strategic burn to plan. Validate that exact
+                // zero-delta-V trajectory in the re-entry simulator instead.
+                if (coast.PeA <= interfaceAltitude)
+                {
+                    double entryUT = coast.NextTimeOfRadius(snapshot.UT, entryRadius);
+                    if (Finite(entryUT) && entryUT >= snapshot.UT)
+                    {
+                        Vector3d entryPosition = coast.WorldBCIPositionAtUT(entryUT);
+                        Vector3d target = TargetAt(snapshot, entryUT);
+                        double error = Vector3d.Distance(entryPosition.normalized * snapshot.Body.Radius,
+                            target.normalized * snapshot.Body.Radius);
+                        if (error <= entryCorridor)
+                            return new AtmosphericEntryCandidate(Vector3d.zero, snapshot.UT, entryUT, error);
+                    }
+                }
                 AtmosphericEntryCandidate best = default(AtmosphericEntryCandidate);
                 double bestScore = double.PositiveInfinity;
                 for (int i = 0; i <= StrategicSamples; ++i)
