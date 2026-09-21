@@ -66,9 +66,9 @@ namespace MuMech
 
         public bool StartAirlessLanding()
         {
+            if (!HighLogic.LoadedSceneIsFlight || !Core.Target.PositionTargetExists)
+                return RejectController("Select a landing target before starting V2.");
             RefreshPreflight();
-            if (Core.Landing != null && Core.Landing.Enabled) return RejectController("V1 Landing Guidance is active. Disengage it before starting V2.");
-            if (Core.GetComputerModule<MechJebModuleHoverslamAutopilot>()?.Enabled == true) return RejectController("Hoverslam is active. Disengage it before starting V2.");
             if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate) return RejectController("V2 requires a current airless strategic-deorbit candidate.");
             _activePlan = Preflight.AirlessPlan;
             Core.Thrust.Users.Add(this); Core.Attitude.Users.Add(this);
