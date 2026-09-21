@@ -61,21 +61,31 @@ namespace MuMech
                 // altitude without allowing a mutable terrain query to feed an
                 // unbounded predictor loop.
                 double terrainAltitude = 0;
+                bool terrainRefined = false;
                 for (int i = 0; i < 4; ++i)
                 {
-                    Vector3d trialPosition = orbit.WorldBCIPositionAtUT(impactUT);
-                    snapshot.Body.GetLatLngAltAtUT(impactUT, trialPosition, out double latitude, out double longitude, out _);
-                    terrainAltitude = snapshot.Body.TerrainAltitude(latitude, longitude, true);
-                    double terrainRadius = surfaceRadius + Math.Max(0, terrainAltitude);
-                    double refinedUT = orbit.NextTimeOfRadius(snapshot.UT, terrainRadius);
-                    if (!IsFinite(refinedUT) || refinedUT < snapshot.UT)
-                        break;
-                    if (Math.Abs(refinedUT - impactUT) < 0.01)
+                    try
                     {
+                        Vector3d trialPosition = orbit.WorldBCIPositionAtUT(impactUT);
+                        snapshot.Body.GetLatLngAltAtUT(impactUT, trialPosition, out double latitude, out double longitude, out _);
+                        terrainAltitude = snapshot.Body.TerrainAltitude(latitude, longitude, true);
+                        double terrainRadius = surfaceRadius + Math.Max(0, terrainAltitude);
+                        double refinedUT = orbit.NextTimeOfRadius(snapshot.UT, terrainRadius);
+                        if (!IsFinite(refinedUT) || refinedUT < snapshot.UT)
+                            break;
+                        terrainRefined = true;
+                        if (Math.Abs(refinedUT - impactUT) < 0.01)
+                        {
+                            impactUT = refinedUT;
+                            break;
+                        }
                         impactUT = refinedUT;
+                    }
+                    catch (Exception)
+                    {
+                        terrainAltitude = double.NaN;
                         break;
                     }
-                    impactUT = refinedUT;
                 }
 
                 Vector3d impactPosition = orbit.WorldBCIPositionAtUT(impactUT);
@@ -85,7 +95,9 @@ namespace MuMech
 
                 return new LandingGuidanceV2Estimate(snapshot.Version, LandingGuidanceV2EstimateOutcome.Impact, impactUT,
                     impactPosition, impactVelocity, targetError,
-                    "Deterministic airless conic intersection with bounded terrain refinement.", terrainAltitude);
+                    terrainRefined
+                        ? "Deterministic airless conic intersection with bounded terrain refinement."
+                        : "Deterministic airless conic intersection; terrain refinement was unavailable.", terrainAltitude);
             }
             catch (Exception ex)
             {
