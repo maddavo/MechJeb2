@@ -149,6 +149,9 @@ namespace MuMech
     {
         public readonly long SnapshotVersion;
         public readonly AirlessLandingPlanState State;
+        public readonly Vector3d PlaneAlignmentDeltaV;
+        public readonly double PlaneAlignmentDeltaVMagnitude;
+        public readonly double PlaneAlignmentBurnUT;
         public readonly Vector3d StrategicDeorbitDeltaV;
         public readonly double StrategicDeorbitDeltaVMagnitude;
         public readonly double StrategicBurnUT;
@@ -169,10 +172,14 @@ namespace MuMech
         public AirlessLandingPlan(long snapshotVersion, AirlessLandingPlanState state, Vector3d strategicDeorbitDeltaV,
             double terminalBrakingLowerBound, double signedDownrange, double crossRange, double corridorLimit,
             LandingGuidanceV2Estimate candidateEstimate, double availableDeltaV, string reason, double strategicBurnUT = double.NaN,
-            double trimBudget = 0, double terminalDivertReserve = 0, double contingency = 0)
+            double trimBudget = 0, double terminalDivertReserve = 0, double contingency = 0,
+            Vector3d planeAlignmentDeltaV = default(Vector3d))
         {
             SnapshotVersion = snapshotVersion;
             State = state;
+            PlaneAlignmentDeltaV = planeAlignmentDeltaV;
+            PlaneAlignmentDeltaVMagnitude = planeAlignmentDeltaV.magnitude;
+            PlaneAlignmentBurnUT = strategicBurnUT;
             StrategicDeorbitDeltaV = strategicDeorbitDeltaV;
             StrategicDeorbitDeltaVMagnitude = strategicDeorbitDeltaV.magnitude;
             StrategicBurnUT = strategicBurnUT;
@@ -180,7 +187,7 @@ namespace MuMech
             TrimBudget = trimBudget;
             TerminalDivertReserve = terminalDivertReserve;
             Contingency = contingency;
-            TotalLowerBound = StrategicDeorbitDeltaVMagnitude + terminalBrakingLowerBound + trimBudget + terminalDivertReserve + contingency;
+            TotalLowerBound = PlaneAlignmentDeltaVMagnitude + StrategicDeorbitDeltaVMagnitude + terminalBrakingLowerBound + trimBudget + terminalDivertReserve + contingency;
             LowerBoundMargin = availableDeltaV - TotalLowerBound;
             SignedDownrange = signedDownrange;
             CrossRange = crossRange;

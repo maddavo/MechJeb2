@@ -30,7 +30,7 @@ namespace MuMech
         private string _lastV2Phase;
         private readonly DeltaSigmaThrottleModulator _terminalPwm = new DeltaSigmaThrottleModulator(0.02, 0.50);
 
-        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignStrategicBurn, StrategicBurn, Coast, BrakingApproach, TerminalDescent, Complete, Rejected }
+        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, Coast, BrakingApproach, TerminalDescent, Complete, Rejected }
 
         [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
         public bool PreviewEnabled;
@@ -44,7 +44,7 @@ namespace MuMech
         public LandingGuidanceV2Preflight Preflight { get; private set; }
 
         public bool IsPreviewOnly => _flightPhase == V2FlightPhase.Idle || _flightPhase == V2FlightPhase.Rejected || _flightPhase == V2FlightPhase.Complete;
-        public bool ControllerActive => _flightPhase == V2FlightPhase.Preflight || _flightPhase == V2FlightPhase.WarpToStrategic || _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.Coast || _flightPhase == V2FlightPhase.BrakingApproach || _flightPhase == V2FlightPhase.TerminalDescent;
+        public bool ControllerActive => _flightPhase == V2FlightPhase.Preflight || _flightPhase == V2FlightPhase.WarpToStrategic || _flightPhase == V2FlightPhase.AlignPlane || _flightPhase == V2FlightPhase.PlaneAlignment || _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.Coast || _flightPhase == V2FlightPhase.BrakingApproach || _flightPhase == V2FlightPhase.TerminalDescent;
         public V2FlightPhase FlightPhase => _flightPhase;
         public string ControllerStatus { get; private set; } = "Idle";
 
@@ -106,8 +106,26 @@ namespace MuMech
                     _activePlan = Preflight.AirlessPlan;
                     if (_activePlan.StrategicBurnUT > VesselState.Time + 25.0)
                         break;
-                    _burnTargetVelocity = VesselState.OrbitalVelocity + _activePlan.StrategicDeorbitDeltaV;
-                    TransitionTo(V2FlightPhase.AlignStrategicBurn, "Aligning for the validated V2 strategic deorbit burn.");
+                    _burnTargetVelocity = VesselState.OrbitalVelocity + _activePlan.PlaneAlignmentDeltaV;
+                    TransitionTo(_activePlan.PlaneAlignmentDeltaVMagnitude > 0.5 ? V2FlightPhase.AlignPlane : V2FlightPhase.AlignStrategicBurn,
+                        _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5 ? "Aligning for the validated V2 plane-alignment burn." : "Aligning for the validated V2 strategic deorbit burn.");
+                    break;
+                case V2FlightPhase.AlignPlane:
+                    Core.Thrust.ThrustOff();
+                    Core.Attitude.attitudeTo(_activePlan.PlaneAlignmentDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    if (Core.Attitude.attitudeError < 2.0) TransitionTo(V2FlightPhase.PlaneAlignment, "Executing the finite V2 plane-alignment burn.");
+                    break;
+                case V2FlightPhase.PlaneAlignment:
+                    Core.Attitude.attitudeTo(_activePlan.PlaneAlignmentDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    if (Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _activePlan.PlaneAlignmentDeltaV.normalized) <= 0.5)
+                    {
+                        Core.Thrust.ThrustOff();
+                        RefreshPreflight();
+                        if (Preflight?.Snapshot == null) { RejectController("V2 could not take a fresh snapshot after plane alignment."); break; }
+                        _burnTargetVelocity = VesselState.OrbitalVelocity + _activePlan.StrategicDeorbitDeltaV;
+                        TransitionTo(V2FlightPhase.AlignStrategicBurn, "Plane alignment complete; aligning for V2 strategic deorbit.");
+                    }
+                    else Core.Thrust.ThrustForDv(Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _activePlan.PlaneAlignmentDeltaV.normalized), 0.5);
                     break;
                 case V2FlightPhase.AlignStrategicBurn:
                     Core.Thrust.ThrustOff(); Core.Attitude.attitudeTo(_activePlan.StrategicDeorbitDeltaV, AttitudeReference.INERTIAL_COT, this);
@@ -119,6 +137,12 @@ namespace MuMech
                     if (remainingDv <= 0.5)
                     {
                         Core.Thrust.ThrustOff();
+                        RefreshPreflight();
+                        if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact)
+                        {
+                            RejectController("V2 strategic burn did not produce a fresh valid impact trajectory.");
+                            break;
+                        }
                         TransitionTo(V2FlightPhase.Coast, "Strategic deorbit complete; coasting to V2 braking approach.");
                     }
                     else Core.Thrust.ThrustForDv(remainingDv, 0.5);
