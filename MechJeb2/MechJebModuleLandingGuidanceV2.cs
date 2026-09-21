@@ -692,7 +692,8 @@ namespace MuMech
                     JsonNumber(airlessPlan?.TerminalBrakingLowerBound ?? double.NaN), JsonNumber(airlessPlan?.LowerBoundMargin ?? double.NaN),
                     JsonNumber(airlessPlan?.SignedDownrange ?? double.NaN), JsonNumber(airlessPlan?.CrossRange ?? double.NaN),
                     JsonNumber(airlessPlan?.CorridorLimit ?? double.NaN), JsonString(airlessPlan?.Reason),
-                    ControllerActive ? "true" : "false", JsonString(_flightPhase.ToString()), JsonString(ControllerStatus), V2AutoWarp ? "true" : "false",
+                    (airlessPlan != null && airlessPlan.CommandAuthorized || atmosphericPlan?.State == AtmosphericLandingPlanState.Candidate) ? "true" : "false",
+                    JsonString(_flightPhase.ToString()), JsonString(ControllerStatus), V2AutoWarp ? "true" : "false",
                     JsonNumber(airlessPlan?.PlaneAlignmentBurnUT ?? double.NaN), JsonNumber(airlessPlan?.StrategicBurnUT ?? double.NaN),
                     JsonNumber(airlessPlan?.BrakingEntryUT ?? double.NaN));
                 baseFields += string.Format(CultureInfo.InvariantCulture,

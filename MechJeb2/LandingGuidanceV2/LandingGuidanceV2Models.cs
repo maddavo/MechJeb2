@@ -181,8 +181,9 @@ namespace MuMech
     }
 
     /// <summary>
-    /// Immutable strategic-deorbit candidate. It is data only: V2 does not yet
-    /// hand this vector to attitude, throttle, RCS, staging, target, or warp.
+    /// Immutable strategic-deorbit candidate. It identifies the exact snapshot
+    /// that authorized planning; the phase manager must still take a fresh
+    /// snapshot at each command and warp boundary before using it.
     /// </summary>
     public sealed class AirlessLandingPlan
     {
@@ -207,7 +208,7 @@ namespace MuMech
         public readonly LandingGuidanceV2Estimate CandidateEstimate;
         public readonly string Reason;
 
-        public bool CommandAuthorized => false;
+        public bool CommandAuthorized => State == AirlessLandingPlanState.Candidate;
 
         public AirlessLandingPlan(long snapshotVersion, AirlessLandingPlanState state, Vector3d strategicDeorbitDeltaV,
             double terminalBrakingLowerBound, double signedDownrange, double crossRange, double corridorLimit,
