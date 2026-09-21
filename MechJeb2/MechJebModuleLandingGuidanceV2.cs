@@ -738,6 +738,7 @@ namespace MuMech
                     JsonNumber(atmosphericPlan?.EntryCorridorRadius ?? double.NaN), JsonNumber(atmosphericPlan?.EndpointUncertainty ?? double.NaN),
                     JsonNumber(atmosphericPlan?.TerminalReserve ?? double.NaN), JsonNumber(atmosphericPlan?.LandingMargin ?? double.NaN),
                     JsonString(atmosphericPlan?.Reason));
+                baseFields += ",\"terrainAltitude\":" + JsonNumber(estimate.TerrainAltitude);
                 baseFields += string.Format(CultureInfo.InvariantCulture,
                     ",\"v2OriginalTargetLat\":{0},\"v2OriginalTargetLon\":{1},\"v2ActiveTargetLat\":{2},\"v2ActiveTargetLon\":{3},\"v2PredictedTargetLat\":{4},\"v2PredictedTargetLon\":{5},\"v2PredictionSnapshotVersion\":{6},\"v2VisualRebaseDone\":{7},\"v2SiteAccepted\":{8},\"v2SiteSlopeDegrees\":{9},\"v2SiteRoughness\":{10},\"v2SiteDetail\":{11},\"v2FiniteBurn\":{12},\"v2PlannedBurnDeltaV\":{13},\"v2DeliveredBurnDeltaV\":{14}",
                     JsonNumber(targetState.OriginalLatitude), JsonNumber(targetState.OriginalLongitude),

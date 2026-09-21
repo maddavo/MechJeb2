@@ -279,6 +279,8 @@ namespace MuMech
             if (estimate.HasImpact)
             {
                 GUILayout.Label("Sea-level target error: " + estimate.TargetError.ToSI() + "m");
+                if (!double.IsNaN(estimate.TerrainAltitude))
+                    GUILayout.Label("Estimated impact terrain: " + estimate.TerrainAltitude.ToSI() + "m ASL");
                 GUILayout.Label("Braking Delta-V lower bound: " + preflight.BrakingDeltaVLowerBound.ToSI() + "m/s");
                 GUILayout.Label("Delta-V above lower bound: " + preflight.DeltaVAboveLowerBound.ToSI() + "m/s");
             }

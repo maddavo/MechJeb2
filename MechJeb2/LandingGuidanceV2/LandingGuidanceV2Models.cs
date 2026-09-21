@@ -93,12 +93,14 @@ namespace MuMech
         public readonly Vector3d ImpactPosition;
         public readonly Vector3d ImpactVelocity;
         public readonly double TargetError;
+        public readonly double TerrainAltitude;
         public readonly string Detail;
 
         public bool HasImpact => Outcome == LandingGuidanceV2EstimateOutcome.Impact;
 
         public LandingGuidanceV2Estimate(long snapshotVersion, LandingGuidanceV2EstimateOutcome outcome,
-            double impactUT, Vector3d impactPosition, Vector3d impactVelocity, double targetError, string detail)
+            double impactUT, Vector3d impactPosition, Vector3d impactVelocity, double targetError, string detail,
+            double terrainAltitude = double.NaN)
         {
             SnapshotVersion = snapshotVersion;
             Outcome = outcome;
@@ -107,6 +109,7 @@ namespace MuMech
             ImpactVelocity = impactVelocity;
             TargetError = targetError;
             Detail = detail;
+            TerrainAltitude = terrainAltitude;
         }
     }
 

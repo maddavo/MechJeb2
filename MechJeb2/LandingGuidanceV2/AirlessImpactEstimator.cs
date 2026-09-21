@@ -56,6 +56,28 @@ namespace MuMech
                         "The next surface-intersection time is not valid.");
                 }
 
+                // Terrain is refined from the deterministic conic solution in a
+                // bounded fixed iteration count.  It improves the terminal
+                // altitude without allowing a mutable terrain query to feed an
+                // unbounded predictor loop.
+                double terrainAltitude = 0;
+                for (int i = 0; i < 4; ++i)
+                {
+                    Vector3d trialPosition = orbit.WorldBCIPositionAtUT(impactUT);
+                    snapshot.Body.GetLatLngAltAtUT(impactUT, trialPosition, out double latitude, out double longitude, out _);
+                    terrainAltitude = snapshot.Body.TerrainAltitude(latitude, longitude, true);
+                    double terrainRadius = surfaceRadius + Math.Max(0, terrainAltitude);
+                    double refinedUT = orbit.NextTimeOfRadius(snapshot.UT, terrainRadius);
+                    if (!IsFinite(refinedUT) || refinedUT < snapshot.UT)
+                        break;
+                    if (Math.Abs(refinedUT - impactUT) < 0.01)
+                    {
+                        impactUT = refinedUT;
+                        break;
+                    }
+                    impactUT = refinedUT;
+                }
+
                 Vector3d impactPosition = orbit.WorldBCIPositionAtUT(impactUT);
                 Vector3d impactVelocity = orbit.WorldOrbitalVelocityAtUT(impactUT);
                 Vector3d targetPosition = TargetPositionAtUT(snapshot, impactUT);
@@ -63,7 +85,7 @@ namespace MuMech
 
                 return new LandingGuidanceV2Estimate(snapshot.Version, LandingGuidanceV2EstimateOutcome.Impact, impactUT,
                     impactPosition, impactVelocity, targetError,
-                    "Deterministic sea-level airless-body intersection; terrain refinement is not yet applied.");
+                    "Deterministic airless conic intersection with bounded terrain refinement.", terrainAltitude);
             }
             catch (Exception ex)
             {
@@ -103,7 +125,8 @@ namespace MuMech
             SameNumber(first.ImpactUT, second.ImpactUT) &&
             SameVector(first.ImpactPosition, second.ImpactPosition) &&
             SameVector(first.ImpactVelocity, second.ImpactVelocity) &&
-            SameNumber(first.TargetError, second.TargetError);
+            SameNumber(first.TargetError, second.TargetError) &&
+            SameNumber(first.TerrainAltitude, second.TerrainAltitude);
 
         private static bool SameVector(Vector3d first, Vector3d second) =>
             SameNumber(first.x, second.x) && SameNumber(first.y, second.y) && SameNumber(first.z, second.z);
