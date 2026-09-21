@@ -70,6 +70,20 @@ namespace MuMech
         public double V2ActiveTargetLongitude => _hasActiveTarget ? _activeTargetLongitude : (double)Core.Target.targetLongitude;
         public double V2OriginalTargetLatitude => _hasActiveTarget ? _originalTargetLatitude : (double)Core.Target.targetLatitude;
         public double V2OriginalTargetLongitude => _hasActiveTarget ? _originalTargetLongitude : (double)Core.Target.targetLongitude;
+        public LandingGuidanceV2TargetState TargetState
+        {
+            get
+            {
+                LandingGuidanceV2Estimate estimate = Preflight?.Estimate;
+                double predictedLatitude = double.NaN;
+                double predictedLongitude = double.NaN;
+                if (estimate != null && estimate.HasImpact && MainBody != null)
+                    MainBody.GetLatLngAltAtUT(estimate.ImpactUT, estimate.ImpactPosition, out predictedLatitude, out predictedLongitude, out _);
+                return new LandingGuidanceV2TargetState(V2OriginalTargetLatitude, V2OriginalTargetLongitude,
+                    V2ActiveTargetLatitude, V2ActiveTargetLongitude, predictedLatitude, predictedLongitude,
+                    estimate?.SnapshotVersion ?? -1, _visualRebaseDone);
+            }
+        }
         public string SiteAssessmentStatus => _siteAssessment == null ? "Waiting for the local visual-assessment gate." : _siteAssessment.Detail;
 
         public MechJebModuleLandingGuidanceV2(MechJebCore core) : base(core)
@@ -618,6 +632,7 @@ namespace MuMech
                 LandingGuidanceV2PreflightAssessment assessment = preflight.Assessment;
                 AirlessLandingPlan airlessPlan = preflight.AirlessPlan;
                 AtmosphericLandingPlan atmosphericPlan = preflight.AtmosphericPlan;
+                LandingGuidanceV2TargetState targetState = TargetState;
                 MechJebModuleLandingAutopilot landing = Core.Landing;
                 AutopilotStep step = landing?.CurrentStep;
                 string phase = step?.GetType().Name;
@@ -703,8 +718,11 @@ namespace MuMech
                     JsonNumber(atmosphericPlan?.TerminalReserve ?? double.NaN), JsonNumber(atmosphericPlan?.LandingMargin ?? double.NaN),
                     JsonString(atmosphericPlan?.Reason));
                 baseFields += string.Format(CultureInfo.InvariantCulture,
-                    ",\"v2ActiveTargetLat\":{0},\"v2ActiveTargetLon\":{1},\"v2VisualRebaseDone\":{2},\"v2SiteAccepted\":{3},\"v2SiteSlopeDegrees\":{4},\"v2SiteRoughness\":{5},\"v2SiteDetail\":{6},\"v2FiniteBurn\":{7},\"v2PlannedBurnDeltaV\":{8},\"v2DeliveredBurnDeltaV\":{9}",
-                    JsonNumber(V2ActiveTargetLatitude), JsonNumber(V2ActiveTargetLongitude), _visualRebaseDone ? "true" : "false",
+                    ",\"v2OriginalTargetLat\":{0},\"v2OriginalTargetLon\":{1},\"v2ActiveTargetLat\":{2},\"v2ActiveTargetLon\":{3},\"v2PredictedTargetLat\":{4},\"v2PredictedTargetLon\":{5},\"v2PredictionSnapshotVersion\":{6},\"v2VisualRebaseDone\":{7},\"v2SiteAccepted\":{8},\"v2SiteSlopeDegrees\":{9},\"v2SiteRoughness\":{10},\"v2SiteDetail\":{11},\"v2FiniteBurn\":{12},\"v2PlannedBurnDeltaV\":{13},\"v2DeliveredBurnDeltaV\":{14}",
+                    JsonNumber(targetState.OriginalLatitude), JsonNumber(targetState.OriginalLongitude),
+                    JsonNumber(targetState.ActiveLatitude), JsonNumber(targetState.ActiveLongitude),
+                    JsonNumber(targetState.PredictedLatitude), JsonNumber(targetState.PredictedLongitude), targetState.PredictionSnapshotVersion,
+                    targetState.VisualRebaseDone ? "true" : "false",
                     _siteAssessment != null && _siteAssessment.Accepted ? "true" : "false", JsonNumber(_siteAssessment?.Slope ?? double.NaN),
                     JsonNumber(_siteAssessment?.Roughness ?? double.NaN), JsonString(_siteAssessment?.Detail), JsonString(_phaseBurnName),
                     JsonNumber(_phaseBurnPlannedDeltaV), JsonNumber(_phaseBurnStartVelocity.sqrMagnitude > 0

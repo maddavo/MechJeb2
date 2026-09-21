@@ -3,6 +3,37 @@ using UnityEngine;
 namespace MuMech
 {
     /// <summary>
+    /// Player-facing V2 target semantics. Original remains a reference,
+    /// active is always the requested red target, and predicted is the
+    /// independent blue endpoint from the current immutable estimate.
+    /// </summary>
+    public sealed class LandingGuidanceV2TargetState
+    {
+        public readonly double OriginalLatitude;
+        public readonly double OriginalLongitude;
+        public readonly double ActiveLatitude;
+        public readonly double ActiveLongitude;
+        public readonly double PredictedLatitude;
+        public readonly double PredictedLongitude;
+        public readonly long PredictionSnapshotVersion;
+        public readonly bool VisualRebaseDone;
+
+        public LandingGuidanceV2TargetState(double originalLatitude, double originalLongitude,
+            double activeLatitude, double activeLongitude, double predictedLatitude, double predictedLongitude,
+            long predictionSnapshotVersion, bool visualRebaseDone)
+        {
+            OriginalLatitude = originalLatitude;
+            OriginalLongitude = originalLongitude;
+            ActiveLatitude = activeLatitude;
+            ActiveLongitude = activeLongitude;
+            PredictedLatitude = predictedLatitude;
+            PredictedLongitude = predictedLongitude;
+            PredictionSnapshotVersion = predictionSnapshotVersion;
+            VisualRebaseDone = visualRebaseDone;
+        }
+    }
+
+    /// <summary>
     /// Immutable data captured on the Unity thread for one V2 planning pass.
     /// The estimator must use this value object rather than live Vessel, Orbit, or
     /// predictor state so that a result can always identify the state that produced it.
