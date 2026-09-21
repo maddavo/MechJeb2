@@ -158,8 +158,6 @@ namespace MuMech
             switch (_flightPhase)
             {
                 case V2FlightPhase.Preflight:
-                    Core.Thrust.ThrustOff();
-                    Core.Warp.MinimumWarp(true);
                     // Start and command gates force an immediate plan. While
                     // safely waiting, the normal planner cadence is the defined
                     // replan event; do not consume a full strategic search every
