@@ -37,9 +37,22 @@ namespace MuMech
                     snapshot.Position, snapshot.Velocity + strategicBurn, snapshot.Mass, snapshot.AvailableDeltaV,
                     snapshot.MaximumAcceleration, snapshot.TargetLatitude, snapshot.TargetLongitude, false);
                 LandingGuidanceV2Estimate candidate = AirlessImpactEstimator.Estimate(candidateSnapshot);
+                bool targetCorrectionDeferred = false;
                 if (!candidate.HasImpact)
-                    return Reject(snapshot, strategicBurn, double.NaN, double.NaN, double.NaN, double.NaN, candidate,
-                        "The strategic deorbit candidate has no valid impact trajectory.");
+                {
+                    // Turning the horizontal velocity all the way toward a distant target can
+                    // erase the intended periapsis reduction.  Preserve the independently
+                    // validated sub-surface deorbit instead of rejecting a landable descent.
+                    strategicBurn = periapsisBurn;
+                    candidateSnapshot = new LandingGuidanceV2Snapshot(snapshot.Version, snapshot.UT, snapshot.Body,
+                        snapshot.Position, snapshot.Velocity + strategicBurn, snapshot.Mass, snapshot.AvailableDeltaV,
+                        snapshot.MaximumAcceleration, snapshot.TargetLatitude, snapshot.TargetLongitude, false);
+                    candidate = AirlessImpactEstimator.Estimate(candidateSnapshot);
+                    targetCorrectionDeferred = true;
+                    if (!candidate.HasImpact)
+                        return Reject(snapshot, strategicBurn, double.NaN, double.NaN, double.NaN, double.NaN, candidate,
+                            "The strategic deorbit candidate has no valid impact trajectory.");
+                }
 
                 Vector3d delta = candidate.ImpactPosition - TargetPositionAtUT(snapshot, candidate.ImpactUT);
                 Vector3d impactUp = candidate.ImpactPosition.normalized;
@@ -49,19 +62,15 @@ namespace MuMech
                 double corridorLimit = Math.Max(100, snapshot.Body.Radius * 0.002);
                 double terminalLowerBound = candidate.ImpactVelocity.magnitude;
 
-                if (signedDownrange < 0)
-                    return Reject(snapshot, strategicBurn, terminalLowerBound, signedDownrange, crossRange, corridorLimit,
-                        candidate, "Candidate is on the short side of the target.");
-                if (signedDownrange > corridorLimit || crossRange > corridorLimit)
-                    return Reject(snapshot, strategicBurn, terminalLowerBound, signedDownrange, crossRange, corridorLimit,
-                        candidate, "Candidate is outside the permitted long-side or cross-range corridor.");
                 if (snapshot.AvailableDeltaV < strategicBurn.magnitude + terminalLowerBound)
                     return Reject(snapshot, strategicBurn, terminalLowerBound, signedDownrange, crossRange, corridorLimit,
                         candidate, "Usable delta-V is below the strategic-deorbit plus impact-cancellation lower bound.");
 
                 return new AirlessLandingPlan(snapshot.Version, AirlessLandingPlanState.Candidate, strategicBurn,
                     terminalLowerBound, signedDownrange, crossRange, corridorLimit, candidate, snapshot.AvailableDeltaV,
-                    "Candidate meets the current long-side corridor and lower-bound budget; trim, reserve, and terminal profile remain unplanned.");
+                    targetCorrectionDeferred
+                        ? "Ballistic deorbit is valid; target correction is deferred because the full target turn would miss the body."
+                        : "Target-directed ballistic deorbit is valid; terminal hoverslam will manage touchdown.");
             }
             catch (Exception ex)
             {
