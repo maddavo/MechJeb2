@@ -316,6 +316,16 @@ namespace MuMech
                     else if (Core.Hoverslam.IgnitionCountdown <= Time.fixedDeltaTime)
                     {
                         Core.Warp.MinimumWarp(true);
+                        // A hoverslam ignition time that was calculated before
+                        // warp cannot authorize terminal control after warp has
+                        // ended. Rebuild the immutable snapshot and require a
+                        // current impact estimate before entering braking.
+                        RefreshPreflight(true);
+                        if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact)
+                        {
+                            RejectController("V2 terminal braking lost its fresh impact trajectory after warp exit.");
+                            break;
+                        }
                         _lastAdjustedVelocity = new Vector3d(double.NaN, double.NaN, double.NaN);
                         TransitionTo(V2FlightPhase.BrakingApproach, "V2 braking approach has begun.");
                     }
