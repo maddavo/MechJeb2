@@ -78,6 +78,16 @@ namespace MuMech
                 double predictedLongitude = double.NaN;
                 if (estimate != null && estimate.HasImpact && MainBody != null)
                     MainBody.GetLatLngAltAtUT(estimate.ImpactUT, estimate.ImpactPosition, out predictedLatitude, out predictedLongitude, out _);
+                else
+                {
+                    ReentrySimulation.Result atmospheric = Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Result;
+                    if (atmospheric != null && atmospheric.Body == MainBody &&
+                        atmospheric.Outcome == ReentrySimulation.Outcome.LANDED)
+                    {
+                        predictedLatitude = atmospheric.EndPosition.Latitude;
+                        predictedLongitude = atmospheric.EndPosition.Longitude;
+                    }
+                }
                 return new LandingGuidanceV2TargetState(V2OriginalTargetLatitude, V2OriginalTargetLongitude,
                     V2ActiveTargetLatitude, V2ActiveTargetLongitude, predictedLatitude, predictedLongitude,
                     estimate?.SnapshotVersion ?? -1, _visualRebaseDone);
@@ -544,12 +554,10 @@ namespace MuMech
             if (_visualRebaseDone)
                 GLUtils.DrawGroundMarker(MainBody, V2OriginalTargetLatitude, V2OriginalTargetLongitude,
                     new Color(0.55f, 0.55f, 0.55f, 0.75f), true, 0, MainBody.Radius / 18);
-            LandingGuidanceV2Estimate estimate = Preflight?.Estimate;
-            if (estimate != null && estimate.HasImpact && estimate.SnapshotVersion == Preflight.Snapshot.Version)
-            {
-                MainBody.GetLatLngAltAtUT(estimate.ImpactUT, estimate.ImpactPosition, out double latitude, out double longitude, out _);
-                GLUtils.DrawGroundMarker(MainBody, latitude, longitude, Color.blue, true, 0, MainBody.Radius / 14);
-            }
+            LandingGuidanceV2TargetState targetState = TargetState;
+            if (!double.IsNaN(targetState.PredictedLatitude) && !double.IsNaN(targetState.PredictedLongitude))
+                GLUtils.DrawGroundMarker(MainBody, targetState.PredictedLatitude, targetState.PredictedLongitude,
+                    Color.blue, true, 0, MainBody.Radius / 14);
         }
 
         private sealed class LandingSiteAssessment
