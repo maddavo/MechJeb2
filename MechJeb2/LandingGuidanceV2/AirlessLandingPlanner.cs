@@ -40,14 +40,14 @@ namespace MuMech
                 double trim = Math.Max(5.0, best.Burn.magnitude * 0.10);
                 double reserve = Math.Max(20.0, terminal * 0.10);
                 double contingency = Math.Max(10.0, best.Burn.magnitude * 0.02);
-                double plannedDeltaV = best.Burn.magnitude + terminal + trim + reserve + contingency;
+                double plannedDeltaV = best.PlaneAlignmentBurn.magnitude + best.Burn.magnitude + terminal + trim + reserve + contingency;
                 if (snapshot.AvailableDeltaV < plannedDeltaV)
                     return Reject(snapshot, best.Burn, best.Estimate, best.Downrange, best.CrossRange, best.Corridor,
                         "Usable delta-V is below the V2 strategic, trim, terminal-reserve, and contingency budget.");
                 return new AirlessLandingPlan(snapshot.Version, AirlessLandingPlanState.Candidate, best.Burn,
                     best.Estimate.ImpactVelocity.magnitude, best.Downrange, best.CrossRange, best.Corridor, best.Estimate,
                     snapshot.AvailableDeltaV, "Future strategic-deorbit candidate satisfies the impact, corridor, and budget constraints.", best.BurnUT,
-                    trim, reserve, contingency);
+                    trim, reserve, contingency, best.PlaneAlignmentBurn);
             }
             catch (Exception ex) { return Reject(snapshot, "Airless strategic-deorbit planning failed: " + ex.GetType().Name); }
         }
@@ -86,7 +86,8 @@ namespace MuMech
                 // Keep the plane-change and deorbit components explicit.  The
                 // interpolation searches only the deorbit depth after the target
                 // plane is aligned, and every resulting impact is re-estimated.
-                Vector3d burn = planeChangeBurn + Vector3d.Lerp(baselineBurn, alignedDeorbitBurn, i / 16.0);
+                Vector3d deorbitBurn = Vector3d.Lerp(baselineBurn, alignedDeorbitBurn, i / 16.0);
+                Vector3d burn = planeChangeBurn + deorbitBurn;
                 var state = new LandingGuidanceV2Snapshot(source.Version, burnUT, source.Body, position, velocity + burn,
                     source.Mass, source.AvailableDeltaV, source.MaximumAcceleration, source.TargetLatitude, source.TargetLongitude, false);
                 LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(state);
@@ -99,7 +100,7 @@ namespace MuMech
                 double crossRange = Math.Sqrt(Math.Max(0, error.sqrMagnitude - downrange * downrange));
                 double corridor = Math.Max(100.0, source.Body.Radius * 0.002);
                 if (downrange < 0) continue;
-                Candidate candidate = new Candidate(burnUT, burn, estimate, downrange, crossRange, corridor);
+                Candidate candidate = new Candidate(burnUT, planeChangeBurn, deorbitBurn, estimate, downrange, crossRange, corridor);
                 if (!best.Valid || candidate.Downrange + candidate.CrossRange < best.Downrange + best.CrossRange) best = candidate;
             }
             return best;
@@ -117,12 +118,12 @@ namespace MuMech
 
         private struct Candidate
         {
-            public readonly double BurnUT; public readonly Vector3d Burn; public readonly LandingGuidanceV2Estimate Estimate;
+            public readonly double BurnUT; public readonly Vector3d PlaneAlignmentBurn; public readonly Vector3d Burn; public readonly LandingGuidanceV2Estimate Estimate;
             public readonly double Downrange; public readonly double CrossRange; public readonly double Corridor;
             public bool Valid => Estimate != null;
             public bool WithinCorridor => Valid && Downrange <= Corridor && CrossRange <= Corridor;
-            public Candidate(double burnUT, Vector3d burn, LandingGuidanceV2Estimate estimate, double downrange, double crossRange, double corridor)
-            { BurnUT = burnUT; Burn = burn; Estimate = estimate; Downrange = downrange; CrossRange = crossRange; Corridor = corridor; }
+            public Candidate(double burnUT, Vector3d planeAlignmentBurn, Vector3d burn, LandingGuidanceV2Estimate estimate, double downrange, double crossRange, double corridor)
+            { BurnUT = burnUT; PlaneAlignmentBurn = planeAlignmentBurn; Burn = burn; Estimate = estimate; Downrange = downrange; CrossRange = crossRange; Corridor = corridor; }
         }
     }
 }
