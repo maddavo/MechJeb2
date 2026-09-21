@@ -79,6 +79,10 @@ namespace MuMech
         }
     }
 
+    /// <summary>
+    /// Records whether two independent estimator evaluations of the same immutable
+    /// snapshot produced the same result. This is diagnostic evidence only.
+    /// </summary>
     public sealed class LandingGuidanceV2EstimatorValidation
     {
         public readonly LandingGuidanceV2Estimate RepeatedEstimate;
@@ -103,6 +107,10 @@ namespace MuMech
         NeedsCompletePlan
     }
 
+    /// <summary>
+    /// A passive screen for physical lower bounds. It never represents a complete
+    /// landing plan and never authorizes a V2 command.
+    /// </summary>
     public sealed class LandingGuidanceV2PreflightAssessment
     {
         public readonly long SnapshotVersion;
@@ -126,15 +134,28 @@ namespace MuMech
         }
     }
 
-    public enum AirlessLandingPlanState { NotApplicable, Rejected, Candidate }
+    public enum AirlessLandingPlanState
+    {
+        NotApplicable,
+        Rejected,
+        Candidate
+    }
 
+    /// <summary>
+    /// Immutable strategic-deorbit candidate. It is data only: V2 does not yet
+    /// hand this vector to attitude, throttle, RCS, staging, target, or warp.
+    /// </summary>
     public sealed class AirlessLandingPlan
     {
         public readonly long SnapshotVersion;
         public readonly AirlessLandingPlanState State;
         public readonly Vector3d StrategicDeorbitDeltaV;
         public readonly double StrategicDeorbitDeltaVMagnitude;
+        public readonly double StrategicBurnUT;
         public readonly double TerminalBrakingLowerBound;
+        public readonly double TrimBudget;
+        public readonly double TerminalDivertReserve;
+        public readonly double Contingency;
         public readonly double TotalLowerBound;
         public readonly double LowerBoundMargin;
         public readonly double SignedDownrange;
@@ -142,18 +163,32 @@ namespace MuMech
         public readonly double CorridorLimit;
         public readonly LandingGuidanceV2Estimate CandidateEstimate;
         public readonly string Reason;
+
         public bool CommandAuthorized => false;
 
         public AirlessLandingPlan(long snapshotVersion, AirlessLandingPlanState state, Vector3d strategicDeorbitDeltaV,
             double terminalBrakingLowerBound, double signedDownrange, double crossRange, double corridorLimit,
-            LandingGuidanceV2Estimate candidateEstimate, double availableDeltaV, string reason)
+            LandingGuidanceV2Estimate candidateEstimate, double availableDeltaV, string reason, double strategicBurnUT = double.NaN,
+            double trimBudget = 0, double terminalDivertReserve = 0, double contingency = 0)
         {
-            SnapshotVersion = snapshotVersion; State = state; StrategicDeorbitDeltaV = strategicDeorbitDeltaV;
-            StrategicDeorbitDeltaVMagnitude = strategicDeorbitDeltaV.magnitude; TerminalBrakingLowerBound = terminalBrakingLowerBound;
-            TotalLowerBound = StrategicDeorbitDeltaVMagnitude + terminalBrakingLowerBound;
-            LowerBoundMargin = availableDeltaV - TotalLowerBound; SignedDownrange = signedDownrange; CrossRange = crossRange;
-            CorridorLimit = corridorLimit; CandidateEstimate = candidateEstimate; Reason = reason;
+            SnapshotVersion = snapshotVersion;
+            State = state;
+            StrategicDeorbitDeltaV = strategicDeorbitDeltaV;
+            StrategicDeorbitDeltaVMagnitude = strategicDeorbitDeltaV.magnitude;
+            StrategicBurnUT = strategicBurnUT;
+            TerminalBrakingLowerBound = terminalBrakingLowerBound;
+            TrimBudget = trimBudget;
+            TerminalDivertReserve = terminalDivertReserve;
+            Contingency = contingency;
+            TotalLowerBound = StrategicDeorbitDeltaVMagnitude + terminalBrakingLowerBound + trimBudget + terminalDivertReserve + contingency;
+            LowerBoundMargin = availableDeltaV - TotalLowerBound;
+            SignedDownrange = signedDownrange;
+            CrossRange = crossRange;
+            CorridorLimit = corridorLimit;
+            CandidateEstimate = candidateEstimate;
+            Reason = reason;
         }
+
     }
 
     /// <summary>

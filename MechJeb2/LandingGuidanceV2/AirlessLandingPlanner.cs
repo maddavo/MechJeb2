@@ -5,57 +5,99 @@ namespace MuMech
 {
     public static class AirlessLandingPlanner
     {
-        public static AirlessLandingPlan Plan(LandingGuidanceV2Snapshot s)
+        private const int CoarseSamples = 180;
+        private const int RefinementSamples = 48;
+
+        public static AirlessLandingPlan Plan(LandingGuidanceV2Snapshot snapshot)
         {
-            if (s == null || s.Body == null || s.IsLandedOrSplashed || s.Body.atmosphere)
-                return Reject(s, Vector3d.zero, double.NaN, double.NaN, double.NaN, double.NaN, null, "An airborne airless snapshot is required.");
+            if (snapshot == null || snapshot.Body == null || snapshot.IsLandedOrSplashed || snapshot.Body.atmosphere)
+                return Reject(snapshot, "An airborne airless snapshot is required.");
             try
             {
-                var o = new Orbit(); o.UpdateFromStateVectors(s.Position, s.Velocity, s.Body, s.UT);
-                Vector3d up = s.Position.normalized, horizontal = Vector3d.Exclude(up, s.Velocity);
-                Vector3d periapsisBurn = OrbitalManeuverCalculator.DeltaVToChangePeriapsis(o, s.UT, s.Body.Radius * 0.9);
-                Orbit trial = o.PerturbedOrbit(s.UT, periapsisBurn);
-                double trialImpactUT = trial.NextTimeOfRadius(s.UT, s.Body.Radius);
-                if (!Finite(trialImpactUT) || trialImpactUT < s.UT)
-                    return Reject(s, Vector3d.zero, double.NaN, double.NaN, double.NaN, double.NaN, null, "The initial deorbit geometry does not reach the sea-level surface.");
-                Vector3d direction = Vector3d.Exclude(up, TargetAt(s, trialImpactUT) - s.Position);
-                if (direction.sqrMagnitude < 1e-9)
-                    return Reject(s, Vector3d.zero, double.NaN, double.NaN, double.NaN, double.NaN, null, "The target direction is degenerate at this planning epoch.");
-                Vector3d burn = (horizontal + periapsisBurn).magnitude * direction.normalized - horizontal;
-                var candidateSnapshot = new LandingGuidanceV2Snapshot(s.Version, s.UT, s.Body, s.Position, s.Velocity + burn,
-                    s.Mass, s.AvailableDeltaV, s.MaximumAcceleration, s.TargetLatitude, s.TargetLongitude, false);
-                LandingGuidanceV2Estimate e = AirlessImpactEstimator.Estimate(candidateSnapshot);
-                bool targetCorrectionDeferred = false;
-                if (!e.HasImpact)
+                var coast = new Orbit();
+                coast.UpdateFromStateVectors(snapshot.Position, snapshot.Velocity, snapshot.Body, snapshot.UT);
+                if (!Finite(coast.period) || coast.eccentricity >= 1.0)
+                    return Reject(snapshot, "V2 requires a bound airless coast orbit before strategic-deorbit planning.");
+
+                Candidate best = default(Candidate);
+                double bestMiss = double.PositiveInfinity;
+                for (int i = 0; i <= CoarseSamples; ++i)
+                    Consider(Evaluate(snapshot, coast, snapshot.UT + 10.0 + coast.period * i / CoarseSamples), ref best, ref bestMiss);
+
+                if (best.Valid)
                 {
-                    // A full target turn can erase the planned periapsis reduction. Keep
-                    // the independently verified sub-surface deorbit so V2 can land.
-                    burn = periapsisBurn;
-                    candidateSnapshot = new LandingGuidanceV2Snapshot(s.Version, s.UT, s.Body, s.Position, s.Velocity + burn,
-                        s.Mass, s.AvailableDeltaV, s.MaximumAcceleration, s.TargetLatitude, s.TargetLongitude, false);
-                    e = AirlessImpactEstimator.Estimate(candidateSnapshot);
-                    targetCorrectionDeferred = true;
-                    if (!e.HasImpact) return Reject(s, burn, double.NaN, double.NaN, double.NaN, double.NaN, e, "The strategic deorbit candidate has no valid impact trajectory.");
+                    double span = coast.period / CoarseSamples;
+                    for (int i = 0; i <= RefinementSamples; ++i)
+                    {
+                        double ut = best.BurnUT - span + 2.0 * span * i / RefinementSamples;
+                        if (ut >= snapshot.UT + 2.0) Consider(Evaluate(snapshot, coast, ut), ref best, ref bestMiss);
+                    }
                 }
-                Vector3d delta = e.ImpactPosition - TargetAt(s, e.ImpactUT);
-                Vector3d down = Vector3d.Exclude(e.ImpactPosition.normalized, e.ImpactVelocity).normalized;
-                double downrange = Vector3d.Dot(delta, down), cross = Math.Sqrt(Math.Max(0, delta.sqrMagnitude - downrange * downrange));
-                double limit = Math.Max(100, s.Body.Radius * 0.002), terminal = e.ImpactVelocity.magnitude;
-                if (s.AvailableDeltaV < burn.magnitude + terminal) return Reject(s, burn, terminal, downrange, cross, limit, e, "Usable delta-V is below the strategic-deorbit plus impact-cancellation lower bound.");
-                return new AirlessLandingPlan(s.Version, AirlessLandingPlanState.Candidate, burn, terminal, downrange, cross, limit, e, s.AvailableDeltaV,
-                    targetCorrectionDeferred
-                        ? "Ballistic deorbit is valid; target correction is deferred because the full target turn would miss the body."
-                        : "Target-directed ballistic deorbit is valid; terminal hoverslam will manage touchdown.");
+
+                if (!best.Valid)
+                    return Reject(snapshot, "No future strategic-deorbit burn reaches the required long-side target corridor.");
+                double terminal = best.Estimate.ImpactVelocity.magnitude;
+                double trim = Math.Max(5.0, best.Burn.magnitude * 0.10);
+                double reserve = Math.Max(20.0, terminal * 0.10);
+                double contingency = Math.Max(10.0, best.Burn.magnitude * 0.02);
+                double plannedDeltaV = best.Burn.magnitude + terminal + trim + reserve + contingency;
+                if (snapshot.AvailableDeltaV < plannedDeltaV)
+                    return Reject(snapshot, best.Burn, best.Estimate, best.Downrange, best.CrossRange, best.Corridor,
+                        "Usable delta-V is below the V2 strategic, trim, terminal-reserve, and contingency budget.");
+                return new AirlessLandingPlan(snapshot.Version, AirlessLandingPlanState.Candidate, best.Burn,
+                    best.Estimate.ImpactVelocity.magnitude, best.Downrange, best.CrossRange, best.Corridor, best.Estimate,
+                    snapshot.AvailableDeltaV, "Future strategic-deorbit candidate satisfies the impact, corridor, and budget constraints.", best.BurnUT,
+                    trim, reserve, contingency);
             }
-            catch (Exception ex) { return Reject(s, Vector3d.zero, double.NaN, double.NaN, double.NaN, double.NaN, null, "Airless strategic-deorbit planning failed: " + ex.GetType().Name); }
+            catch (Exception ex) { return Reject(snapshot, "Airless strategic-deorbit planning failed: " + ex.GetType().Name); }
         }
-        private static AirlessLandingPlan Reject(LandingGuidanceV2Snapshot s, Vector3d burn, double terminal, double down, double cross, double limit, LandingGuidanceV2Estimate e, string reason) =>
-            new AirlessLandingPlan(s?.Version ?? -1, AirlessLandingPlanState.Rejected, burn, terminal, down, cross, limit, e, s?.AvailableDeltaV ?? double.NaN, reason);
+
+        private static void Consider(Candidate candidate, ref Candidate best, ref double bestMiss)
+        {
+            if (!candidate.Valid) return;
+            double miss = candidate.Downrange + candidate.CrossRange;
+            if (miss < bestMiss) { best = candidate; bestMiss = miss; }
+        }
+
+        private static Candidate Evaluate(LandingGuidanceV2Snapshot source, Orbit coast, double burnUT)
+        {
+            Vector3d position = coast.WorldBCIPositionAtUT(burnUT);
+            Vector3d velocity = coast.WorldOrbitalVelocityAtUT(burnUT);
+            var burnOrbit = new Orbit(); burnOrbit.UpdateFromStateVectors(position, velocity, source.Body, burnUT);
+            Vector3d burn = OrbitalManeuverCalculator.DeltaVToChangePeriapsis(burnOrbit, burnUT, source.Body.Radius * 0.9);
+            var state = new LandingGuidanceV2Snapshot(source.Version, burnUT, source.Body, position, velocity + burn,
+                source.Mass, source.AvailableDeltaV, source.MaximumAcceleration, source.TargetLatitude, source.TargetLongitude, false);
+            LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(state);
+            if (!estimate.HasImpact) return default(Candidate);
+
+            Vector3d error = estimate.ImpactPosition - TargetAt(source, estimate.ImpactUT);
+            Vector3d direction = Vector3d.Exclude(estimate.ImpactPosition.normalized, estimate.ImpactVelocity);
+            if (direction.sqrMagnitude < 1e-9) return default(Candidate);
+            direction.Normalize();
+            double downrange = Vector3d.Dot(error, direction);
+            double crossRange = Math.Sqrt(Math.Max(0, error.sqrMagnitude - downrange * downrange));
+            double corridor = Math.Max(100.0, source.Body.Radius * 0.002);
+            return downrange >= 0 && downrange <= corridor && crossRange <= corridor
+                ? new Candidate(burnUT, burn, estimate, downrange, crossRange, corridor) : default(Candidate);
+        }
+
+        private static AirlessLandingPlan Reject(LandingGuidanceV2Snapshot s, string reason) => Reject(s, Vector3d.zero, null, double.NaN, double.NaN, double.NaN, reason);
+        private static AirlessLandingPlan Reject(LandingGuidanceV2Snapshot s, Vector3d burn, LandingGuidanceV2Estimate estimate, double downrange, double crossRange, double corridor, string reason) =>
+            new AirlessLandingPlan(s?.Version ?? -1, AirlessLandingPlanState.Rejected, burn, estimate?.ImpactVelocity.magnitude ?? double.NaN, downrange, crossRange, corridor, estimate, s?.AvailableDeltaV ?? double.NaN, reason);
         private static Vector3d TargetAt(LandingGuidanceV2Snapshot s, double ut)
         {
             Vector3d target = s.Body.GetWorldSurfacePosition(s.TargetLatitude, s.TargetLongitude, 0) - s.Body.position;
             return Quaternion.AngleAxis((float)(360d * (ut - s.UT) / s.Body.rotationPeriod), s.Body.angularVelocity) * target;
         }
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+
+        private struct Candidate
+        {
+            public readonly double BurnUT; public readonly Vector3d Burn; public readonly LandingGuidanceV2Estimate Estimate;
+            public readonly double Downrange; public readonly double CrossRange; public readonly double Corridor;
+            public bool Valid => Estimate != null;
+            public Candidate(double burnUT, Vector3d burn, LandingGuidanceV2Estimate estimate, double downrange, double crossRange, double corridor)
+            { BurnUT = burnUT; Burn = burn; Estimate = estimate; Downrange = downrange; CrossRange = crossRange; Corridor = corridor; }
+        }
     }
 }

@@ -111,6 +111,7 @@ namespace MuMech
             }
 
             DrawGUITogglePredictions();
+            DrawV2Preview();
 
             if (Core.Landing != null)
             {
@@ -174,7 +175,6 @@ namespace MuMech
                 }
             }
 
-            DrawV2Preview();
             GUILayout.EndVertical();
 
             base.WindowGUI(windowID);
@@ -196,13 +196,9 @@ namespace MuMech
             _v2.V2AutoWarp = GUILayout.Toggle(_v2.V2AutoWarp, "V2 terminal auto-warp");
             if (_v2.ControllerActive)
             {
-                if (GUILayout.Button("Abort V2 airless landing"))
-                    _v2.AbortAirlessLanding();
+                if (GUILayout.Button("Abort V2 airless landing")) _v2.AbortAirlessLanding();
             }
-            else if (GUILayout.Button("Start V2 airless landing"))
-            {
-                _v2.StartAirlessLanding();
-            }
+            else if (GUILayout.Button("Start V2 airless landing")) _v2.StartAirlessLanding();
 
             if (!_v2.PreviewEnabled)
                 return;
@@ -243,6 +239,11 @@ namespace MuMech
                 GUILayout.Label(airlessPlan.Reason);
                 if (!double.IsNaN(airlessPlan.StrategicDeorbitDeltaVMagnitude))
                     GUILayout.Label("Strategic deorbit candidate: " + airlessPlan.StrategicDeorbitDeltaVMagnitude.ToSI() + "m/s");
+                if (!double.IsNaN(airlessPlan.StrategicBurnUT))
+                    GUILayout.Label("Strategic burn in: " + Math.Max(0, airlessPlan.StrategicBurnUT - Planetarium.GetUniversalTime()).ToSI() + "s");
+                GUILayout.Label("V2 trim budget: " + airlessPlan.TrimBudget.ToSI() + "m/s");
+                GUILayout.Label("V2 terminal reserve: " + airlessPlan.TerminalDivertReserve.ToSI() + "m/s");
+                GUILayout.Label("V2 landing margin: " + airlessPlan.LowerBoundMargin.ToSI() + "m/s");
             }
 
             if (estimate.HasImpact)
