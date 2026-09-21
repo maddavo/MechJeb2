@@ -99,7 +99,8 @@ namespace MuMech
         {
             if (ControllerActive)
                 TickController();
-            if (PreviewEnabled && HighLogic.LoadedSceneIsFlight && Core.Target.PositionTargetExists && VesselState.Time >= _nextRefreshUT)
+            if (PreviewEnabled && HighLogic.LoadedSceneIsFlight &&
+                (Core.Target.PositionTargetExists || ControllerActive && _hasActiveTarget) && VesselState.Time >= _nextRefreshUT)
             {
                 _nextRefreshUT = VesselState.Time + RefreshInterval;
                 RefreshPreflight();
@@ -577,13 +578,15 @@ namespace MuMech
         {
             _flightPhase = next;
             ControllerStatus = status;
-            if (StructuredTraceEnabled && HighLogic.LoadedSceneIsFlight && Core.Target.PositionTargetExists && Vessel != null)
+            if (StructuredTraceEnabled && HighLogic.LoadedSceneIsFlight &&
+                (Core.Target.PositionTargetExists || ControllerActive && _hasActiveTarget) && Vessel != null)
                 RefreshPreflight();
         }
 
         public void RefreshPreflight(bool forcePlan = false)
         {
-            if (!HighLogic.LoadedSceneIsFlight || !Core.Target.PositionTargetExists || Vessel == null || MainBody == null)
+            if (!HighLogic.LoadedSceneIsFlight || (!Core.Target.PositionTargetExists && !(_hasActiveTarget && ControllerActive)) ||
+                Vessel == null || MainBody == null)
             {
                 Preflight = null;
                 return;
