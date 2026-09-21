@@ -174,12 +174,28 @@ namespace MuMech
             ReleaseV2Control(); TransitionTo(V2FlightPhase.Idle, "V2 landing aborted.");
         }
 
-        private bool RejectController(string reason) { ReleaseV2Control(); TransitionTo(V2FlightPhase.Rejected, reason); return false; }
+        private bool RejectController(string reason)
+        {
+            // A rejected start has not acquired V2 authority and must not
+            // change a player's manual warp. An active V2 run releases its
+            // own warp, thrust and attitude authority together.
+            if (ControllerActive) ReleaseV2Control();
+            else ClearAtmosphericCandidateResult();
+            TransitionTo(V2FlightPhase.Rejected, reason);
+            return false;
+        }
 
         private void TickController()
         {
             if (Vessel == null || Vessel.LandedOrSplashed) { ReleaseV2Control(); TransitionTo(V2FlightPhase.Complete, "V2 landing completed: vessel is landed or splashed."); return; }
-            if (Core.Landing != null && Core.Landing.Enabled) { RejectController("V1 Landing Guidance was engaged; V2 relinquished control."); return; }
+            if (Core.Landing != null && Core.Landing.Enabled)
+            {
+                // V1 is the selected controller. Do not change its warp or
+                // any other command while V2 removes only its own users.
+                ReleaseV2Control(false);
+                TransitionTo(V2FlightPhase.Rejected, "V1 Landing Guidance was engaged; V2 relinquished control.");
+                return;
+            }
             switch (_flightPhase)
             {
                 case V2FlightPhase.Preflight:
@@ -669,9 +685,9 @@ namespace MuMech
             { Accepted = accepted; Slope = slope; Roughness = roughness; Detail = detail; }
         }
 
-        private void ReleaseV2Control()
+        private void ReleaseV2Control(bool stopWarp = true)
         {
-            Core.Warp.MinimumWarp(true);
+            if (stopWarp) Core.Warp.MinimumWarp(true);
             Core.Thrust.ThrustOff();
             Core.Thrust.Users.Remove(this);
             Core.Attitude.Users.Remove(this);
