@@ -38,7 +38,6 @@ The successful path must contain `v2_phase_transition` events in this order:
 
 ```
 WarpToStrategic
-AlignPlane / PlaneAlignment (only when required)
 AlignStrategicBurn
 StrategicBurn
 AlignTrim / BoundedTrim (only when required)

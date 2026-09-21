@@ -13,8 +13,8 @@ not have to obtain or inspect a displayed `Candidate` state first. A failed
 plan produces a rejection reason before V2 requests throttle or attitude.
 
 For an accepted airless plan, V2 owns auto-warp to the strategic gate, a
-finite plane-alignment burn where needed, a counted strategic-deorbit burn,
-one bounded trim, coast, hoverslam-derived braking, a one-time local visual
+counted strategic vector burn that includes any required plane change and
+deorbit component, one bounded trim, coast, hoverslam-derived braking, a one-time local visual
 assessment/rebase, terrain sampling, and terminal target tracking. It does
 not start, stop, retune, or otherwise alter V1 Landing Guidance. V1 is still
 selected by its existing buttons and retains its complete original UI block.
