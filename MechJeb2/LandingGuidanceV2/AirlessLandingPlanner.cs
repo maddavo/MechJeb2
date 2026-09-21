@@ -70,16 +70,23 @@ namespace MuMech
             if (!Finite(baselineImpactUT)) return default(Candidate);
             Vector3d up = position.normalized;
             Vector3d horizontalVelocity = Vector3d.Exclude(up, velocity);
-            Vector3d targetDirection = Vector3d.Exclude(up, TargetAt(source, baselineImpactUT) - position);
-            if (horizontalVelocity.sqrMagnitude < 1e-9 || targetDirection.sqrMagnitude < 1e-9) return default(Candidate);
-            Vector3d targetBurn = (horizontalVelocity + baselineBurn).magnitude * targetDirection.normalized - horizontalVelocity;
+            Vector3d targetRadial = TargetAt(source, baselineImpactUT).normalized;
+            Vector3d targetPlaneNormal = Vector3d.Cross(position, targetRadial);
+            if (horizontalVelocity.sqrMagnitude < 1e-9 || targetPlaneNormal.sqrMagnitude < 1e-9) return default(Candidate);
+            targetPlaneNormal.Normalize();
+            Vector3d desiredHorizontalVelocity = Vector3d.Cross(targetPlaneNormal, up).normalized * horizontalVelocity.magnitude;
+            if (Vector3d.Dot(desiredHorizontalVelocity, horizontalVelocity) < 0) desiredHorizontalVelocity = -desiredHorizontalVelocity;
+            Vector3d planeChangeBurn = desiredHorizontalVelocity - horizontalVelocity;
+            var planeAlignedOrbit = new Orbit();
+            planeAlignedOrbit.UpdateFromStateVectors(position, velocity + planeChangeBurn, source.Body, burnUT);
+            Vector3d alignedDeorbitBurn = OrbitalManeuverCalculator.DeltaVToChangePeriapsis(planeAlignedOrbit, burnUT, source.Body.Radius * 0.9);
             Candidate best = default(Candidate);
             for (int i = 0; i <= 16; ++i)
             {
-                // alpha=0 is the guaranteed impact trajectory; alpha=1 is the
-                // target-directed vector.  Intermediate candidates retain only
-                // trajectories independently verified to hit the body.
-                Vector3d burn = Vector3d.Lerp(baselineBurn, targetBurn, i / 16.0);
+                // Keep the plane-change and deorbit components explicit.  The
+                // interpolation searches only the deorbit depth after the target
+                // plane is aligned, and every resulting impact is re-estimated.
+                Vector3d burn = planeChangeBurn + Vector3d.Lerp(baselineBurn, alignedDeorbitBurn, i / 16.0);
                 var state = new LandingGuidanceV2Snapshot(source.Version, burnUT, source.Body, position, velocity + burn,
                     source.Mass, source.AvailableDeltaV, source.MaximumAcceleration, source.TargetLatitude, source.TargetLongitude, false);
                 LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(state);
