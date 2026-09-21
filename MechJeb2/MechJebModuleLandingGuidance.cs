@@ -200,6 +200,18 @@ namespace MuMech
             if (_v2.ControllerActive)
             {
                 if (GUILayout.Button("Abort V2 airless landing")) _v2.AbortAirlessLanding();
+                GUILayout.Label("V2 active target: " + Coordinates.ToStringDMS(_v2.V2ActiveTargetLatitude, _v2.V2ActiveTargetLongitude));
+                if (_v2.FlightPhase == MechJebModuleLandingGuidanceV2.V2FlightPhase.VisualAssessment ||
+                    _v2.FlightPhase == MechJebModuleLandingGuidanceV2.V2FlightPhase.TerminalDescent)
+                {
+                    GUILayout.BeginHorizontal();
+                    if (GUILayout.Button("N 10m")) _v2.TryAdjustV2Target(10, 0);
+                    if (GUILayout.Button("S 10m")) _v2.TryAdjustV2Target(-10, 0);
+                    if (GUILayout.Button("E 10m")) _v2.TryAdjustV2Target(0, 10);
+                    if (GUILayout.Button("W 10m")) _v2.TryAdjustV2Target(0, -10);
+                    GUILayout.EndHorizontal();
+                    GUILayout.Label("V2 local site: " + _v2.SiteAssessmentStatus);
+                }
             }
             else if (GUILayout.Button("Start V2 airless landing")) _v2.StartAirlessLanding();
 
@@ -256,7 +268,7 @@ namespace MuMech
                 GUILayout.Label("Delta-V above lower bound: " + preflight.DeltaVAboveLowerBound.ToSI() + "m/s");
             }
 
-            GUILayout.Label("V2 controller uses its own strategic burn and terminal hoverslam path. V1 Landing Guidance remains separate.");
+            GUILayout.Label("V2 owns its strategic burn, braking, local assessment, and terminal target tracking. V1 Landing Guidance remains separate.");
         }
 
         public void SetAndLandTargetKSC()

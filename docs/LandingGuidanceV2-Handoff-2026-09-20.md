@@ -1,5 +1,33 @@
 # Landing Guidance V2: implementation handoff — 2026-09-20
 
+> **Historical handoff note.** This document describes the passive foundation
+> that existed on 2026-09-20. Subsequent work on `design/landing-guidance-v2`
+> added an opt-in airless phase manager. The current source is authoritative
+> for its behaviour; V1 remains the restored controller described below.
+
+## Current airless V2 implementation
+
+The V2 start action requires only Flight scene and a selected position target.
+It performs its own immediate plan validation after the click; a player does
+not have to obtain or inspect a displayed `Candidate` state first. A failed
+plan produces a rejection reason before V2 requests throttle or attitude.
+
+For an accepted airless plan, V2 owns auto-warp to the strategic gate, a
+finite plane-alignment burn where needed, a counted strategic-deorbit burn,
+one bounded trim, coast, hoverslam-derived braking, a one-time local visual
+assessment/rebase, terrain sampling, and terminal target tracking. It does
+not start, stop, retune, or otherwise alter V1 Landing Guidance. V1 is still
+selected by its existing buttons and retains its complete original UI block.
+
+The V2 target is copied from the selected target when V2 starts. While V2 is
+active, a player moving the existing selected target updates that V2 target;
+local V2 N/S/E/W controls are shown only during the visual/terminal stages and
+are reserve-gated. A local rebase is accepted only after a fresh impact
+estimate is within the visual accuracy gate and local terrain passes slope and
+roughness checks. The V2 trace records these target events, the site result,
+planned finite burn delta-V, and delivered finite burn delta-V alongside the
+existing V1-correlated state.
+
 ## Read this first
 
 This document is the operational handoff for the next developer or chat.  It

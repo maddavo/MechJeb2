@@ -87,7 +87,11 @@ namespace MuMech
         private static void Consider(Candidate candidate, ref Candidate best, ref double bestMiss)
         {
             if (!candidate.Valid) return;
-            double miss = candidate.Downrange + candidate.CrossRange;
+            // Keep the nearest solution even when the coarse pass is on the
+            // short side.  The former positive-downrange filter could discard
+            // every coarse sample, leaving no point to refine and reporting a
+            // false "no candidate" result for an otherwise reachable target.
+            double miss = Math.Abs(candidate.Downrange) + candidate.CrossRange;
             if (miss < bestMiss) { best = candidate; bestMiss = miss; }
         }
 
@@ -131,9 +135,8 @@ namespace MuMech
                 double downrange = Vector3d.Dot(error, direction);
                 double crossRange = Math.Sqrt(Math.Max(0, error.sqrMagnitude - downrange * downrange));
                 double corridor = Math.Max(100.0, source.Body.Radius * 0.002);
-                if (downrange < 0) continue;
                 Candidate candidate = new Candidate(burnUT, planeChangeBurn, deorbitBurn, estimate, downrange, crossRange, corridor);
-                if (!best.Valid || candidate.Downrange + candidate.CrossRange < best.Downrange + best.CrossRange) best = candidate;
+                if (!best.Valid || Math.Abs(candidate.Downrange) + candidate.CrossRange < Math.Abs(best.Downrange) + best.CrossRange) best = candidate;
             }
             return best;
         }

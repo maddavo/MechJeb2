@@ -28,10 +28,23 @@ namespace MuMech
         private Vector3d _burnTargetVelocity;
         private Vector3d _trimDeltaV;
         private Vector3d _lastAdjustedVelocity;
+        private Vector3d _phaseBurnStartVelocity;
+        private double _phaseBurnPlannedDeltaV;
+        private string _phaseBurnName;
         private string _lastV2Phase;
+        private double _activeTargetLatitude;
+        private double _activeTargetLongitude;
+        private double _selectedTargetLatitude;
+        private double _selectedTargetLongitude;
+        private bool _hasActiveTarget;
+        private bool _visualRebaseDone;
+        private LandingSiteAssessment _siteAssessment;
+        private string _pendingTargetEvent;
+        private const double VisualAssessmentAltitude = 750.0;
+        private const double VisualRebaseAccuracyLimit = 500.0;
         private readonly DeltaSigmaThrottleModulator _terminalPwm = new DeltaSigmaThrottleModulator(0.02, 0.50);
 
-        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, AlignTrim, BoundedTrim, Coast, BrakingApproach, TerminalDescent, Complete, Rejected }
+        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, AlignTrim, BoundedTrim, Coast, BrakingApproach, VisualAssessment, TerminalDescent, Complete, Rejected }
 
         [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
         public bool PreviewEnabled;
@@ -45,9 +58,13 @@ namespace MuMech
         public LandingGuidanceV2Preflight Preflight { get; private set; }
 
         public bool IsPreviewOnly => _flightPhase == V2FlightPhase.Idle || _flightPhase == V2FlightPhase.Rejected || _flightPhase == V2FlightPhase.Complete;
-        public bool ControllerActive => _flightPhase == V2FlightPhase.Preflight || _flightPhase == V2FlightPhase.WarpToStrategic || _flightPhase == V2FlightPhase.AlignPlane || _flightPhase == V2FlightPhase.PlaneAlignment || _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.AlignTrim || _flightPhase == V2FlightPhase.BoundedTrim || _flightPhase == V2FlightPhase.Coast || _flightPhase == V2FlightPhase.BrakingApproach || _flightPhase == V2FlightPhase.TerminalDescent;
+        public bool ControllerActive => _flightPhase == V2FlightPhase.Preflight || _flightPhase == V2FlightPhase.WarpToStrategic || _flightPhase == V2FlightPhase.AlignPlane || _flightPhase == V2FlightPhase.PlaneAlignment || _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.AlignTrim || _flightPhase == V2FlightPhase.BoundedTrim || _flightPhase == V2FlightPhase.Coast || _flightPhase == V2FlightPhase.BrakingApproach || _flightPhase == V2FlightPhase.VisualAssessment || _flightPhase == V2FlightPhase.TerminalDescent;
         public V2FlightPhase FlightPhase => _flightPhase;
         public string ControllerStatus { get; private set; } = "Idle";
+        public bool HasV2ActiveTarget => _hasActiveTarget;
+        public double V2ActiveTargetLatitude => _hasActiveTarget ? _activeTargetLatitude : (double)Core.Target.targetLatitude;
+        public double V2ActiveTargetLongitude => _hasActiveTarget ? _activeTargetLongitude : (double)Core.Target.targetLongitude;
+        public string SiteAssessmentStatus => _siteAssessment == null ? "Waiting for the local visual-assessment gate." : _siteAssessment.Detail;
 
         public MechJebModuleLandingGuidanceV2(MechJebCore core) : base(core)
         {
@@ -69,6 +86,11 @@ namespace MuMech
         {
             if (!HighLogic.LoadedSceneIsFlight || !Core.Target.PositionTargetExists)
                 return RejectController("Select a landing target before starting V2.");
+            SetActiveTarget(Core.Target.targetLatitude, Core.Target.targetLongitude, false);
+            _selectedTargetLatitude = Core.Target.targetLatitude;
+            _selectedTargetLongitude = Core.Target.targetLongitude;
+            _visualRebaseDone = false;
+            _siteAssessment = null;
             RefreshPreflight();
             if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate) return RejectController("V2 requires a current airless strategic-deorbit candidate.");
             _activePlan = Preflight.AirlessPlan;
@@ -88,6 +110,7 @@ namespace MuMech
         {
             if (Vessel == null || Vessel.LandedOrSplashed) { ReleaseV2Control(); TransitionTo(V2FlightPhase.Complete, "V2 landing completed: vessel is landed or splashed."); return; }
             if (Core.Landing != null && Core.Landing.Enabled) { RejectController("V1 Landing Guidance was engaged; V2 relinquished control."); return; }
+            SyncSelectedTarget();
             switch (_flightPhase)
             {
                 case V2FlightPhase.WarpToStrategic:
@@ -114,7 +137,11 @@ namespace MuMech
                 case V2FlightPhase.AlignPlane:
                     Core.Thrust.ThrustOff();
                     Core.Attitude.attitudeTo(_activePlan.PlaneAlignmentDeltaV, AttitudeReference.INERTIAL_COT, this);
-                    if (Core.Attitude.attitudeError < 2.0) TransitionTo(V2FlightPhase.PlaneAlignment, "Executing the finite V2 plane-alignment burn.");
+                    if (Core.Attitude.attitudeError < 2.0)
+                    {
+                        BeginFiniteBurn("plane_alignment", _activePlan.PlaneAlignmentDeltaVMagnitude);
+                        TransitionTo(V2FlightPhase.PlaneAlignment, "Executing the finite V2 plane-alignment burn.");
+                    }
                     break;
                 case V2FlightPhase.PlaneAlignment:
                     Core.Attitude.attitudeTo(_activePlan.PlaneAlignmentDeltaV, AttitudeReference.INERTIAL_COT, this);
@@ -122,15 +149,23 @@ namespace MuMech
                     {
                         Core.Thrust.ThrustOff();
                         RefreshPreflight();
-                        if (Preflight?.Snapshot == null) { RejectController("V2 could not take a fresh snapshot after plane alignment."); break; }
-                        _burnTargetVelocity = VesselState.OrbitalVelocity + _activePlan.StrategicDeorbitDeltaV;
-                        TransitionTo(V2FlightPhase.AlignStrategicBurn, "Plane alignment complete; aligning for V2 strategic deorbit.");
+                        if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate)
+                        {
+                            RejectController("V2 plan failed fresh validation after plane alignment.");
+                            break;
+                        }
+                        _activePlan = Preflight.AirlessPlan;
+                        TransitionTo(V2FlightPhase.WarpToStrategic, "Plane alignment complete; V2 is revalidating the strategic-deorbit gate.");
                     }
                     else Core.Thrust.ThrustForDv(Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _activePlan.PlaneAlignmentDeltaV.normalized), 0.5);
                     break;
                 case V2FlightPhase.AlignStrategicBurn:
                     Core.Thrust.ThrustOff(); Core.Attitude.attitudeTo(_activePlan.StrategicDeorbitDeltaV, AttitudeReference.INERTIAL_COT, this);
-                    if (Core.Attitude.attitudeError < 2.0) TransitionTo(V2FlightPhase.StrategicBurn, "Executing V2 strategic deorbit burn.");
+                    if (Core.Attitude.attitudeError < 2.0)
+                    {
+                        BeginFiniteBurn("strategic_deorbit", _activePlan.StrategicDeorbitDeltaVMagnitude);
+                        TransitionTo(V2FlightPhase.StrategicBurn, "Executing V2 strategic deorbit burn.");
+                    }
                     break;
                 case V2FlightPhase.StrategicBurn:
                     Core.Attitude.attitudeTo(_activePlan.StrategicDeorbitDeltaV, AttitudeReference.INERTIAL_COT, this);
@@ -161,7 +196,11 @@ namespace MuMech
                 case V2FlightPhase.AlignTrim:
                     Core.Thrust.ThrustOff();
                     Core.Attitude.attitudeTo(_trimDeltaV, AttitudeReference.INERTIAL_COT, this);
-                    if (Core.Attitude.attitudeError < 2.0) TransitionTo(V2FlightPhase.BoundedTrim, "Executing one bounded V2 trim burn.");
+                    if (Core.Attitude.attitudeError < 2.0)
+                    {
+                        BeginFiniteBurn("bounded_trim", _trimDeltaV.magnitude);
+                        TransitionTo(V2FlightPhase.BoundedTrim, "Executing one bounded V2 trim burn.");
+                    }
                     break;
                 case V2FlightPhase.BoundedTrim:
                     Core.Attitude.attitudeTo(_trimDeltaV, AttitudeReference.INERTIAL_COT, this);
@@ -174,7 +213,10 @@ namespace MuMech
                             RejectController("V2 trim did not retain a valid impact trajectory.");
                             break;
                         }
-                        TransitionTo(V2FlightPhase.Coast, "Bounded V2 trim complete; coasting to braking approach.");
+                        if (Preflight.Estimate.TargetError > _activePlan.CorridorLimit)
+                            RejectController("V2 trim did not bring the target estimate inside the accepted corridor.");
+                        else
+                            TransitionTo(V2FlightPhase.Coast, "Bounded V2 trim complete; coasting to braking approach.");
                     }
                     else Core.Thrust.ThrustForDv(Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _trimDeltaV.normalized), 0.5);
                     break;
@@ -196,7 +238,13 @@ namespace MuMech
                     }
                     break;
                 case V2FlightPhase.BrakingApproach:
-                    Vector3d adjustedVelocity = VesselState.SurfaceVelocity + Core.Hoverslam.FinalDescentSpeed * VesselState.Up;
+                    if (VesselState.AltitudeBottom <= VisualAssessmentAltitude && !_visualRebaseDone)
+                    {
+                        Core.Warp.MinimumWarp(true);
+                        TransitionTo(V2FlightPhase.VisualAssessment, "V2 entered the local visual-assessment gate.");
+                        break;
+                    }
+                    Vector3d adjustedVelocity = TerminalVelocityError();
                     Core.Attitude.attitudeTo(-adjustedVelocity, AttitudeReference.INERTIAL_COT, this);
                     Core.Thrust.TargetThrottle = 1.0f;
                     if (!double.IsNaN(_lastAdjustedVelocity.x) && Vector3d.Angle(_lastAdjustedVelocity, adjustedVelocity) > 10.0)
@@ -206,6 +254,9 @@ namespace MuMech
                     }
                     _lastAdjustedVelocity = adjustedVelocity;
                     break;
+                case V2FlightPhase.VisualAssessment:
+                    TickVisualAssessment();
+                    break;
                 case V2FlightPhase.TerminalDescent:
                     TickTerminalDescent();
                     break;
@@ -214,10 +265,11 @@ namespace MuMech
 
         private void TickTerminalDescent()
         {
+            Vector3d velocityError = TerminalVelocityError();
             if (Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up) >= -1.0)
                 Core.Attitude.attitudeTo(Vector3d.up, AttitudeReference.SURFACE_NORTH, this);
             else
-                Core.Attitude.attitudeTo(Vector3d.back, AttitudeReference.SURFACE_VELOCITY, this);
+                Core.Attitude.attitudeTo(-velocityError, AttitudeReference.INERTIAL_COT, this);
             double altitude = Math.Max(0.1, VesselState.AltitudeBottom);
             double acceleration = Vessel.graviticAcceleration.magnitude + 0.5 * (VesselState.SurfaceVelocity.sqrMagnitude - 0.25) / altitude;
             _terminalPwm.MinOnTime = 0.50;
@@ -225,8 +277,161 @@ namespace MuMech
             Core.Thrust.TargetThrottle = _terminalPwm.ThrottleCommand(acceleration, VesselState.MinThrustAcceleration, VesselState.MaxThrustAcceleration, TimeWarp.fixedDeltaTime);
         }
 
+        private void TickVisualAssessment()
+        {
+            Core.Warp.MinimumWarp(true);
+            Vector3d brakingError = TerminalVelocityError();
+            Core.Attitude.attitudeTo(-brakingError, AttitudeReference.INERTIAL_COT, this);
+            Core.Thrust.TargetThrottle = 1.0f;
+            RefreshPreflight();
+            if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact)
+            {
+                RejectController("V2 local visual assessment has no valid impact estimate.");
+                return;
+            }
+            if (Preflight.Estimate.TargetError > VisualRebaseAccuracyLimit)
+            {
+                RejectController("V2 approach is outside the visual-rebase accuracy gate.");
+                return;
+            }
+            MainBody.GetLatLngAltAtUT(Preflight.Estimate.ImpactUT, Preflight.Estimate.ImpactPosition, out double latitude, out double longitude, out _);
+            SetActiveTarget(latitude, longitude, true);
+            _visualRebaseDone = true;
+            _pendingTargetEvent = "visual_rebase";
+            _siteAssessment = AssessLocalSite(latitude, longitude);
+            if (!_siteAssessment.Accepted)
+            {
+                RejectController("V2 local site assessment rejected the rebased target: " + _siteAssessment.Detail);
+                return;
+            }
+            TransitionTo(V2FlightPhase.TerminalDescent, "V2 visual rebase complete; terminal guidance is tracking the assessed local target.");
+        }
+
+        private Vector3d TerminalVelocityError()
+        {
+            Vector3d target = MainBody.GetWorldSurfacePosition(V2ActiveTargetLatitude, V2ActiveTargetLongitude,
+                MainBody.TerrainAltitude(V2ActiveTargetLatitude, V2ActiveTargetLongitude, true));
+            Vector3d horizontalError = Vector3d.Exclude(VesselState.Up, target - VesselState.CoM);
+            double verticalSpeed = -Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up);
+            double timeToGround = Math.Max(3.0, VesselState.AltitudeBottom / Math.Max(0.5, verticalSpeed));
+            Vector3d desiredHorizontalVelocity = horizontalError.sqrMagnitude < 1.0
+                ? Vector3d.zero
+                : horizontalError.normalized * Math.Min(12.0, horizontalError.magnitude / timeToGround);
+            Vector3d desiredVelocity = desiredHorizontalVelocity - Core.Hoverslam.FinalDescentSpeed * VesselState.Up;
+            return VesselState.SurfaceVelocity - desiredVelocity;
+        }
+
+        public bool TryAdjustV2Target(double northMeters, double eastMeters)
+        {
+            if (!ControllerActive || (_flightPhase != V2FlightPhase.VisualAssessment && _flightPhase != V2FlightPhase.TerminalDescent))
+            {
+                ControllerStatus = "V2 target movement is available only during local assessment or terminal descent.";
+                return false;
+            }
+            double latitude = V2ActiveTargetLatitude + northMeters * 180.0 / (Math.PI * MainBody.Radius);
+            double longitude = V2ActiveTargetLongitude + eastMeters * 180.0 /
+                (Math.PI * MainBody.Radius * Math.Max(0.01, Math.Cos(V2ActiveTargetLatitude * Math.PI / 180.0)));
+            if (!CanAcceptDivert(latitude, longitude, out string reason))
+            {
+                ControllerStatus = reason;
+                return false;
+            }
+            double previousLatitude = _activeTargetLatitude;
+            double previousLongitude = _activeTargetLongitude;
+            SetActiveTarget(latitude, longitude, true);
+            _siteAssessment = AssessLocalSite(latitude, longitude);
+            if (!_siteAssessment.Accepted)
+            {
+                SetActiveTarget(previousLatitude, previousLongitude, false);
+                ControllerStatus = "V2 target movement rejected: " + _siteAssessment.Detail;
+                return false;
+            }
+            _pendingTargetEvent = "divert_accepted";
+            ControllerStatus = "V2 local divert accepted; terminal guidance is tracking the updated target.";
+            RefreshPreflight();
+            return true;
+        }
+
+        private bool CanAcceptDivert(double latitude, double longitude, out string reason)
+        {
+            Vector3d current = MainBody.GetWorldSurfacePosition(V2ActiveTargetLatitude, V2ActiveTargetLongitude, 0);
+            Vector3d proposed = MainBody.GetWorldSurfacePosition(latitude, longitude, 0);
+            double distance = Vector3d.Distance(current, proposed);
+            double verticalSpeed = -Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up);
+            double timeToGround = Math.Max(3.0, VesselState.AltitudeBottom / Math.Max(0.5, verticalSpeed));
+            double divertCost = 4.0 * distance / timeToGround;
+            Core.StageStats.RequestUpdate();
+            double remainingDeltaV = Core.StageStats.VacStats.Sum(s => s.DeltaV);
+            double reserve = _activePlan == null ? 20.0 : _activePlan.TerminalDivertReserve;
+            if (remainingDeltaV < reserve + divertCost)
+            {
+                reason = "V2 target movement rejected: it would consume the protected terminal-divert reserve.";
+                return false;
+            }
+            reason = null;
+            return true;
+        }
+
+        private LandingSiteAssessment AssessLocalSite(double latitude, double longitude)
+        {
+            double sampleRadius = Math.Max(10.0, Math.Min(50.0, VesselState.AltitudeBottom * 0.1));
+            double slope = MainBody.GetPQSSlopeDegrees(latitude, longitude, sampleRadius);
+            double epsilon = sampleRadius * 180.0 / (Math.PI * MainBody.Radius);
+            double center = MainBody.TerrainAltitude(latitude, longitude, true);
+            double roughness = new[]
+            {
+                Math.Abs(MainBody.TerrainAltitude(latitude + epsilon, longitude, true) - center),
+                Math.Abs(MainBody.TerrainAltitude(latitude - epsilon, longitude, true) - center),
+                Math.Abs(MainBody.TerrainAltitude(latitude, longitude + epsilon, true) - center),
+                Math.Abs(MainBody.TerrainAltitude(latitude, longitude - epsilon, true) - center)
+            }.Max();
+            if (MainBody.ocean && center <= 0) return new LandingSiteAssessment(false, slope, roughness, "target is below sea level on an ocean body.");
+            if (slope > 15.0) return new LandingSiteAssessment(false, slope, roughness, "local slope exceeds 15 degrees.");
+            if (roughness > 15.0) return new LandingSiteAssessment(false, slope, roughness, "local terrain varies by more than 15 m across the footprint sample.");
+            return new LandingSiteAssessment(true, slope, roughness, "local terrain accepted: slope " + slope.ToString("F1") + " deg, roughness " + roughness.ToString("F1") + " m.");
+        }
+
+        private void SyncSelectedTarget()
+        {
+            if (!_hasActiveTarget || Math.Abs((double)Core.Target.targetLatitude - _selectedTargetLatitude) < 1e-8 && Math.Abs((double)Core.Target.targetLongitude - _selectedTargetLongitude) < 1e-8)
+                return;
+            _selectedTargetLatitude = (double)Core.Target.targetLatitude;
+            _selectedTargetLongitude = (double)Core.Target.targetLongitude;
+            SetActiveTarget(_selectedTargetLatitude, _selectedTargetLongitude, true);
+            _siteAssessment = null;
+            _pendingTargetEvent = "target_updated_by_player";
+        }
+
+        private void SetActiveTarget(double latitude, double longitude, bool traceEvent)
+        {
+            _activeTargetLatitude = latitude;
+            _activeTargetLongitude = longitude;
+            _hasActiveTarget = true;
+            if (traceEvent) _pendingTargetEvent = _visualRebaseDone ? "visual_rebase_or_divert" : "target_initialized";
+        }
+
+        private sealed class LandingSiteAssessment
+        {
+            public readonly bool Accepted; public readonly double Slope; public readonly double Roughness; public readonly string Detail;
+            public LandingSiteAssessment(bool accepted, double slope, double roughness, string detail)
+            { Accepted = accepted; Slope = slope; Roughness = roughness; Detail = detail; }
+        }
+
         private void ReleaseV2Control() { Core.Thrust.ThrustOff(); Core.Thrust.Users.Remove(this); Core.Attitude.Users.Remove(this); }
-        private void TransitionTo(V2FlightPhase next, string status) { _flightPhase = next; ControllerStatus = status; }
+        private void BeginFiniteBurn(string name, double plannedDeltaV)
+        {
+            _phaseBurnName = name;
+            _phaseBurnPlannedDeltaV = plannedDeltaV;
+            _phaseBurnStartVelocity = VesselState.OrbitalVelocity;
+        }
+
+        private void TransitionTo(V2FlightPhase next, string status)
+        {
+            _flightPhase = next;
+            ControllerStatus = status;
+            if (StructuredTraceEnabled && HighLogic.LoadedSceneIsFlight && Core.Target.PositionTargetExists && Vessel != null)
+                RefreshPreflight();
+        }
 
         public void RefreshPreflight()
         {
@@ -353,6 +558,13 @@ namespace MuMech
                     JsonNumber(airlessPlan?.SignedDownrange ?? double.NaN), JsonNumber(airlessPlan?.CrossRange ?? double.NaN),
                     JsonNumber(airlessPlan?.CorridorLimit ?? double.NaN), JsonString(airlessPlan?.Reason),
                     ControllerActive ? "true" : "false", JsonString(_flightPhase.ToString()), JsonString(ControllerStatus), V2AutoWarp ? "true" : "false");
+                baseFields += string.Format(CultureInfo.InvariantCulture,
+                    ",\"v2ActiveTargetLat\":{0},\"v2ActiveTargetLon\":{1},\"v2VisualRebaseDone\":{2},\"v2SiteAccepted\":{3},\"v2SiteSlopeDegrees\":{4},\"v2SiteRoughness\":{5},\"v2SiteDetail\":{6},\"v2FiniteBurn\":{7},\"v2PlannedBurnDeltaV\":{8},\"v2DeliveredBurnDeltaV\":{9}",
+                    JsonNumber(V2ActiveTargetLatitude), JsonNumber(V2ActiveTargetLongitude), _visualRebaseDone ? "true" : "false",
+                    _siteAssessment != null && _siteAssessment.Accepted ? "true" : "false", JsonNumber(_siteAssessment?.Slope ?? double.NaN),
+                    JsonNumber(_siteAssessment?.Roughness ?? double.NaN), JsonString(_siteAssessment?.Detail), JsonString(_phaseBurnName),
+                    JsonNumber(_phaseBurnPlannedDeltaV), JsonNumber(_phaseBurnStartVelocity.sqrMagnitude > 0
+                        ? (VesselState.OrbitalVelocity - _phaseBurnStartVelocity).magnitude : double.NaN));
 
                 var lines = new System.Collections.Generic.List<string>();
                 if (_lastV1Phase != phase)
@@ -365,6 +577,11 @@ namespace MuMech
                 bool warped = warpRate > 1.0;
                 if (_lastWarped != warped && (_lastWarped.HasValue || warped))
                     lines.Add(TraceRecord(baseFields, warped ? "warp_enter" : "warp_exit", _lastWarped.HasValue && _lastWarped.Value ? "warped" : "1x", warped ? "warped" : "1x"));
+                if (_pendingTargetEvent != null)
+                {
+                    lines.Add(TraceRecord(baseFields, _pendingTargetEvent, null, _flightPhase.ToString()));
+                    _pendingTargetEvent = null;
+                }
                 _lastV1Phase = phase;
                 _lastV2Phase = v2Phase;
                 _lastV1Burning = burning;
