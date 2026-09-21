@@ -42,5 +42,16 @@ namespace MechJebLibTest
 
             Assert.True(uncertain.Reserve > precise.Reserve);
         }
+
+        [Fact]
+        public void LowerThrustMarginRequiresMoreTerminalBraking()
+        {
+            AirlessLandingBudget highTwr = AirlessLandingBudget.For(120, 520, 25, 1.63, 40, 400);
+            AirlessLandingBudget lowTwr = AirlessLandingBudget.For(120, 520, 5, 1.63, 40, 400);
+
+            Assert.True(lowTwr.Terminal > highTwr.Terminal);
+            Assert.True(lowTwr.BrakingTime > highTwr.BrakingTime);
+            Assert.True(lowTwr.Contingency > highTwr.Contingency);
+        }
     }
 }
