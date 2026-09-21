@@ -34,7 +34,7 @@ namespace MuMech
                     }
                 }
 
-                if (!best.Valid)
+                if (!best.Valid || !best.WithinCorridor)
                     return Reject(snapshot, "No future strategic-deorbit burn reaches the required long-side target corridor.");
                 double terminal = best.Estimate.ImpactVelocity.magnitude;
                 double trim = Math.Max(5.0, best.Burn.magnitude * 0.10);
@@ -82,7 +82,7 @@ namespace MuMech
                 double downrange = Vector3d.Dot(error, direction);
                 double crossRange = Math.Sqrt(Math.Max(0, error.sqrMagnitude - downrange * downrange));
                 double corridor = Math.Max(100.0, source.Body.Radius * 0.002);
-                if (downrange < 0 || downrange > corridor || crossRange > corridor) continue;
+                if (downrange < 0) continue;
                 Candidate candidate = new Candidate(burnUT, burn, estimate, downrange, crossRange, corridor);
                 if (!best.Valid || candidate.Burn.magnitude < best.Burn.magnitude) best = candidate;
             }
@@ -104,6 +104,7 @@ namespace MuMech
             public readonly double BurnUT; public readonly Vector3d Burn; public readonly LandingGuidanceV2Estimate Estimate;
             public readonly double Downrange; public readonly double CrossRange; public readonly double Corridor;
             public bool Valid => Estimate != null;
+            public bool WithinCorridor => Valid && Downrange <= Corridor && CrossRange <= Corridor;
             public Candidate(double burnUT, Vector3d burn, LandingGuidanceV2Estimate estimate, double downrange, double crossRange, double corridor)
             { BurnUT = burnUT; Burn = burn; Estimate = estimate; Downrange = downrange; CrossRange = crossRange; Corridor = corridor; }
         }
