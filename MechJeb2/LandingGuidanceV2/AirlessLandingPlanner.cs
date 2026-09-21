@@ -1,4 +1,5 @@
 using System;
+using MechJebLib.HoverslamSimulation;
 using UnityEngine;
 
 namespace MuMech
@@ -30,7 +31,7 @@ namespace MuMech
                 Candidate best = default(Candidate);
                 double bestScore = double.PositiveInfinity;
                 for (int i = 0; i <= CoarseSamples; ++i)
-                    Consider(SolveStrategicVector(snapshot, coast, snapshot.UT + 10.0 + coast.period * i / CoarseSamples), ref best, ref bestScore);
+                    Consider(SolveStrategicVector(snapshot, coast, snapshot.UT + 10.0 + coast.period * i / CoarseSamples), snapshot.AvailableDeltaV, ref best, ref bestScore);
 
                 if (best.Valid)
                 {
@@ -39,7 +40,7 @@ namespace MuMech
                     {
                         double ut = best.BurnUT - span + 2.0 * span * i / RefinementSamples;
                         if (ut >= snapshot.UT + 2.0)
-                            Consider(SolveStrategicVector(snapshot, coast, ut), ref best, ref bestScore);
+                            Consider(SolveStrategicVector(snapshot, coast, ut), snapshot.AvailableDeltaV, ref best, ref bestScore);
                     }
                 }
 
@@ -49,19 +50,15 @@ namespace MuMech
                             ? "The closest strategic vector is outside the long-side corridor; no engine command was authorized."
                             : "No finite airless strategic-deorbit vector produced a valid impact trajectory.");
 
-                double terminal = best.Estimate.ImpactVelocity.magnitude;
-                double trim = Math.Max(5.0, best.Burn.magnitude * 0.10);
-                double reserve = Math.Max(20.0, terminal * 0.10);
-                double contingency = Math.Max(10.0, best.Burn.magnitude * 0.02);
-                double plannedDeltaV = best.Burn.magnitude + terminal + trim + reserve + contingency;
-                if (snapshot.AvailableDeltaV < plannedDeltaV)
-                    return Reject(snapshot, best.Burn, best.Estimate, best.Downrange, best.CrossRange, best.Corridor,
+                AirlessLandingBudget budget = CandidateBudget(best);
+                if (!budget.Fits(snapshot.AvailableDeltaV))
+                    return Reject(snapshot, best.Burn, best.Estimate, best.Downrange, best.CrossRange, best.Corridor, budget,
                         "Usable delta-V is below the V2 strategic, trim, terminal-reserve, and contingency budget.");
 
                 return new AirlessLandingPlan(snapshot.Version, AirlessLandingPlanState.Candidate, best.Burn,
-                    terminal, best.Downrange, best.CrossRange, best.Corridor, best.Estimate, snapshot.AvailableDeltaV,
+                    budget.Terminal, best.Downrange, best.CrossRange, best.Corridor, best.Estimate, snapshot.AvailableDeltaV,
                     "Future strategic vector satisfies the impact, long-side corridor, and budget constraints.", best.BurnUT,
-                    trim, reserve, contingency, Vector3d.zero);
+                    budget.Trim, budget.Reserve, budget.Contingency, Vector3d.zero);
             }
             catch (Exception ex)
             {
@@ -101,10 +98,10 @@ namespace MuMech
             return improvedEstimate != null;
         }
 
-        private static void Consider(Candidate candidate, ref Candidate best, ref double bestScore)
+        private static void Consider(Candidate candidate, double availableDeltaV, ref Candidate best, ref double bestScore)
         {
             if (!candidate.Valid) return;
-            double score = CandidateScore(candidate);
+            double score = CandidateScore(candidate, availableDeltaV);
             if (score < bestScore)
             {
                 best = candidate;
@@ -136,8 +133,26 @@ namespace MuMech
             alignedOrbit.UpdateFromStateVectors(position, velocity + planeSeed, source.Body, burnUT);
             Vector3d deorbitSeed = OrbitalManeuverCalculator.DeltaVToChangePeriapsis(alignedOrbit, burnUT, source.Body.Radius * 0.9);
 
-            Candidate best = EvaluateVector(source, burnUT, position, velocity, planeSeed + deorbitSeed);
-            Vector3d[] axes = { horizontalVelocity.normalized, targetPlaneNormal, up };
+            // Start from both the inexpensive conventional deorbit and the
+            // geometry-derived plane seed. The previous single high-energy
+            // seed could trap coordinate descent near an unusable solution.
+            Vector3d[] seeds = { baselineBurn, 1.5 * baselineBurn, planeSeed + deorbitSeed };
+            Candidate best = default(Candidate);
+            foreach (Vector3d seed in seeds)
+            {
+                Candidate candidate = RefineStrategicVector(source, burnUT, position, velocity, seed,
+                    horizontalVelocity.normalized, targetPlaneNormal, up);
+                if (candidate.Valid && (!best.Valid || CandidateScore(candidate, source.AvailableDeltaV) < CandidateScore(best, source.AvailableDeltaV)))
+                    best = candidate;
+            }
+            return best;
+        }
+
+        private static Candidate RefineStrategicVector(LandingGuidanceV2Snapshot source, double burnUT,
+            Vector3d position, Vector3d velocity, Vector3d seed, Vector3d alongTrack, Vector3d planeNormal, Vector3d radial)
+        {
+            Candidate best = EvaluateVector(source, burnUT, position, velocity, seed);
+            Vector3d[] axes = { alongTrack, planeNormal, radial };
             double[] steps = { 80.0, 40.0, 20.0, 10.0, 5.0, 2.0, 0.5 };
             foreach (double step in steps)
             {
@@ -150,9 +165,9 @@ namespace MuMech
                         {
                             Vector3d burn = best.Valid
                                 ? best.Burn + sign * step * axis
-                                : planeSeed + deorbitSeed + sign * step * axis;
+                                : seed + sign * step * axis;
                             Candidate candidate = EvaluateVector(source, burnUT, position, velocity, burn);
-                            if (!candidate.Valid || best.Valid && CandidateScore(candidate) >= CandidateScore(best)) continue;
+                            if (!candidate.Valid || best.Valid && CandidateScore(candidate, source.AvailableDeltaV) >= CandidateScore(best, source.AvailableDeltaV)) continue;
                             best = candidate;
                             improved = true;
                         }
@@ -178,14 +193,24 @@ namespace MuMech
             double downrange = Vector3d.Dot(error, direction);
             double crossRange = Math.Sqrt(Math.Max(0, error.sqrMagnitude - downrange * downrange));
             double corridor = Math.Max(100.0, source.Body.Radius * 0.002);
-            return new Candidate(burnUT, Vector3d.zero, burn, estimate, downrange, crossRange, corridor);
+            return new Candidate(burnUT, Vector3d.zero, burn, estimate, downrange, crossRange, corridor, source.AvailableDeltaV);
         }
 
-        private static double CandidateScore(Candidate candidate)
+        private static double CandidateScore(Candidate candidate, double availableDeltaV)
         {
             double desiredDownrange = candidate.Corridor * DesiredLongSideFraction;
-            return Math.Abs(candidate.Downrange - desiredDownrange) + 1.5 * candidate.CrossRange + 0.01 * candidate.Burn.magnitude;
+            double targetError = Math.Abs(candidate.Downrange - desiredDownrange) + 1.5 * candidate.CrossRange;
+            AirlessLandingBudget budget = CandidateBudget(candidate);
+            // Feasibility is a hard planning criterion. The previous score had
+            // a tiny burn penalty, so it preferred an accurately aimed but
+            // unusable high-energy impact over an affordable landing vector.
+            if (!budget.Fits(availableDeltaV))
+                return 1000000000.0 + 10000.0 * (budget.Total - availableDeltaV) + targetError;
+            return 10.0 * targetError + budget.Total;
         }
+
+        private static AirlessLandingBudget CandidateBudget(Candidate candidate) =>
+            AirlessLandingBudget.For(candidate.Burn.magnitude, candidate.Estimate.ImpactVelocity.magnitude);
 
         private static AirlessLandingPlan Reject(LandingGuidanceV2Snapshot snapshot, string reason) =>
             Reject(snapshot, Vector3d.zero, null, double.NaN, double.NaN, double.NaN, reason);
@@ -195,6 +220,13 @@ namespace MuMech
             new AirlessLandingPlan(snapshot?.Version ?? -1, AirlessLandingPlanState.Rejected, burn,
                 estimate?.ImpactVelocity.magnitude ?? double.NaN, downrange, crossRange, corridor, estimate,
                 snapshot?.AvailableDeltaV ?? double.NaN, reason);
+
+        private static AirlessLandingPlan Reject(LandingGuidanceV2Snapshot snapshot, Vector3d burn,
+            LandingGuidanceV2Estimate estimate, double downrange, double crossRange, double corridor,
+            AirlessLandingBudget budget, string reason) =>
+            new AirlessLandingPlan(snapshot?.Version ?? -1, AirlessLandingPlanState.Rejected, burn,
+                budget.Terminal, downrange, crossRange, corridor, estimate, snapshot?.AvailableDeltaV ?? double.NaN,
+                reason, double.NaN, budget.Trim, budget.Reserve, budget.Contingency, Vector3d.zero);
 
         private static Vector3d TargetAt(LandingGuidanceV2Snapshot snapshot, double ut)
         {
@@ -213,11 +245,12 @@ namespace MuMech
             public readonly double Downrange;
             public readonly double CrossRange;
             public readonly double Corridor;
+            public readonly double AvailableDeltaV;
             public bool Valid => Estimate != null;
             public bool WithinCorridor => Valid && Downrange >= 0 && Downrange <= Corridor && CrossRange <= Corridor;
 
             public Candidate(double burnUT, Vector3d planeAlignmentBurn, Vector3d burn, LandingGuidanceV2Estimate estimate,
-                double downrange, double crossRange, double corridor)
+                double downrange, double crossRange, double corridor, double availableDeltaV = double.NaN)
             {
                 BurnUT = burnUT;
                 PlaneAlignmentBurn = planeAlignmentBurn;
@@ -226,6 +259,7 @@ namespace MuMech
                 Downrange = downrange;
                 CrossRange = crossRange;
                 Corridor = corridor;
+                AvailableDeltaV = availableDeltaV;
             }
         }
     }
