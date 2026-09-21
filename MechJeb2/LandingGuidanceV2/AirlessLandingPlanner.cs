@@ -44,6 +44,17 @@ namespace MuMech
                     }
                 }
 
+                // A target outside the current orbital plane must be reached by
+                // a distinct alignment burn.  Do not hide that cost inside a
+                // giant deorbit vector: it is a separate phase with its own
+                // epoch, attitude gate and counted delta-V.
+                if (!best.Valid || !best.WithinCorridor)
+                {
+                    Candidate aligned = SolveWithPlaneAlignment(snapshot, coast);
+                    if (aligned.Valid && (!best.Valid || CandidateScore(aligned, snapshot.AvailableDeltaV) < CandidateScore(best, snapshot.AvailableDeltaV)))
+                        best = aligned;
+                }
+
                 if (!best.Valid || !best.WithinCorridor)
                     return Reject(snapshot, best.Burn, best.Estimate, best.Downrange, best.CrossRange, best.Corridor,
                         best.Valid
@@ -58,7 +69,7 @@ namespace MuMech
                 return new AirlessLandingPlan(snapshot.Version, AirlessLandingPlanState.Candidate, best.Burn,
                     budget.Terminal, best.Downrange, best.CrossRange, best.Corridor, best.Estimate, snapshot.AvailableDeltaV,
                     "Future strategic vector satisfies the impact, long-side corridor, and budget constraints.", best.BurnUT,
-                    budget.Trim, budget.Reserve, budget.Contingency, Vector3d.zero);
+                    budget.Trim, budget.Reserve, budget.Contingency, best.PlaneAlignmentBurn, best.PlaneAlignmentBurnUT);
             }
             catch (Exception ex)
             {
@@ -122,28 +133,64 @@ namespace MuMech
 
             Vector3d up = position.normalized;
             Vector3d horizontalVelocity = Vector3d.Exclude(up, velocity);
-            Vector3d targetRadial = TargetAt(source, baselineImpactUT).normalized;
-            Vector3d targetPlaneNormal = Vector3d.Cross(position, targetRadial);
-            if (horizontalVelocity.sqrMagnitude < 1e-9 || targetPlaneNormal.sqrMagnitude < 1e-9) return default(Candidate);
-            targetPlaneNormal.Normalize();
-            Vector3d desiredHorizontalVelocity = Vector3d.Cross(targetPlaneNormal, up).normalized * horizontalVelocity.magnitude;
-            if (Vector3d.Dot(desiredHorizontalVelocity, horizontalVelocity) < 0) desiredHorizontalVelocity = -desiredHorizontalVelocity;
-            Vector3d planeSeed = desiredHorizontalVelocity - horizontalVelocity;
-            var alignedOrbit = new Orbit();
-            alignedOrbit.UpdateFromStateVectors(position, velocity + planeSeed, source.Body, burnUT);
-            Vector3d deorbitSeed = OrbitalManeuverCalculator.DeltaVToChangePeriapsis(alignedOrbit, burnUT, source.Body.Radius * 0.9);
+            if (horizontalVelocity.sqrMagnitude < 1e-9) return default(Candidate);
 
-            // Start from both the inexpensive conventional deorbit and the
-            // geometry-derived plane seed. The previous single high-energy
-            // seed could trap coordinate descent near an unusable solution.
-            Vector3d[] seeds = { baselineBurn, 1.5 * baselineBurn, planeSeed + deorbitSeed };
+            // This routine solves deorbit only. Plane matching is deliberately
+            // performed by SolveWithPlaneAlignment so the burn budget and the
+            // phase manager cannot mistake a plane change for deorbit energy.
+            Vector3d[] seeds = { baselineBurn, 1.5 * baselineBurn };
             Candidate best = default(Candidate);
             foreach (Vector3d seed in seeds)
             {
                 Candidate candidate = RefineStrategicVector(source, burnUT, position, velocity, seed,
-                    horizontalVelocity.normalized, targetPlaneNormal, up);
+                    horizontalVelocity.normalized, Vector3d.Cross(up, horizontalVelocity).normalized, up);
                 if (candidate.Valid && (!best.Valid || CandidateScore(candidate, source.AvailableDeltaV) < CandidateScore(best, source.AvailableDeltaV)))
                     best = candidate;
+            }
+            return best;
+        }
+
+        private static Candidate SolveWithPlaneAlignment(LandingGuidanceV2Snapshot source, Orbit coast)
+        {
+            Candidate best = default(Candidate);
+            double bestScore = double.PositiveInfinity;
+            const int alignmentSamples = 16;
+            const int deorbitSamples = 24;
+            for (int i = 1; i <= alignmentSamples; ++i)
+            {
+                double alignmentUT = source.UT + coast.period * i / alignmentSamples;
+                Vector3d position = coast.WorldBCIPositionAtUT(alignmentUT);
+                Vector3d velocity = coast.WorldOrbitalVelocityAtUT(alignmentUT);
+                Vector3d up = position.normalized;
+                Vector3d horizontal = Vector3d.Exclude(up, velocity);
+                Vector3d targetRadial = TargetAt(source, alignmentUT + coast.period).normalized;
+                Vector3d planeNormal = Vector3d.Cross(position, targetRadial);
+                if (horizontal.sqrMagnitude < 1e-9 || planeNormal.sqrMagnitude < 1e-9) continue;
+                planeNormal.Normalize();
+                Vector3d desiredHorizontal = Vector3d.Cross(planeNormal, up).normalized * horizontal.magnitude;
+                if (Vector3d.Dot(desiredHorizontal, horizontal) < 0) desiredHorizontal = -desiredHorizontal;
+                Vector3d planeBurn = desiredHorizontal - horizontal;
+                if (planeBurn.magnitude > source.AvailableDeltaV) continue;
+
+                var alignedCoast = new Orbit();
+                alignedCoast.UpdateFromStateVectors(position, velocity + planeBurn, source.Body, alignmentUT);
+                if (!Finite(alignedCoast.period) || alignedCoast.eccentricity >= 1.0) continue;
+                var alignedSnapshot = new LandingGuidanceV2Snapshot(source.Version, alignmentUT, source.Body,
+                    position, velocity + planeBurn, source.Mass, source.AvailableDeltaV - planeBurn.magnitude,
+                    source.MaximumAcceleration, source.TargetLatitude, source.TargetLongitude, false);
+                for (int j = 1; j <= deorbitSamples; ++j)
+                {
+                    double deorbitUT = alignmentUT + 5.0 + alignedCoast.period * j / deorbitSamples;
+                    Candidate candidate = SolveStrategicVector(alignedSnapshot, alignedCoast, deorbitUT);
+                    if (!candidate.Valid) continue;
+                    candidate = candidate.WithPlaneAlignment(planeBurn, alignmentUT, source);
+                    double score = CandidateScore(candidate, source.AvailableDeltaV);
+                    if (score < bestScore)
+                    {
+                        best = candidate;
+                        bestScore = score;
+                    }
+                }
             }
             return best;
         }
@@ -193,7 +240,7 @@ namespace MuMech
             double downrange = Vector3d.Dot(error, direction);
             double crossRange = Math.Sqrt(Math.Max(0, error.sqrMagnitude - downrange * downrange));
             double corridor = Math.Max(100.0, source.Body.Radius * 0.002);
-            return new Candidate(burnUT, Vector3d.zero, burn, estimate, downrange, crossRange, corridor, source.AvailableDeltaV);
+            return new Candidate(source, burnUT, Vector3d.zero, burn, estimate, downrange, crossRange, corridor, source.AvailableDeltaV);
         }
 
         private static double CandidateScore(Candidate candidate, double availableDeltaV)
@@ -209,8 +256,16 @@ namespace MuMech
             return 10.0 * targetError + budget.Total;
         }
 
-        private static AirlessLandingBudget CandidateBudget(Candidate candidate) =>
-            AirlessLandingBudget.For(candidate.Burn.magnitude, candidate.Estimate.ImpactVelocity.magnitude);
+        private static AirlessLandingBudget CandidateBudget(Candidate candidate)
+        {
+            double radius = candidate.Estimate.ImpactPosition.magnitude;
+            double gravity = candidate.Estimate == null || radius <= 0
+                ? double.NaN
+                : candidate.Source.Body.gravParameter / (radius * radius);
+            double uncertainty = Math.Sqrt(candidate.Downrange * candidate.Downrange + candidate.CrossRange * candidate.CrossRange);
+            return AirlessLandingBudget.For(candidate.PlaneAlignmentBurn.magnitude + candidate.Burn.magnitude, candidate.Estimate.ImpactVelocity.magnitude,
+                candidate.Source.MaximumAcceleration, gravity, uncertainty, candidate.Corridor);
+        }
 
         private static AirlessLandingPlan Reject(LandingGuidanceV2Snapshot snapshot, string reason) =>
             Reject(snapshot, Vector3d.zero, null, double.NaN, double.NaN, double.NaN, reason);
@@ -238,7 +293,9 @@ namespace MuMech
 
         private struct Candidate
         {
+            public readonly LandingGuidanceV2Snapshot Source;
             public readonly double BurnUT;
+            public readonly double PlaneAlignmentBurnUT;
             public readonly Vector3d PlaneAlignmentBurn;
             public readonly Vector3d Burn;
             public readonly LandingGuidanceV2Estimate Estimate;
@@ -249,10 +306,12 @@ namespace MuMech
             public bool Valid => Estimate != null;
             public bool WithinCorridor => Valid && Downrange >= 0 && Downrange <= Corridor && CrossRange <= Corridor;
 
-            public Candidate(double burnUT, Vector3d planeAlignmentBurn, Vector3d burn, LandingGuidanceV2Estimate estimate,
-                double downrange, double crossRange, double corridor, double availableDeltaV = double.NaN)
+            public Candidate(LandingGuidanceV2Snapshot source, double burnUT, Vector3d planeAlignmentBurn, Vector3d burn, LandingGuidanceV2Estimate estimate,
+                double downrange, double crossRange, double corridor, double availableDeltaV = double.NaN, double planeAlignmentBurnUT = double.NaN)
             {
+                Source = source;
                 BurnUT = burnUT;
+                PlaneAlignmentBurnUT = planeAlignmentBurnUT;
                 PlaneAlignmentBurn = planeAlignmentBurn;
                 Burn = burn;
                 Estimate = estimate;
@@ -261,6 +320,9 @@ namespace MuMech
                 Corridor = corridor;
                 AvailableDeltaV = availableDeltaV;
             }
+
+            public Candidate WithPlaneAlignment(Vector3d planeBurn, double planeBurnUT, LandingGuidanceV2Snapshot source) =>
+                new Candidate(source, BurnUT, planeBurn, Burn, Estimate, Downrange, CrossRange, Corridor, source.AvailableDeltaV, planeBurnUT);
         }
     }
 }

@@ -189,20 +189,20 @@ namespace MuMech
                 return;
 
             GUILayout.Space(4);
-            GUILayout.Label("Landing Guidance V2 — airless landing plan");
+            GUILayout.Label("Landing Guidance V2 — landing plan");
             _v2.PreviewEnabled = GUILayout.Toggle(_v2.PreviewEnabled,
                 "Enable V2 estimator and preflight diagnostics");
 
             GUILayout.Space(2);
             GUILayout.Label("V2 airless landing controller: " + _v2.FlightPhase);
             GUILayout.Label(_v2.ControllerStatus);
-            _v2.V2AutoWarp = GUILayout.Toggle(_v2.V2AutoWarp, "V2 terminal auto-warp");
+            _v2.V2AutoWarp = GUILayout.Toggle(_v2.V2AutoWarp, "V2 auto-warp");
             if (_v2.ControllerActive)
             {
-                if (GUILayout.Button("Abort V2 airless landing")) _v2.AbortAirlessLanding();
+                if (GUILayout.Button("Abort V2 landing")) _v2.AbortAirlessLanding();
                 GUILayout.Label("V2 active target: " + Coordinates.ToStringDMS(_v2.V2ActiveTargetLatitude, _v2.V2ActiveTargetLongitude));
                 if (_v2.FlightPhase == MechJebModuleLandingGuidanceV2.V2FlightPhase.VisualAssessment ||
-                    _v2.FlightPhase == MechJebModuleLandingGuidanceV2.V2FlightPhase.TerminalDescent)
+                    _v2.FlightPhase == MechJebModuleLandingGuidanceV2.V2FlightPhase.TerminalDivert)
                 {
                     GUILayout.BeginHorizontal();
                     if (GUILayout.Button("N 10m")) _v2.TryAdjustV2Target(10, 0);
@@ -213,7 +213,7 @@ namespace MuMech
                     GUILayout.Label("V2 local site: " + _v2.SiteAssessmentStatus);
                 }
             }
-            else if (GUILayout.Button("Start V2 airless landing")) _v2.StartAirlessLanding();
+            else if (GUILayout.Button("Start V2 landing")) _v2.StartAirlessLanding();
 
             if (!_v2.PreviewEnabled)
                 return;

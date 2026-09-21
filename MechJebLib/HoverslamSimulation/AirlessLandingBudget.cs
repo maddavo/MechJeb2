@@ -26,11 +26,32 @@ namespace MechJebLib.HoverslamSimulation
             Total = strategic + terminal + trim + reserve + contingency;
         }
 
-        public static AirlessLandingBudget For(double strategic, double terminal)
+        /// <summary>
+        /// Builds an airless budget from the planned terminal state and the
+        /// vehicle/body limits captured with that plan. Reserves are expressed
+        /// as response time and local-divert capability, not a burn percentage.
+        /// </summary>
+        public static AirlessLandingBudget For(double strategic, double impactSpeed,
+            double maximumAcceleration, double localGravity, double targetUncertainty,
+            double corridorRadius)
         {
-            double trim = Math.Max(5.0, strategic * 0.10);
-            double reserve = Math.Max(20.0, terminal * 0.10);
-            double contingency = Math.Max(10.0, strategic * 0.02);
+            if (maximumAcceleration <= localGravity || localGravity < 0 || double.IsNaN(impactSpeed))
+                return new AirlessLandingBudget(strategic, double.PositiveInfinity,
+                    double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity);
+
+            double netDeceleration = maximumAcceleration - localGravity;
+            double brakingTime = Math.Max(0, impactSpeed) / netDeceleration;
+            double terminal = Math.Max(0, impactSpeed) + localGravity * brakingTime;
+
+            double trim = Math.Max(2.0, Math.Min(35.0, targetUncertainty / 40.0) + 2.0);
+
+            double divertDistance = Math.Max(10.0, Math.Min(corridorRadius, targetUncertainty + 25.0));
+            double responseSeconds = 2.0 + Math.Min(3.0, impactSpeed / Math.Max(1.0, maximumAcceleration));
+            double lateralSpeed = Math.Sqrt(Math.Max(0, 2.0 * netDeceleration * divertDistance));
+            double reserve = lateralSpeed + localGravity * responseSeconds;
+
+            double thrustMargin = Math.Max(0.05, netDeceleration / maximumAcceleration);
+            double contingency = localGravity * (1.0 + 1.0 / thrustMargin);
             return new AirlessLandingBudget(strategic, terminal, trim, reserve, contingency);
         }
 

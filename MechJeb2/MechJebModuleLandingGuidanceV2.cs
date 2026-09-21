@@ -38,6 +38,8 @@ namespace MuMech
         private double _activeTargetLongitude;
         private double _selectedTargetLatitude;
         private double _selectedTargetLongitude;
+        private double _originalTargetLatitude;
+        private double _originalTargetLongitude;
         private bool _hasActiveTarget;
         private bool _visualRebaseDone;
         private LandingSiteAssessment _siteAssessment;
@@ -46,7 +48,7 @@ namespace MuMech
         private const double VisualRebaseAccuracyLimit = 500.0;
         private readonly DeltaSigmaThrottleModulator _terminalPwm = new DeltaSigmaThrottleModulator(0.02, 0.50);
 
-        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, AlignTrim, BoundedTrim, Coast, BrakingApproach, VisualAssessment, TerminalDescent, Complete, Rejected }
+        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, AlignTrim, BoundedTrim, Coast, BrakingApproach, VisualAssessment, TerminalDivert, VelocityNull, Complete, Rejected }
 
         [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
         public bool PreviewEnabled;
@@ -60,17 +62,25 @@ namespace MuMech
         public LandingGuidanceV2Preflight Preflight { get; private set; }
 
         public bool IsPreviewOnly => _flightPhase == V2FlightPhase.Idle || _flightPhase == V2FlightPhase.Rejected || _flightPhase == V2FlightPhase.Complete;
-        public bool ControllerActive => _flightPhase == V2FlightPhase.Preflight || _flightPhase == V2FlightPhase.WarpToStrategic || _flightPhase == V2FlightPhase.AlignPlane || _flightPhase == V2FlightPhase.PlaneAlignment || _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.AlignTrim || _flightPhase == V2FlightPhase.BoundedTrim || _flightPhase == V2FlightPhase.Coast || _flightPhase == V2FlightPhase.BrakingApproach || _flightPhase == V2FlightPhase.VisualAssessment || _flightPhase == V2FlightPhase.TerminalDescent;
+        public bool ControllerActive => _flightPhase == V2FlightPhase.Preflight || _flightPhase == V2FlightPhase.WarpToStrategic || _flightPhase == V2FlightPhase.AlignPlane || _flightPhase == V2FlightPhase.PlaneAlignment || _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.AlignTrim || _flightPhase == V2FlightPhase.BoundedTrim || _flightPhase == V2FlightPhase.Coast || _flightPhase == V2FlightPhase.BrakingApproach || _flightPhase == V2FlightPhase.VisualAssessment || _flightPhase == V2FlightPhase.TerminalDivert || _flightPhase == V2FlightPhase.VelocityNull;
         public V2FlightPhase FlightPhase => _flightPhase;
         public string ControllerStatus { get; private set; } = "Idle";
         public bool HasV2ActiveTarget => _hasActiveTarget;
         public double V2ActiveTargetLatitude => _hasActiveTarget ? _activeTargetLatitude : (double)Core.Target.targetLatitude;
         public double V2ActiveTargetLongitude => _hasActiveTarget ? _activeTargetLongitude : (double)Core.Target.targetLongitude;
+        public double V2OriginalTargetLatitude => _hasActiveTarget ? _originalTargetLatitude : (double)Core.Target.targetLatitude;
+        public double V2OriginalTargetLongitude => _hasActiveTarget ? _originalTargetLongitude : (double)Core.Target.targetLongitude;
         public string SiteAssessmentStatus => _siteAssessment == null ? "Waiting for the local visual-assessment gate." : _siteAssessment.Detail;
 
         public MechJebModuleLandingGuidanceV2(MechJebCore core) : base(core)
         {
             Enabled = true;
+        }
+
+        public override void OnStart(PartModule.StartState state)
+        {
+            if (state != PartModule.StartState.None && state != PartModule.StartState.Editor)
+                Core.AddToPostDrawQueue(DrawV2MapMarkers);
         }
 
         public override void OnFixedUpdate()
@@ -89,6 +99,8 @@ namespace MuMech
             if (!HighLogic.LoadedSceneIsFlight || !Core.Target.PositionTargetExists)
                 return RejectController("Select a landing target before starting V2.");
             SetActiveTarget(Core.Target.targetLatitude, Core.Target.targetLongitude, false);
+            _originalTargetLatitude = Core.Target.targetLatitude;
+            _originalTargetLongitude = Core.Target.targetLongitude;
             _selectedTargetLatitude = Core.Target.targetLatitude;
             _selectedTargetLongitude = Core.Target.targetLongitude;
             _visualRebaseDone = false;
@@ -117,9 +129,12 @@ namespace MuMech
             {
                 case V2FlightPhase.WarpToStrategic:
                     Core.Thrust.ThrustOff();
-                    if (VesselState.Time < _activePlan.StrategicBurnUT - 20.0 && V2AutoWarp)
+                    double nextBurnUT = _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5
+                        ? _activePlan.PlaneAlignmentBurnUT
+                        : _activePlan.StrategicBurnUT;
+                    if (VesselState.Time < nextBurnUT - 20.0 && V2AutoWarp)
                     {
-                        Core.Warp.WarpToUT(_activePlan.StrategicBurnUT - 20.0);
+                        Core.Warp.WarpToUT(nextBurnUT - 20.0);
                         break;
                     }
                     Core.Warp.MinimumWarp(true);
@@ -130,7 +145,10 @@ namespace MuMech
                         break;
                     }
                     _activePlan = Preflight.AirlessPlan;
-                    if (_activePlan.StrategicBurnUT > VesselState.Time + 25.0)
+                    nextBurnUT = _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5
+                        ? _activePlan.PlaneAlignmentBurnUT
+                        : _activePlan.StrategicBurnUT;
+                    if (nextBurnUT > VesselState.Time + 25.0)
                         break;
                     _burnTargetVelocity = VesselState.OrbitalVelocity + _activePlan.PlaneAlignmentDeltaV;
                     TransitionTo(_activePlan.PlaneAlignmentDeltaVMagnitude > 0.5 ? V2FlightPhase.AlignPlane : V2FlightPhase.AlignStrategicBurn,
@@ -252,22 +270,34 @@ namespace MuMech
                     if (!double.IsNaN(_lastAdjustedVelocity.x) && Vector3d.Angle(_lastAdjustedVelocity, adjustedVelocity) > 10.0)
                     {
                         _terminalPwm.Reset();
-                        TransitionTo(V2FlightPhase.TerminalDescent, "V2 terminal descent is controlling velocity and touchdown.");
+                        TransitionTo(V2FlightPhase.TerminalDivert, "V2 terminal-divert guidance is tracking the active red target.");
                     }
                     _lastAdjustedVelocity = adjustedVelocity;
                     break;
                 case V2FlightPhase.VisualAssessment:
                     TickVisualAssessment();
                     break;
-                case V2FlightPhase.TerminalDescent:
-                    TickTerminalDescent();
+                case V2FlightPhase.TerminalDivert:
+                    TickTerminalDivert();
+                    break;
+                case V2FlightPhase.VelocityNull:
+                    TickVelocityNull();
                     break;
             }
         }
 
-        private void TickTerminalDescent()
+        private void TickTerminalDivert()
         {
             Vector3d velocityError = TerminalVelocityError();
+            Vector3d target = MainBody.GetWorldSurfacePosition(V2ActiveTargetLatitude, V2ActiveTargetLongitude,
+                MainBody.TerrainAltitude(V2ActiveTargetLatitude, V2ActiveTargetLongitude, true));
+            double horizontalError = Vector3d.Exclude(VesselState.Up, target - VesselState.CoM).magnitude;
+            if (horizontalError < 5.0 && VesselState.AltitudeBottom < 50.0)
+            {
+                _terminalPwm.Reset();
+                TransitionTo(V2FlightPhase.VelocityNull, "V2 velocity-null guidance is protecting touchdown speed and clearance.");
+                return;
+            }
             if (Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up) >= -1.0)
                 Core.Attitude.attitudeTo(Vector3d.up, AttitudeReference.SURFACE_NORTH, this);
             else
@@ -277,6 +307,19 @@ namespace MuMech
             _terminalPwm.MinOnTime = 0.50;
             _terminalPwm.MinOffTime = TimeWarp.fixedDeltaTime;
             Core.Thrust.TargetThrottle = _terminalPwm.ThrottleCommand(acceleration, VesselState.MinThrustAcceleration, VesselState.MaxThrustAcceleration, TimeWarp.fixedDeltaTime);
+        }
+
+        private void TickVelocityNull()
+        {
+            Core.Warp.MinimumWarp(true);
+            Core.Attitude.attitudeTo(Vector3d.up, AttitudeReference.SURFACE_NORTH, this);
+            double altitude = Math.Max(0.1, VesselState.AltitudeBottom);
+            double verticalSpeed = Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up);
+            double desiredAcceleration = Vessel.graviticAcceleration.magnitude + Math.Max(0, (verticalSpeed * verticalSpeed - 0.25) / (2.0 * altitude));
+            _terminalPwm.MinOnTime = 0.50;
+            _terminalPwm.MinOffTime = TimeWarp.fixedDeltaTime;
+            Core.Thrust.TargetThrottle = _terminalPwm.ThrottleCommand(desiredAcceleration, VesselState.MinThrustAcceleration,
+                VesselState.MaxThrustAcceleration, TimeWarp.fixedDeltaTime);
         }
 
         private void TickVisualAssessment()
@@ -306,7 +349,7 @@ namespace MuMech
                 RejectController("V2 local site assessment rejected the rebased target: " + _siteAssessment.Detail);
                 return;
             }
-            TransitionTo(V2FlightPhase.TerminalDescent, "V2 visual rebase complete; terminal guidance is tracking the assessed local target.");
+            TransitionTo(V2FlightPhase.TerminalDivert, "V2 visual rebase complete; terminal-divert guidance is tracking the assessed local target.");
         }
 
         private Vector3d TerminalVelocityError()
@@ -325,7 +368,7 @@ namespace MuMech
 
         public bool TryAdjustV2Target(double northMeters, double eastMeters)
         {
-            if (!ControllerActive || (_flightPhase != V2FlightPhase.VisualAssessment && _flightPhase != V2FlightPhase.TerminalDescent))
+            if (!ControllerActive || (_flightPhase != V2FlightPhase.VisualAssessment && _flightPhase != V2FlightPhase.TerminalDivert))
             {
                 ControllerStatus = "V2 target movement is available only during local assessment or terminal descent.";
                 return false;
@@ -412,6 +455,27 @@ namespace MuMech
             if (traceEvent) _pendingTargetEvent = _visualRebaseDone ? "visual_rebase_or_divert" : "target_initialized";
         }
 
+        private void DrawV2MapMarkers()
+        {
+            if (!ControllerActive || !MapView.MapIsEnabled || MainBody == null || !_hasActiveTarget)
+                return;
+
+            // V2 markers are independent of the legacy target-controller marker:
+            // red remains the V2 active requested site, blue is only the fresh
+            // estimated touchdown, and the original user target is subdued after
+            // the one-time local rebase.
+            GLUtils.DrawGroundMarker(MainBody, V2ActiveTargetLatitude, V2ActiveTargetLongitude, Color.red, true, 0, MainBody.Radius / 12);
+            if (_visualRebaseDone)
+                GLUtils.DrawGroundMarker(MainBody, V2OriginalTargetLatitude, V2OriginalTargetLongitude,
+                    new Color(0.55f, 0.55f, 0.55f, 0.75f), true, 0, MainBody.Radius / 18);
+            LandingGuidanceV2Estimate estimate = Preflight?.Estimate;
+            if (estimate != null && estimate.HasImpact && estimate.SnapshotVersion == Preflight.Snapshot.Version)
+            {
+                MainBody.GetLatLngAltAtUT(estimate.ImpactUT, estimate.ImpactPosition, out double latitude, out double longitude, out _);
+                GLUtils.DrawGroundMarker(MainBody, latitude, longitude, Color.blue, true, 0, MainBody.Radius / 14);
+            }
+        }
+
         private sealed class LandingSiteAssessment
         {
             public readonly bool Accepted; public readonly double Slope; public readonly double Roughness; public readonly string Detail;
@@ -480,7 +544,7 @@ namespace MuMech
 
             return new LandingGuidanceV2Snapshot(++_snapshotVersion, VesselState.Time, MainBody,
                 VesselState.OrbitalPosition, VesselState.OrbitalVelocity, VesselState.Mass, availableDeltaV,
-                VesselState.LimitedMaxThrustAcceleration, Core.Target.targetLatitude, Core.Target.targetLongitude,
+                VesselState.LimitedMaxThrustAcceleration, V2ActiveTargetLatitude, V2ActiveTargetLongitude,
                 Vessel.LandedOrSplashed);
         }
 

@@ -173,13 +173,13 @@ namespace MuMech
             double terminalBrakingLowerBound, double signedDownrange, double crossRange, double corridorLimit,
             LandingGuidanceV2Estimate candidateEstimate, double availableDeltaV, string reason, double strategicBurnUT = double.NaN,
             double trimBudget = 0, double terminalDivertReserve = 0, double contingency = 0,
-            Vector3d planeAlignmentDeltaV = default(Vector3d))
+            Vector3d planeAlignmentDeltaV = default(Vector3d), double planeAlignmentBurnUT = double.NaN)
         {
             SnapshotVersion = snapshotVersion;
             State = state;
             PlaneAlignmentDeltaV = planeAlignmentDeltaV;
             PlaneAlignmentDeltaVMagnitude = planeAlignmentDeltaV.magnitude;
-            PlaneAlignmentBurnUT = strategicBurnUT;
+            PlaneAlignmentBurnUT = planeAlignmentBurnUT;
             StrategicDeorbitDeltaV = strategicDeorbitDeltaV;
             StrategicDeorbitDeltaVMagnitude = strategicDeorbitDeltaV.magnitude;
             StrategicBurnUT = strategicBurnUT;

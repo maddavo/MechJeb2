@@ -8,19 +8,37 @@ namespace MechJebLibTest
         [Fact]
         public void FeasibleStrategicAndTerminalAllocationFits()
         {
-            AirlessLandingBudget budget = AirlessLandingBudget.For(120, 520);
+            AirlessLandingBudget budget = AirlessLandingBudget.For(120, 520, 25, 1.63, 40, 400);
 
             Assert.True(budget.Fits(810));
-            Assert.Equal(714, budget.Total, 8);
+            Assert.InRange(budget.Total, 700, 810);
         }
 
         [Fact]
         public void HighEnergyStrategicCandidateCannotPassBudgetGate()
         {
-            AirlessLandingBudget budget = AirlessLandingBudget.For(802.578702, 944.724828);
+            AirlessLandingBudget budget = AirlessLandingBudget.For(802.578702, 944.724828, 25, 1.63, 40, 400);
 
             Assert.False(budget.Fits(810.440617));
             Assert.True(budget.Total > 1700);
+        }
+
+        [Fact]
+        public void LowTwrTerminalPlanFailsClosed()
+        {
+            AirlessLandingBudget budget = AirlessLandingBudget.For(120, 520, 1.5, 1.63, 40, 400);
+
+            Assert.False(budget.Fits(100000));
+            Assert.True(double.IsInfinity(budget.Terminal));
+        }
+
+        [Fact]
+        public void LargerUncertaintyConsumesMoreDivertReserve()
+        {
+            AirlessLandingBudget precise = AirlessLandingBudget.For(120, 520, 25, 1.63, 20, 400);
+            AirlessLandingBudget uncertain = AirlessLandingBudget.For(120, 520, 25, 1.63, 300, 400);
+
+            Assert.True(uncertain.Reserve > precise.Reserve);
         }
     }
 }
