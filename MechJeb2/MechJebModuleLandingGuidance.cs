@@ -239,6 +239,11 @@ namespace MuMech
                 GUILayout.Label(airlessPlan.Reason);
                 if (!double.IsNaN(airlessPlan.StrategicDeorbitDeltaVMagnitude))
                     GUILayout.Label("Strategic deorbit candidate: " + airlessPlan.StrategicDeorbitDeltaVMagnitude.ToSI() + "m/s");
+                if (!double.IsNaN(airlessPlan.StrategicBurnUT))
+                    GUILayout.Label("Strategic burn in: " + Math.Max(0, airlessPlan.StrategicBurnUT - Planetarium.GetUniversalTime()).ToSI() + "s");
+                GUILayout.Label("V2 trim budget: " + airlessPlan.TrimBudget.ToSI() + "m/s");
+                GUILayout.Label("V2 terminal reserve: " + airlessPlan.TerminalDivertReserve.ToSI() + "m/s");
+                GUILayout.Label("V2 landing margin: " + airlessPlan.LowerBoundMargin.ToSI() + "m/s");
             }
 
             if (estimate.HasImpact)

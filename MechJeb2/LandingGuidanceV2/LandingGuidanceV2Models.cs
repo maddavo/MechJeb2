@@ -151,7 +151,11 @@ namespace MuMech
         public readonly AirlessLandingPlanState State;
         public readonly Vector3d StrategicDeorbitDeltaV;
         public readonly double StrategicDeorbitDeltaVMagnitude;
+        public readonly double StrategicBurnUT;
         public readonly double TerminalBrakingLowerBound;
+        public readonly double TrimBudget;
+        public readonly double TerminalDivertReserve;
+        public readonly double Contingency;
         public readonly double TotalLowerBound;
         public readonly double LowerBoundMargin;
         public readonly double SignedDownrange;
@@ -164,14 +168,19 @@ namespace MuMech
 
         public AirlessLandingPlan(long snapshotVersion, AirlessLandingPlanState state, Vector3d strategicDeorbitDeltaV,
             double terminalBrakingLowerBound, double signedDownrange, double crossRange, double corridorLimit,
-            LandingGuidanceV2Estimate candidateEstimate, double availableDeltaV, string reason)
+            LandingGuidanceV2Estimate candidateEstimate, double availableDeltaV, string reason, double strategicBurnUT = double.NaN,
+            double trimBudget = 0, double terminalDivertReserve = 0, double contingency = 0)
         {
             SnapshotVersion = snapshotVersion;
             State = state;
             StrategicDeorbitDeltaV = strategicDeorbitDeltaV;
             StrategicDeorbitDeltaVMagnitude = strategicDeorbitDeltaV.magnitude;
+            StrategicBurnUT = strategicBurnUT;
             TerminalBrakingLowerBound = terminalBrakingLowerBound;
-            TotalLowerBound = StrategicDeorbitDeltaVMagnitude + terminalBrakingLowerBound;
+            TrimBudget = trimBudget;
+            TerminalDivertReserve = terminalDivertReserve;
+            Contingency = contingency;
+            TotalLowerBound = StrategicDeorbitDeltaVMagnitude + terminalBrakingLowerBound + trimBudget + terminalDivertReserve + contingency;
             LowerBoundMargin = availableDeltaV - TotalLowerBound;
             SignedDownrange = signedDownrange;
             CrossRange = crossRange;

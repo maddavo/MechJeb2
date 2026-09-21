@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using JetBrainsAnnotations::JetBrains.Annotations;
+using MechJebLib.Control;
 using UnityEngine;
 
 namespace MuMech
@@ -25,9 +26,11 @@ namespace MuMech
         private V2FlightPhase _flightPhase;
         private AirlessLandingPlan _activePlan;
         private Vector3d _burnTargetVelocity;
+        private Vector3d _lastAdjustedVelocity;
         private string _lastV2Phase;
+        private readonly DeltaSigmaThrottleModulator _terminalPwm = new DeltaSigmaThrottleModulator(0.02, 0.50);
 
-        public enum V2FlightPhase { Idle, AlignStrategicBurn, StrategicBurn, TerminalHandover, Complete, Rejected }
+        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignStrategicBurn, StrategicBurn, Coast, BrakingApproach, TerminalDescent, Complete, Rejected }
 
         [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
         public bool PreviewEnabled;
@@ -41,10 +44,9 @@ namespace MuMech
         public LandingGuidanceV2Preflight Preflight { get; private set; }
 
         public bool IsPreviewOnly => _flightPhase == V2FlightPhase.Idle || _flightPhase == V2FlightPhase.Rejected || _flightPhase == V2FlightPhase.Complete;
-        public bool ControllerActive => _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.TerminalHandover;
+        public bool ControllerActive => _flightPhase == V2FlightPhase.Preflight || _flightPhase == V2FlightPhase.WarpToStrategic || _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.Coast || _flightPhase == V2FlightPhase.BrakingApproach || _flightPhase == V2FlightPhase.TerminalDescent;
         public V2FlightPhase FlightPhase => _flightPhase;
         public string ControllerStatus { get; private set; } = "Idle";
-        private MechJebModuleHoverslamAutopilot TerminalAutopilot => Core.GetComputerModule<MechJebModuleHoverslamAutopilot>();
 
         public MechJebModuleLandingGuidanceV2(MechJebCore core) : base(core)
         {
@@ -55,7 +57,7 @@ namespace MuMech
         {
             if (ControllerActive)
                 TickController();
-            if ((PreviewEnabled || ControllerActive) && HighLogic.LoadedSceneIsFlight && Core.Target.PositionTargetExists && VesselState.Time >= _nextRefreshUT)
+            if (PreviewEnabled && HighLogic.LoadedSceneIsFlight && Core.Target.PositionTargetExists && VesselState.Time >= _nextRefreshUT)
             {
                 _nextRefreshUT = VesselState.Time + RefreshInterval;
                 RefreshPreflight();
@@ -66,18 +68,16 @@ namespace MuMech
         {
             RefreshPreflight();
             if (Core.Landing != null && Core.Landing.Enabled) return RejectController("V1 Landing Guidance is active. Disengage it before starting V2.");
-            if (TerminalAutopilot != null && TerminalAutopilot.Enabled) return RejectController("Hoverslam is active. Disengage it before starting V2.");
+            if (Core.GetComputerModule<MechJebModuleHoverslamAutopilot>()?.Enabled == true) return RejectController("Hoverslam is active. Disengage it before starting V2.");
             if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate) return RejectController("V2 requires a current airless strategic-deorbit candidate.");
             _activePlan = Preflight.AirlessPlan;
-            _burnTargetVelocity = Preflight.Snapshot.Velocity + _activePlan.StrategicDeorbitDeltaV;
             Core.Thrust.Users.Add(this); Core.Attitude.Users.Add(this);
-            TransitionTo(V2FlightPhase.AlignStrategicBurn, "Aligning for V2 strategic deorbit burn.");
+            TransitionTo(V2FlightPhase.WarpToStrategic, "V2 plan accepted; moving to the strategic-deorbit burn gate.");
             return true;
         }
 
         public void AbortAirlessLanding()
         {
-            if (TerminalAutopilot != null && TerminalAutopilot.Enabled) TerminalAutopilot.Enabled = false;
             ReleaseV2Control(); TransitionTo(V2FlightPhase.Idle, "V2 landing aborted.");
         }
 
@@ -89,6 +89,26 @@ namespace MuMech
             if (Core.Landing != null && Core.Landing.Enabled) { RejectController("V1 Landing Guidance was engaged; V2 relinquished control."); return; }
             switch (_flightPhase)
             {
+                case V2FlightPhase.WarpToStrategic:
+                    Core.Thrust.ThrustOff();
+                    if (VesselState.Time < _activePlan.StrategicBurnUT - 20.0 && V2AutoWarp)
+                    {
+                        Core.Warp.WarpToUT(_activePlan.StrategicBurnUT - 20.0);
+                        break;
+                    }
+                    Core.Warp.MinimumWarp(true);
+                    RefreshPreflight();
+                    if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate)
+                    {
+                        RejectController("V2 plan failed fresh validation at the strategic-burn gate.");
+                        break;
+                    }
+                    _activePlan = Preflight.AirlessPlan;
+                    if (_activePlan.StrategicBurnUT > VesselState.Time + 25.0)
+                        break;
+                    _burnTargetVelocity = VesselState.OrbitalVelocity + _activePlan.StrategicDeorbitDeltaV;
+                    TransitionTo(V2FlightPhase.AlignStrategicBurn, "Aligning for the validated V2 strategic deorbit burn.");
+                    break;
                 case V2FlightPhase.AlignStrategicBurn:
                     Core.Thrust.ThrustOff(); Core.Attitude.attitudeTo(_activePlan.StrategicDeorbitDeltaV, AttitudeReference.INERTIAL_COT, this);
                     if (Core.Attitude.attitudeError < 2.0) TransitionTo(V2FlightPhase.StrategicBurn, "Executing V2 strategic deorbit burn.");
@@ -98,21 +118,56 @@ namespace MuMech
                     double remainingDv = Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _activePlan.StrategicDeorbitDeltaV.normalized);
                     if (remainingDv <= 0.5)
                     {
-                        Core.Thrust.ThrustOff(); ReleaseV2Control();
-                        if (TerminalAutopilot == null) { RejectController("V2 terminal executor is unavailable."); return; }
-                        TerminalAutopilot.AutoWarp = V2AutoWarp; TerminalAutopilot.HoldUpright = false; TerminalAutopilot.Enabled = true;
-                        TransitionTo(V2FlightPhase.TerminalHandover, "V2 deorbit complete; V2 terminal hoverslam is active.");
+                        Core.Thrust.ThrustOff();
+                        TransitionTo(V2FlightPhase.Coast, "Strategic deorbit complete; coasting to V2 braking approach.");
                     }
                     else Core.Thrust.ThrustForDv(remainingDv, 0.5);
                     break;
-                case V2FlightPhase.TerminalHandover:
-                    if (TerminalAutopilot == null || !TerminalAutopilot.Enabled)
+                case V2FlightPhase.Coast:
+                    Core.Thrust.ThrustOff();
+                    if (double.IsNaN(Core.Hoverslam.IgnitionUT) || double.IsInfinity(Core.Hoverslam.IgnitionUT))
                     {
-                        if (Vessel.LandedOrSplashed) TransitionTo(V2FlightPhase.Complete, "V2 landing completed.");
-                        else RejectController("V2 terminal executor stopped before touchdown.");
+                        RejectController("V2 terminal-braking simulation has no ignition solution.");
+                        break;
+                    }
+                    Core.Attitude.attitudeTo(Core.Hoverslam.IgnitionAttitude, AttitudeReference.INERTIAL_COT, this);
+                    if (V2AutoWarp && VesselState.Time < Core.Hoverslam.IgnitionUT - 10.0)
+                        Core.Warp.WarpToUT(Core.Hoverslam.IgnitionUT - 10.0);
+                    else if (Core.Hoverslam.IgnitionCountdown <= Time.fixedDeltaTime)
+                    {
+                        Core.Warp.MinimumWarp(true);
+                        _lastAdjustedVelocity = new Vector3d(double.NaN, double.NaN, double.NaN);
+                        TransitionTo(V2FlightPhase.BrakingApproach, "V2 braking approach has begun.");
                     }
                     break;
+                case V2FlightPhase.BrakingApproach:
+                    Vector3d adjustedVelocity = VesselState.SurfaceVelocity + Core.Hoverslam.FinalDescentSpeed * VesselState.Up;
+                    Core.Attitude.attitudeTo(-adjustedVelocity, AttitudeReference.INERTIAL_COT, this);
+                    Core.Thrust.TargetThrottle = 1.0f;
+                    if (!double.IsNaN(_lastAdjustedVelocity.x) && Vector3d.Angle(_lastAdjustedVelocity, adjustedVelocity) > 10.0)
+                    {
+                        _terminalPwm.Reset();
+                        TransitionTo(V2FlightPhase.TerminalDescent, "V2 terminal descent is controlling velocity and touchdown.");
+                    }
+                    _lastAdjustedVelocity = adjustedVelocity;
+                    break;
+                case V2FlightPhase.TerminalDescent:
+                    TickTerminalDescent();
+                    break;
             }
+        }
+
+        private void TickTerminalDescent()
+        {
+            if (Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up) >= -1.0)
+                Core.Attitude.attitudeTo(Vector3d.up, AttitudeReference.SURFACE_NORTH, this);
+            else
+                Core.Attitude.attitudeTo(Vector3d.back, AttitudeReference.SURFACE_VELOCITY, this);
+            double altitude = Math.Max(0.1, VesselState.AltitudeBottom);
+            double acceleration = Vessel.graviticAcceleration.magnitude + 0.5 * (VesselState.SurfaceVelocity.sqrMagnitude - 0.25) / altitude;
+            _terminalPwm.MinOnTime = 0.50;
+            _terminalPwm.MinOffTime = TimeWarp.fixedDeltaTime;
+            Core.Thrust.TargetThrottle = _terminalPwm.ThrottleCommand(acceleration, VesselState.MinThrustAcceleration, VesselState.MaxThrustAcceleration, TimeWarp.fixedDeltaTime);
         }
 
         private void ReleaseV2Control() { Core.Thrust.ThrustOff(); Core.Thrust.Users.Remove(this); Core.Attitude.Users.Remove(this); }
