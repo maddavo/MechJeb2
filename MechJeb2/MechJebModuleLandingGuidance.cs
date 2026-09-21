@@ -261,6 +261,19 @@ namespace MuMech
                 GUILayout.Label("Landing margin: " + airlessPlan.LowerBoundMargin.ToSI() + "m/s");
             }
 
+            AtmosphericLandingPlan atmosphericPlan = preflight.AtmosphericPlan;
+            if (atmosphericPlan != null && atmosphericPlan.State != AtmosphericLandingPlanState.NotApplicable)
+            {
+                GUILayout.Label("ATMOSPHERIC ENTRY PLAN: " + atmosphericPlan.State);
+                GUILayout.Label(atmosphericPlan.Reason);
+                if (!double.IsNaN(atmosphericPlan.PredictedTargetError))
+                    GUILayout.Label("Predicted entry endpoint error: " + atmosphericPlan.PredictedTargetError.ToSI() + "m");
+                if (!double.IsNaN(atmosphericPlan.EntryCorridorRadius))
+                    GUILayout.Label("Robust entry corridor: " + atmosphericPlan.EntryCorridorRadius.ToSI() + "m");
+                if (!double.IsNaN(atmosphericPlan.EndpointUncertainty))
+                    GUILayout.Label("Atmospheric endpoint uncertainty: " + atmosphericPlan.EndpointUncertainty.ToSI() + "m");
+            }
+
             if (estimate.HasImpact)
             {
                 GUILayout.Label("Sea-level target error: " + estimate.TargetError.ToSI() + "m");

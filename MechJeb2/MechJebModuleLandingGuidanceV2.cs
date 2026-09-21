@@ -532,8 +532,10 @@ namespace MuMech
             {
                 airlessPlan = Preflight.AirlessPlan;
             }
+            ReentrySimulation.Result atmosphericEstimate = Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Result;
+            AtmosphericLandingPlan atmosphericPlan = AtmosphericLandingPlanner.Plan(snapshot, atmosphericEstimate);
             Preflight = new LandingGuidanceV2Preflight(snapshot, estimate, estimatorValidation, assessment, airlessPlan,
-                brakingLowerBound);
+                brakingLowerBound, atmosphericPlan);
             WriteCorrelatedTrace(Preflight);
         }
 
@@ -562,6 +564,7 @@ namespace MuMech
                 LandingGuidanceV2EstimatorValidation estimatorValidation = preflight.EstimatorValidation;
                 LandingGuidanceV2PreflightAssessment assessment = preflight.Assessment;
                 AirlessLandingPlan airlessPlan = preflight.AirlessPlan;
+                AtmosphericLandingPlan atmosphericPlan = preflight.AtmosphericPlan;
                 MechJebModuleLandingAutopilot landing = Core.Landing;
                 AutopilotStep step = landing?.CurrentStep;
                 string phase = step?.GetType().Name;
@@ -637,6 +640,12 @@ namespace MuMech
                     JsonNumber(airlessPlan?.SignedDownrange ?? double.NaN), JsonNumber(airlessPlan?.CrossRange ?? double.NaN),
                     JsonNumber(airlessPlan?.CorridorLimit ?? double.NaN), JsonString(airlessPlan?.Reason),
                     ControllerActive ? "true" : "false", JsonString(_flightPhase.ToString()), JsonString(ControllerStatus), V2AutoWarp ? "true" : "false");
+                baseFields += string.Format(CultureInfo.InvariantCulture,
+                    ",\"atmosphericPlanState\":{0},\"atmosphericTargetError\":{1},\"atmosphericEntryCorridor\":{2},\"atmosphericEndpointUncertainty\":{3},\"atmosphericTerminalReserve\":{4},\"atmosphericLandingMargin\":{5},\"atmosphericPlanReason\":{6}",
+                    JsonString(atmosphericPlan?.State.ToString()), JsonNumber(atmosphericPlan?.PredictedTargetError ?? double.NaN),
+                    JsonNumber(atmosphericPlan?.EntryCorridorRadius ?? double.NaN), JsonNumber(atmosphericPlan?.EndpointUncertainty ?? double.NaN),
+                    JsonNumber(atmosphericPlan?.TerminalReserve ?? double.NaN), JsonNumber(atmosphericPlan?.LandingMargin ?? double.NaN),
+                    JsonString(atmosphericPlan?.Reason));
                 baseFields += string.Format(CultureInfo.InvariantCulture,
                     ",\"v2ActiveTargetLat\":{0},\"v2ActiveTargetLon\":{1},\"v2VisualRebaseDone\":{2},\"v2SiteAccepted\":{3},\"v2SiteSlopeDegrees\":{4},\"v2SiteRoughness\":{5},\"v2SiteDetail\":{6},\"v2FiniteBurn\":{7},\"v2PlannedBurnDeltaV\":{8},\"v2DeliveredBurnDeltaV\":{9}",
                     JsonNumber(V2ActiveTargetLatitude), JsonNumber(V2ActiveTargetLongitude), _visualRebaseDone ? "true" : "false",

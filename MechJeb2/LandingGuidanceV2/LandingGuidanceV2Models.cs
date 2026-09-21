@@ -141,6 +141,45 @@ namespace MuMech
         Candidate
     }
 
+    public enum AtmosphericLandingPlanState
+    {
+        NotApplicable,
+        WaitingForEstimate,
+        Rejected,
+        Candidate
+    }
+
+    /// <summary>
+    /// A robust atmospheric entry plan. The endpoint is deliberately a corridor
+    /// assessment, not an exact-touchdown promise: atmosphere, lift, parachutes
+    /// and powered terminal response retain explicit uncertainty.
+    /// </summary>
+    public sealed class AtmosphericLandingPlan
+    {
+        public readonly long SnapshotVersion;
+        public readonly AtmosphericLandingPlanState State;
+        public readonly double PredictedTargetError;
+        public readonly double EntryCorridorRadius;
+        public readonly double EndpointUncertainty;
+        public readonly double TerminalReserve;
+        public readonly double LandingMargin;
+        public readonly string Reason;
+
+        public AtmosphericLandingPlan(long snapshotVersion, AtmosphericLandingPlanState state,
+            double predictedTargetError, double entryCorridorRadius, double endpointUncertainty,
+            double terminalReserve, double landingMargin, string reason)
+        {
+            SnapshotVersion = snapshotVersion;
+            State = state;
+            PredictedTargetError = predictedTargetError;
+            EntryCorridorRadius = entryCorridorRadius;
+            EndpointUncertainty = endpointUncertainty;
+            TerminalReserve = terminalReserve;
+            LandingMargin = landingMargin;
+            Reason = reason;
+        }
+    }
+
     /// <summary>
     /// Immutable strategic-deorbit candidate. It is data only: V2 does not yet
     /// hand this vector to attitude, throttle, RCS, staging, target, or warp.
@@ -209,6 +248,7 @@ namespace MuMech
         public readonly LandingGuidanceV2EstimatorValidation EstimatorValidation;
         public readonly LandingGuidanceV2PreflightAssessment Assessment;
         public readonly AirlessLandingPlan AirlessPlan;
+        public readonly AtmosphericLandingPlan AtmosphericPlan;
         public readonly double BrakingDeltaVLowerBound;
         public readonly double DeltaVAboveLowerBound;
 
@@ -216,13 +256,14 @@ namespace MuMech
 
         public LandingGuidanceV2Preflight(LandingGuidanceV2Snapshot snapshot, LandingGuidanceV2Estimate estimate,
             LandingGuidanceV2EstimatorValidation estimatorValidation, LandingGuidanceV2PreflightAssessment assessment,
-            AirlessLandingPlan airlessPlan, double brakingDeltaVLowerBound)
+            AirlessLandingPlan airlessPlan, double brakingDeltaVLowerBound, AtmosphericLandingPlan atmosphericPlan = null)
         {
             Snapshot = snapshot;
             Estimate = estimate;
             EstimatorValidation = estimatorValidation;
             Assessment = assessment;
             AirlessPlan = airlessPlan;
+            AtmosphericPlan = atmosphericPlan;
             BrakingDeltaVLowerBound = brakingDeltaVLowerBound;
             DeltaVAboveLowerBound = snapshot == null ? double.NaN : snapshot.AvailableDeltaV - brakingDeltaVLowerBound;
         }
