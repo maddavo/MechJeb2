@@ -23,6 +23,12 @@ namespace MuMech
                     double.NaN, double.NaN, double.NaN, double.NaN, double.NaN,
                     "Waiting for a fresh atmospheric trajectory estimate from this vessel state.");
 
+            if (estimate.Outcome == ReentrySimulation.Outcome.NO_REENTRY ||
+                estimate.Outcome == ReentrySimulation.Outcome.AEROBRAKED)
+                return new AtmosphericLandingPlan(snapshot.Version, AtmosphericLandingPlanState.WaitingForEstimate,
+                    double.NaN, double.NaN, double.NaN, double.NaN, double.NaN,
+                    "No atmospheric entry landing trajectory is available yet; V2 is waiting for its strategic entry plan.");
+
             if (estimate.Outcome != ReentrySimulation.Outcome.LANDED)
                 return new AtmosphericLandingPlan(snapshot.Version, AtmosphericLandingPlanState.Rejected,
                     double.NaN, double.NaN, double.NaN, double.NaN, double.NaN,
