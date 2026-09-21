@@ -36,8 +36,6 @@ namespace MuMech
         private string _lastV2Phase;
         private double _activeTargetLatitude;
         private double _activeTargetLongitude;
-        private double _selectedTargetLatitude;
-        private double _selectedTargetLongitude;
         private double _originalTargetLatitude;
         private double _originalTargetLongitude;
         private bool _hasActiveTarget;
@@ -115,8 +113,6 @@ namespace MuMech
             SetActiveTarget(Core.Target.targetLatitude, Core.Target.targetLongitude, false);
             _originalTargetLatitude = Core.Target.targetLatitude;
             _originalTargetLongitude = Core.Target.targetLongitude;
-            _selectedTargetLatitude = Core.Target.targetLatitude;
-            _selectedTargetLongitude = Core.Target.targetLongitude;
             _visualRebaseDone = false;
             _siteAssessment = null;
             if (MainBody.atmosphere)
@@ -158,7 +154,6 @@ namespace MuMech
         {
             if (Vessel == null || Vessel.LandedOrSplashed) { ReleaseV2Control(); TransitionTo(V2FlightPhase.Complete, "V2 landing completed: vessel is landed or splashed."); return; }
             if (Core.Landing != null && Core.Landing.Enabled) { RejectController("V1 Landing Guidance was engaged; V2 relinquished control."); return; }
-            SyncSelectedTarget();
             switch (_flightPhase)
             {
                 case V2FlightPhase.Preflight:
@@ -526,17 +521,6 @@ namespace MuMech
             if (slope > 15.0) return new LandingSiteAssessment(false, slope, roughness, "local slope exceeds 15 degrees.");
             if (roughness > 15.0) return new LandingSiteAssessment(false, slope, roughness, "local terrain varies by more than 15 m across the footprint sample.");
             return new LandingSiteAssessment(true, slope, roughness, "local terrain accepted: slope " + slope.ToString("F1") + " deg, roughness " + roughness.ToString("F1") + " m.");
-        }
-
-        private void SyncSelectedTarget()
-        {
-            if (!_hasActiveTarget || Math.Abs((double)Core.Target.targetLatitude - _selectedTargetLatitude) < 1e-8 && Math.Abs((double)Core.Target.targetLongitude - _selectedTargetLongitude) < 1e-8)
-                return;
-            _selectedTargetLatitude = (double)Core.Target.targetLatitude;
-            _selectedTargetLongitude = (double)Core.Target.targetLongitude;
-            SetActiveTarget(_selectedTargetLatitude, _selectedTargetLongitude, true);
-            _siteAssessment = null;
-            _pendingTargetEvent = "target_updated_by_player";
         }
 
         private void SetActiveTarget(double latitude, double longitude, bool traceEvent)
