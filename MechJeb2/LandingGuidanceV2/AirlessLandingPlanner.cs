@@ -51,6 +51,7 @@ namespace MuMech
                 if (!best.Valid || !best.WithinCorridor)
                 {
                     Candidate aligned = SolveWithPlaneAlignment(snapshot, coast);
+                    aligned = RefineAlignedStrategicVector(snapshot, coast, aligned);
                     if (aligned.Valid && (!best.Valid || CandidateScore(aligned, snapshot.AvailableDeltaV) < CandidateScore(best, snapshot.AvailableDeltaV)))
                         best = aligned;
                 }
@@ -191,6 +192,44 @@ namespace MuMech
                         best = candidate;
                         bestScore = score;
                     }
+                }
+            }
+            return best;
+        }
+
+        private static Candidate RefineAlignedStrategicVector(LandingGuidanceV2Snapshot source, Orbit originalCoast,
+            Candidate coarse)
+        {
+            if (!coarse.Valid || coarse.PlaneAlignmentBurn.sqrMagnitude < 1e-9 || !Finite(coarse.PlaneAlignmentBurnUT))
+                return coarse;
+
+            Vector3d position = originalCoast.WorldBCIPositionAtUT(coarse.PlaneAlignmentBurnUT);
+            Vector3d velocity = originalCoast.WorldOrbitalVelocityAtUT(coarse.PlaneAlignmentBurnUT);
+            var alignedCoast = new Orbit();
+            alignedCoast.UpdateFromStateVectors(position, velocity + coarse.PlaneAlignmentBurn, source.Body,
+                coarse.PlaneAlignmentBurnUT);
+            if (!Finite(alignedCoast.period) || alignedCoast.eccentricity >= 1.0)
+                return coarse;
+
+            var alignedSnapshot = new LandingGuidanceV2Snapshot(source.Version, coarse.PlaneAlignmentBurnUT, source.Body,
+                position, velocity + coarse.PlaneAlignmentBurn, source.Mass,
+                source.AvailableDeltaV - coarse.PlaneAlignmentBurn.magnitude, source.MaximumAcceleration,
+                source.TargetLatitude, source.TargetLongitude, false);
+            Candidate best = coarse;
+            double bestScore = CandidateScore(best, source.AvailableDeltaV);
+            double span = alignedCoast.period / 24.0;
+            for (int i = 0; i <= RefinementSamples; ++i)
+            {
+                double burnUT = coarse.BurnUT - span + 2.0 * span * i / RefinementSamples;
+                if (burnUT < coarse.PlaneAlignmentBurnUT + 2.0) continue;
+                Candidate candidate = SolveStrategicVector(alignedSnapshot, alignedCoast, burnUT);
+                if (!candidate.Valid) continue;
+                candidate = candidate.WithPlaneAlignment(coarse.PlaneAlignmentBurn, coarse.PlaneAlignmentBurnUT, source);
+                double score = CandidateScore(candidate, source.AvailableDeltaV);
+                if (score < bestScore)
+                {
+                    best = candidate;
+                    bestScore = score;
                 }
             }
             return best;
