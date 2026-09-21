@@ -194,6 +194,7 @@ namespace MuMech
         public readonly Vector3d StrategicDeorbitDeltaV;
         public readonly double StrategicDeorbitDeltaVMagnitude;
         public readonly double StrategicBurnUT;
+        public readonly double BrakingEntryUT;
         public readonly double TerminalBrakingLowerBound;
         public readonly double TrimBudget;
         public readonly double TerminalDivertReserve;
@@ -212,7 +213,8 @@ namespace MuMech
             double terminalBrakingLowerBound, double signedDownrange, double crossRange, double corridorLimit,
             LandingGuidanceV2Estimate candidateEstimate, double availableDeltaV, string reason, double strategicBurnUT = double.NaN,
             double trimBudget = 0, double terminalDivertReserve = 0, double contingency = 0,
-            Vector3d planeAlignmentDeltaV = default(Vector3d), double planeAlignmentBurnUT = double.NaN)
+            Vector3d planeAlignmentDeltaV = default(Vector3d), double planeAlignmentBurnUT = double.NaN,
+            double brakingEntryUT = double.NaN)
         {
             SnapshotVersion = snapshotVersion;
             State = state;
@@ -222,6 +224,7 @@ namespace MuMech
             StrategicDeorbitDeltaV = strategicDeorbitDeltaV;
             StrategicDeorbitDeltaVMagnitude = strategicDeorbitDeltaV.magnitude;
             StrategicBurnUT = strategicBurnUT;
+            BrakingEntryUT = brakingEntryUT;
             TerminalBrakingLowerBound = terminalBrakingLowerBound;
             TrimBudget = trimBudget;
             TerminalDivertReserve = terminalDivertReserve;

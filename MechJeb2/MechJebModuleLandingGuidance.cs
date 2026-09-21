@@ -256,6 +256,8 @@ namespace MuMech
                     GUILayout.Label("Strategic burn: " + airlessPlan.StrategicDeorbitDeltaVMagnitude.ToSI() + "m/s");
                 if (!double.IsNaN(airlessPlan.StrategicBurnUT))
                     GUILayout.Label("Strategic burn in: " + Math.Max(0, airlessPlan.StrategicBurnUT - Planetarium.GetUniversalTime()).ToSI() + "s");
+                if (!double.IsNaN(airlessPlan.BrakingEntryUT))
+                    GUILayout.Label("Planned braking entry in: " + Math.Max(0, airlessPlan.BrakingEntryUT - Planetarium.GetUniversalTime()).ToSI() + "s");
                 GUILayout.Label("Planned landing Delta-V: " + airlessPlan.TotalLowerBound.ToSI() + "m/s");
                 GUILayout.Label("Protected terminal reserve: " + airlessPlan.TerminalDivertReserve.ToSI() + "m/s");
                 GUILayout.Label("Landing margin: " + airlessPlan.LowerBoundMargin.ToSI() + "m/s");

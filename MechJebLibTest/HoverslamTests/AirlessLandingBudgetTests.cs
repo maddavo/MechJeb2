@@ -12,6 +12,7 @@ namespace MechJebLibTest
 
             Assert.True(budget.Fits(810));
             Assert.InRange(budget.Total, 700, 810);
+            Assert.True(budget.BrakingTime > 0);
         }
 
         [Fact]
@@ -30,6 +31,7 @@ namespace MechJebLibTest
 
             Assert.False(budget.Fits(100000));
             Assert.True(double.IsInfinity(budget.Terminal));
+            Assert.True(double.IsInfinity(budget.BrakingTime));
         }
 
         [Fact]

@@ -69,7 +69,8 @@ namespace MuMech
                 return new AirlessLandingPlan(snapshot.Version, AirlessLandingPlanState.Candidate, best.Burn,
                     budget.Terminal, best.Downrange, best.CrossRange, best.Corridor, best.Estimate, snapshot.AvailableDeltaV,
                     "Future strategic vector satisfies the impact, long-side corridor, and budget constraints.", best.BurnUT,
-                    budget.Trim, budget.Reserve, budget.Contingency, best.PlaneAlignmentBurn, best.PlaneAlignmentBurnUT);
+                    budget.Trim, budget.Reserve, budget.Contingency, best.PlaneAlignmentBurn, best.PlaneAlignmentBurnUT,
+                    best.Estimate.ImpactUT - budget.BrakingTime);
             }
             catch (Exception ex)
             {

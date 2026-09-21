@@ -14,15 +14,18 @@ namespace MechJebLib.HoverslamSimulation
         public readonly double Trim;
         public readonly double Reserve;
         public readonly double Contingency;
+        public readonly double BrakingTime;
         public readonly double Total;
 
-        private AirlessLandingBudget(double strategic, double terminal, double trim, double reserve, double contingency)
+        private AirlessLandingBudget(double strategic, double terminal, double trim, double reserve, double contingency,
+            double brakingTime)
         {
             Strategic = strategic;
             Terminal = terminal;
             Trim = trim;
             Reserve = reserve;
             Contingency = contingency;
+            BrakingTime = brakingTime;
             Total = strategic + terminal + trim + reserve + contingency;
         }
 
@@ -37,7 +40,7 @@ namespace MechJebLib.HoverslamSimulation
         {
             if (maximumAcceleration <= localGravity || localGravity < 0 || double.IsNaN(impactSpeed))
                 return new AirlessLandingBudget(strategic, double.PositiveInfinity,
-                    double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity);
+                    double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity, double.PositiveInfinity);
 
             double netDeceleration = maximumAcceleration - localGravity;
             double brakingTime = Math.Max(0, impactSpeed) / netDeceleration;
@@ -52,7 +55,7 @@ namespace MechJebLib.HoverslamSimulation
 
             double thrustMargin = Math.Max(0.05, netDeceleration / maximumAcceleration);
             double contingency = localGravity * (1.0 + 1.0 / thrustMargin);
-            return new AirlessLandingBudget(strategic, terminal, trim, reserve, contingency);
+            return new AirlessLandingBudget(strategic, terminal, trim, reserve, contingency, brakingTime);
         }
 
         public bool Fits(double availableDeltaV) => availableDeltaV >= Total;
