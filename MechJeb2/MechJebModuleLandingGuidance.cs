@@ -194,7 +194,7 @@ namespace MuMech
                 "Enable V2 estimator and preflight diagnostics");
 
             GUILayout.Space(2);
-            GUILayout.Label("V2 airless landing controller: " + _v2.FlightPhase);
+            GUILayout.Label("V2 landing controller: " + _v2.FlightPhase);
             GUILayout.Label(_v2.ControllerStatus);
             _v2.V2AutoWarp = GUILayout.Toggle(_v2.V2AutoWarp, "V2 auto-warp");
             if (_v2.ControllerActive)
