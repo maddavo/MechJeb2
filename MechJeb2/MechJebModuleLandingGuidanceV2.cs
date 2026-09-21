@@ -48,7 +48,7 @@ namespace MuMech
         private const double VisualRebaseAccuracyLimit = 500.0;
         private readonly DeltaSigmaThrottleModulator _terminalPwm = new DeltaSigmaThrottleModulator(0.02, 0.50);
 
-        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, AlignTrim, BoundedTrim, Coast, BrakingApproach, VisualAssessment, TerminalDivert, VelocityNull, Complete, Rejected }
+        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, AlignTrim, BoundedTrim, Coast, AtmosphericEntry, BrakingApproach, VisualAssessment, TerminalDivert, VelocityNull, Complete, Rejected }
 
         [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
         public bool PreviewEnabled;
@@ -62,7 +62,7 @@ namespace MuMech
         public LandingGuidanceV2Preflight Preflight { get; private set; }
 
         public bool IsPreviewOnly => _flightPhase == V2FlightPhase.Idle || _flightPhase == V2FlightPhase.Rejected || _flightPhase == V2FlightPhase.Complete;
-        public bool ControllerActive => _flightPhase == V2FlightPhase.Preflight || _flightPhase == V2FlightPhase.WarpToStrategic || _flightPhase == V2FlightPhase.AlignPlane || _flightPhase == V2FlightPhase.PlaneAlignment || _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.AlignTrim || _flightPhase == V2FlightPhase.BoundedTrim || _flightPhase == V2FlightPhase.Coast || _flightPhase == V2FlightPhase.BrakingApproach || _flightPhase == V2FlightPhase.VisualAssessment || _flightPhase == V2FlightPhase.TerminalDivert || _flightPhase == V2FlightPhase.VelocityNull;
+        public bool ControllerActive => _flightPhase == V2FlightPhase.Preflight || _flightPhase == V2FlightPhase.WarpToStrategic || _flightPhase == V2FlightPhase.AlignPlane || _flightPhase == V2FlightPhase.PlaneAlignment || _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.AlignTrim || _flightPhase == V2FlightPhase.BoundedTrim || _flightPhase == V2FlightPhase.Coast || _flightPhase == V2FlightPhase.AtmosphericEntry || _flightPhase == V2FlightPhase.BrakingApproach || _flightPhase == V2FlightPhase.VisualAssessment || _flightPhase == V2FlightPhase.TerminalDivert || _flightPhase == V2FlightPhase.VelocityNull;
         public V2FlightPhase FlightPhase => _flightPhase;
         public string ControllerStatus { get; private set; } = "Idle";
         public bool HasV2ActiveTarget => _hasActiveTarget;
@@ -94,7 +94,7 @@ namespace MuMech
             }
         }
 
-        public bool StartAirlessLanding()
+        public bool StartLanding()
         {
             if (!HighLogic.LoadedSceneIsFlight || !Core.Target.PositionTargetExists)
                 return RejectController("Select a landing target before starting V2.");
@@ -105,6 +105,17 @@ namespace MuMech
             _selectedTargetLongitude = Core.Target.targetLongitude;
             _visualRebaseDone = false;
             _siteAssessment = null;
+            if (MainBody.atmosphere)
+            {
+                // V2 uses the existing re-entry simulator only as an estimator;
+                // it never starts the V1 landing controller.  The phase manager
+                // waits for a fresh, corridor-valid estimate before it requests
+                // attitude or throttle.
+                Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Users.Add(this);
+                RefreshPreflight(true);
+                TransitionTo(V2FlightPhase.Preflight, "V2 is acquiring a fresh atmospheric entry-corridor estimate.");
+                return true;
+            }
             RefreshPreflight(true);
             if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate) return RejectController("V2 requires a current airless strategic-deorbit candidate.");
             _activePlan = Preflight.AirlessPlan;
@@ -112,6 +123,10 @@ namespace MuMech
             TransitionTo(V2FlightPhase.WarpToStrategic, "V2 plan accepted; moving to the strategic-deorbit burn gate.");
             return true;
         }
+
+        // Retained for save/UI compatibility while the visible V2 action is
+        // now body-neutral.
+        public bool StartAirlessLanding() => StartLanding();
 
         public void AbortAirlessLanding()
         {
@@ -127,6 +142,19 @@ namespace MuMech
             SyncSelectedTarget();
             switch (_flightPhase)
             {
+                case V2FlightPhase.Preflight:
+                    Core.Thrust.ThrustOff();
+                    Core.Warp.MinimumWarp(true);
+                    RefreshPreflight(true);
+                    if (MainBody.atmosphere)
+                    {
+                        if (Preflight?.AtmosphericPlan?.State == AtmosphericLandingPlanState.Candidate)
+                            TransitionTo(V2FlightPhase.AtmosphericEntry,
+                                "V2 atmospheric entry corridor is validated; holding the independent entry profile.");
+                        else if (Preflight?.AtmosphericPlan?.State == AtmosphericLandingPlanState.Rejected)
+                            RejectController(Preflight.AtmosphericPlan.Reason);
+                    }
+                    break;
                 case V2FlightPhase.WarpToStrategic:
                     Core.Thrust.ThrustOff();
                     double nextBurnUT = _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5
@@ -256,6 +284,25 @@ namespace MuMech
                         _lastAdjustedVelocity = new Vector3d(double.NaN, double.NaN, double.NaN);
                         TransitionTo(V2FlightPhase.BrakingApproach, "V2 braking approach has begun.");
                     }
+                    break;
+                case V2FlightPhase.AtmosphericEntry:
+                    // Atmospheric flight is never warped.  Keep the vehicle
+                    // retrograde to the surface-relative flow while the model
+                    // based estimator is refreshed, then transfer only to the
+                    // local powered braking phase when its ignition solution is
+                    // current.
+                    Core.Warp.MinimumWarp(true);
+                    Core.Thrust.ThrustOff();
+                    Core.Attitude.attitudeTo(-VesselState.SurfaceVelocity, AttitudeReference.INERTIAL_COT, this);
+                    RefreshPreflight(false);
+                    if (Preflight?.AtmosphericPlan?.State == AtmosphericLandingPlanState.Rejected)
+                    {
+                        RejectController(Preflight.AtmosphericPlan.Reason);
+                        break;
+                    }
+                    if (!double.IsNaN(Core.Hoverslam.IgnitionUT) && !double.IsInfinity(Core.Hoverslam.IgnitionUT) &&
+                        Core.Hoverslam.IgnitionCountdown <= 5.0)
+                        TransitionTo(V2FlightPhase.BrakingApproach, "V2 atmospheric powered braking has begun.");
                     break;
                 case V2FlightPhase.BrakingApproach:
                     if (VesselState.AltitudeBottom <= VisualAssessmentAltitude && !_visualRebaseDone)
@@ -483,7 +530,13 @@ namespace MuMech
             { Accepted = accepted; Slope = slope; Roughness = roughness; Detail = detail; }
         }
 
-        private void ReleaseV2Control() { Core.Thrust.ThrustOff(); Core.Thrust.Users.Remove(this); Core.Attitude.Users.Remove(this); }
+        private void ReleaseV2Control()
+        {
+            Core.Thrust.ThrustOff();
+            Core.Thrust.Users.Remove(this);
+            Core.Attitude.Users.Remove(this);
+            Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Users.Remove(this);
+        }
         private void BeginFiniteBurn(string name, double plannedDeltaV)
         {
             _phaseBurnName = name;

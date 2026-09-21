@@ -213,7 +213,7 @@ namespace MuMech
                     GUILayout.Label("V2 local site: " + _v2.SiteAssessmentStatus);
                 }
             }
-            else if (GUILayout.Button("Start V2 landing")) _v2.StartAirlessLanding();
+            else if (GUILayout.Button("Start V2 landing")) _v2.StartLanding();
 
             if (!_v2.PreviewEnabled)
                 return;
