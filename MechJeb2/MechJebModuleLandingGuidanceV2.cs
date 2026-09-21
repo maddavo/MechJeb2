@@ -131,7 +131,12 @@ namespace MuMech
                 return true;
             }
             RefreshPreflight(true);
-            if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate) return RejectController("V2 requires a current airless strategic-deorbit candidate.");
+            if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate)
+            {
+                TransitionTo(V2FlightPhase.Preflight,
+                    "V2 accepted the selected target and is waiting for a feasible airless strategic-deorbit plan.");
+                return true;
+            }
             _activePlan = Preflight.AirlessPlan;
             Core.Thrust.Users.Add(this); Core.Attitude.Users.Add(this);
             TransitionTo(V2FlightPhase.WarpToStrategic, "V2 plan accepted; moving to the strategic-deorbit burn gate.");
@@ -167,6 +172,18 @@ namespace MuMech
                                 "V2 atmospheric entry corridor is validated; holding the independent entry profile.");
                         else if (Preflight?.AtmosphericPlan?.State == AtmosphericLandingPlanState.Rejected)
                             RejectController(Preflight.AtmosphericPlan.Reason);
+                    }
+                    else if (Preflight?.AirlessPlan?.State == AirlessLandingPlanState.Candidate)
+                    {
+                        _activePlan = Preflight.AirlessPlan;
+                        Core.Thrust.Users.Add(this);
+                        Core.Attitude.Users.Add(this);
+                        TransitionTo(V2FlightPhase.WarpToStrategic,
+                            "V2 airless plan is now feasible; moving to the strategic-deorbit burn gate.");
+                    }
+                    else
+                    {
+                        ControllerStatus = "V2 is holding in airless preflight and will replan before requesting any vessel command.";
                     }
                     break;
                 case V2FlightPhase.WarpToStrategic:
