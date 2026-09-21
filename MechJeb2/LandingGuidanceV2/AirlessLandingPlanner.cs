@@ -65,12 +65,21 @@ namespace MuMech
             Vector3d velocity = coast.WorldOrbitalVelocityAtUT(burnUT);
             var burnOrbit = new Orbit(); burnOrbit.UpdateFromStateVectors(position, velocity, source.Body, burnUT);
             Vector3d baselineBurn = OrbitalManeuverCalculator.DeltaVToChangePeriapsis(burnOrbit, burnUT, source.Body.Radius * 0.9);
-            Vector3d normal = Vector3d.Cross(position, velocity).normalized;
-            double normalStep = Math.Max(5.0, Math.Min(100.0, baselineBurn.magnitude));
+            Orbit baselineOrbit = burnOrbit.PerturbedOrbit(burnUT, baselineBurn);
+            double baselineImpactUT = baselineOrbit.NextTimeOfRadius(burnUT, source.Body.Radius);
+            if (!Finite(baselineImpactUT)) return default(Candidate);
+            Vector3d up = position.normalized;
+            Vector3d horizontalVelocity = Vector3d.Exclude(up, velocity);
+            Vector3d targetDirection = Vector3d.Exclude(up, TargetAt(source, baselineImpactUT) - position);
+            if (horizontalVelocity.sqrMagnitude < 1e-9 || targetDirection.sqrMagnitude < 1e-9) return default(Candidate);
+            Vector3d targetBurn = (horizontalVelocity + baselineBurn).magnitude * targetDirection.normalized - horizontalVelocity;
             Candidate best = default(Candidate);
-            for (int i = -4; i <= 4; ++i)
+            for (int i = 0; i <= 16; ++i)
             {
-                Vector3d burn = baselineBurn + i * normalStep * normal;
+                // alpha=0 is the guaranteed impact trajectory; alpha=1 is the
+                // target-directed vector.  Intermediate candidates retain only
+                // trajectories independently verified to hit the body.
+                Vector3d burn = Vector3d.Lerp(baselineBurn, targetBurn, i / 16.0);
                 var state = new LandingGuidanceV2Snapshot(source.Version, burnUT, source.Body, position, velocity + burn,
                     source.Mass, source.AvailableDeltaV, source.MaximumAcceleration, source.TargetLatitude, source.TargetLongitude, false);
                 LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(state);
@@ -84,7 +93,7 @@ namespace MuMech
                 double corridor = Math.Max(100.0, source.Body.Radius * 0.002);
                 if (downrange < 0) continue;
                 Candidate candidate = new Candidate(burnUT, burn, estimate, downrange, crossRange, corridor);
-                if (!best.Valid || candidate.Burn.magnitude < best.Burn.magnitude) best = candidate;
+                if (!best.Valid || candidate.Downrange + candidate.CrossRange < best.Downrange + best.CrossRange) best = candidate;
             }
             return best;
         }

@@ -111,7 +111,6 @@ namespace MuMech
             }
 
             DrawGUITogglePredictions();
-            DrawV2Preview();
 
             if (Core.Landing != null)
             {
@@ -174,6 +173,10 @@ namespace MuMech
                     //}
                 }
             }
+
+            // V2 is a separate controller panel.  Keep the restored V1 window
+            // layout and controls contiguous above this point.
+            DrawV2Preview();
 
             GUILayout.EndVertical();
 
