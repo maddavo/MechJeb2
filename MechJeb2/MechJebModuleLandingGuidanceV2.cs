@@ -164,7 +164,11 @@ namespace MuMech
                 case V2FlightPhase.Preflight:
                     Core.Thrust.ThrustOff();
                     Core.Warp.MinimumWarp(true);
-                    RefreshPreflight(true);
+                    // Start and command gates force an immediate plan. While
+                    // safely waiting, the normal planner cadence is the defined
+                    // replan event; do not consume a full strategic search every
+                    // physics frame.
+                    RefreshPreflight(false);
                     if (MainBody.atmosphere)
                     {
                         if (Preflight?.AtmosphericPlan?.State == AtmosphericLandingPlanState.Candidate)
