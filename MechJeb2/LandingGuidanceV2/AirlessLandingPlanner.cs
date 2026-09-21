@@ -278,7 +278,8 @@ namespace MuMech
             LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(state);
             if (!estimate.HasImpact) return default(Candidate);
             Vector3d error = estimate.ImpactPosition - TargetAt(source, estimate.ImpactUT);
-            Vector3d direction = Vector3d.Exclude(estimate.ImpactPosition.normalized, estimate.ImpactVelocity);
+            Vector3d surfaceVelocity = SurfaceRelativeImpactVelocity(source, estimate);
+            Vector3d direction = Vector3d.Exclude(estimate.ImpactPosition.normalized, surfaceVelocity);
             if (direction.sqrMagnitude < 1e-9) return default(Candidate);
             direction.Normalize();
             double downrange = Vector3d.Dot(error, direction);
@@ -307,9 +308,14 @@ namespace MuMech
                 ? double.NaN
                 : candidate.Source.Body.gravParameter / (radius * radius);
             double uncertainty = Math.Sqrt(candidate.Downrange * candidate.Downrange + candidate.CrossRange * candidate.CrossRange);
-            return AirlessLandingBudget.For(candidate.PlaneAlignmentBurn.magnitude + candidate.Burn.magnitude, candidate.Estimate.ImpactVelocity.magnitude,
+            return AirlessLandingBudget.For(candidate.PlaneAlignmentBurn.magnitude + candidate.Burn.magnitude,
+                SurfaceRelativeImpactVelocity(candidate.Source, candidate.Estimate).magnitude,
                 candidate.Source.MaximumAcceleration, gravity, uncertainty, candidate.Corridor);
         }
+
+        private static Vector3d SurfaceRelativeImpactVelocity(LandingGuidanceV2Snapshot snapshot,
+            LandingGuidanceV2Estimate estimate) =>
+            estimate.ImpactVelocity - Vector3d.Cross(snapshot.Body.angularVelocity, estimate.ImpactPosition);
 
         private static AirlessLandingPlan Reject(LandingGuidanceV2Snapshot snapshot, string reason) =>
             Reject(snapshot, Vector3d.zero, null, double.NaN, double.NaN, double.NaN, reason);
