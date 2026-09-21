@@ -144,7 +144,7 @@ namespace MuMech
             foreach (Vector3d seed in seeds)
             {
                 Candidate candidate = RefineStrategicVector(source, burnUT, position, velocity, seed,
-                    horizontalVelocity.normalized, Vector3d.Cross(up, horizontalVelocity).normalized, up);
+                    horizontalVelocity.normalized, up);
                 if (candidate.Valid && (!best.Valid || CandidateScore(candidate, source.AvailableDeltaV) < CandidateScore(best, source.AvailableDeltaV)))
                     best = candidate;
             }
@@ -197,10 +197,14 @@ namespace MuMech
         }
 
         private static Candidate RefineStrategicVector(LandingGuidanceV2Snapshot source, double burnUT,
-            Vector3d position, Vector3d velocity, Vector3d seed, Vector3d alongTrack, Vector3d planeNormal, Vector3d radial)
+            Vector3d position, Vector3d velocity, Vector3d seed, Vector3d alongTrack, Vector3d radial)
         {
             Candidate best = EvaluateVector(source, burnUT, position, velocity, seed);
-            Vector3d[] axes = { alongTrack, planeNormal, radial };
+            // Plane matching belongs exclusively to SolveWithPlaneAlignment.
+            // Allowing this optimiser to refine along the orbit normal silently
+            // folds a plane change into a supposed deorbit burn and recreates
+            // the high-energy rejected plan from the Mun trace.
+            Vector3d[] axes = { alongTrack, radial };
             double[] steps = { 80.0, 40.0, 20.0, 10.0, 5.0, 2.0, 0.5 };
             foreach (double step in steps)
             {
