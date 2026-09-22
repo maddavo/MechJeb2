@@ -21,7 +21,16 @@
     </ItemGroup>
 
     <ItemGroup>
+        <Reference Include="Assembly-CSharp">
+            <HintPath>$(KspData)/Managed/Assembly-CSharp.dll</HintPath>
+            <Private>True</Private>
+        </Reference>
+        <Reference Include="UnityEngine.CoreModule">
+            <HintPath>$(KspData)/Managed/UnityEngine.CoreModule.dll</HintPath>
+            <Private>True</Private>
+        </Reference>
         <ProjectReference Include="..\MechJebLib\MechJebLib.csproj"/>
+        <ProjectReference Include="..\MechJeb2\MechJeb2.csproj"/>
     </ItemGroup>
 
 </Project>
