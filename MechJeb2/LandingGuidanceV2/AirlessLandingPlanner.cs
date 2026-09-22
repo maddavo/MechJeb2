@@ -100,7 +100,7 @@ namespace MuMech
                     Vector3d candidateBurn = sign * magnitude * direction;
                     var candidateSnapshot = new LandingGuidanceV2Snapshot(snapshot.Version, snapshot.UT, snapshot.Body,
                         snapshot.Position, snapshot.Velocity + candidateBurn, snapshot.Mass, snapshot.AvailableDeltaV,
-                        snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude, snapshot.TargetLongitude, false, snapshot.TargetReferenceUT);
+                        snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude, snapshot.TargetLongitude, false, snapshot.TargetReferenceUT, snapshot.TargetReferencePosition, snapshot.HasTargetReferencePosition);
                     LandingGuidanceV2Estimate candidate = AirlessImpactEstimator.Estimate(candidateSnapshot);
                     if (!candidate.HasImpact || candidate.TargetError >= bestError) continue;
                     correction = candidateBurn;
@@ -190,7 +190,7 @@ namespace MuMech
                     if (!Finite(alignedCoast.period) || alignedCoast.eccentricity >= 1.0) continue;
                     var alignedSnapshot = new LandingGuidanceV2Snapshot(source.Version, alignmentUT, source.Body,
                         position, velocity + planeBurn, source.Mass, source.AvailableDeltaV - planeBurn.magnitude,
-                        source.MaximumAcceleration, source.MinimumAcceleration, source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT);
+                    source.MaximumAcceleration, source.MinimumAcceleration, source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT, source.TargetReferencePosition, source.HasTargetReferencePosition);
                     Candidate candidate = SolveStrategicVector(alignedSnapshot, alignedCoast, deorbitUT);
                     if (!candidate.Valid) continue;
                     candidate = candidate.WithPlaneAlignment(planeBurn, alignmentUT, source);
@@ -222,7 +222,7 @@ namespace MuMech
             var alignedSnapshot = new LandingGuidanceV2Snapshot(source.Version, coarse.PlaneAlignmentBurnUT, source.Body,
                 position, velocity + coarse.PlaneAlignmentBurn, source.Mass,
                 source.AvailableDeltaV - coarse.PlaneAlignmentBurn.magnitude, source.MaximumAcceleration,
-                source.MinimumAcceleration, source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT);
+                source.MinimumAcceleration, source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT, source.TargetReferencePosition, source.HasTargetReferencePosition);
             Candidate best = coarse;
             double bestScore = CandidateScore(best, source.AvailableDeltaV);
             double span = alignedCoast.period / 24.0;
@@ -283,7 +283,7 @@ namespace MuMech
             if (burn.magnitude > source.AvailableDeltaV) return default(Candidate);
             var state = new LandingGuidanceV2Snapshot(source.Version, burnUT, source.Body, position, velocity + burn,
                 source.Mass, source.AvailableDeltaV, source.MaximumAcceleration, source.MinimumAcceleration,
-                source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT);
+                source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT, source.TargetReferencePosition, source.HasTargetReferencePosition);
             LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(state);
             if (!estimate.HasImpact) return default(Candidate);
             Vector3d error = estimate.ImpactPosition - TargetAt(source, estimate.ImpactUT);
@@ -345,7 +345,8 @@ namespace MuMech
 
         private static Vector3d TargetAt(LandingGuidanceV2Snapshot snapshot, double ut)
         {
-            Vector3d target = snapshot.Body.GetWorldSurfacePosition(snapshot.TargetLatitude, snapshot.TargetLongitude, 0) - snapshot.Body.position;
+            Vector3d target = snapshot.HasTargetReferencePosition ? snapshot.TargetReferencePosition :
+                snapshot.Body.GetWorldSurfacePosition(snapshot.TargetLatitude, snapshot.TargetLongitude, 0) - snapshot.Body.position;
             return Quaternion.AngleAxis((float)(360d * (ut - snapshot.TargetReferenceUT) / snapshot.Body.rotationPeriod), snapshot.Body.angularVelocity) * target;
         }
 

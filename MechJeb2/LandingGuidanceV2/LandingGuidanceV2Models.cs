@@ -55,11 +55,14 @@ namespace MuMech
         // snapshots may be propagated to a future burn, but must retain this
         // inertial reference instead of treating a future burn as "now".
         public readonly double TargetReferenceUT;
+        public readonly Vector3d TargetReferencePosition;
+        public readonly bool HasTargetReferencePosition;
         public readonly bool IsLandedOrSplashed;
 
         public LandingGuidanceV2Snapshot(long version, double ut, CelestialBody body, Vector3d position,
             Vector3d velocity, double mass, double availableDeltaV, double maximumAcceleration, double minimumAcceleration,
-            double targetLatitude, double targetLongitude, bool isLandedOrSplashed, double targetReferenceUT = double.NaN)
+            double targetLatitude, double targetLongitude, bool isLandedOrSplashed, double targetReferenceUT = double.NaN,
+            Vector3d targetReferencePosition = default(Vector3d), bool hasTargetReferencePosition = false)
         {
             Version = version;
             UT = ut;
@@ -73,6 +76,8 @@ namespace MuMech
             TargetLatitude = targetLatitude;
             TargetLongitude = targetLongitude;
             TargetReferenceUT = double.IsNaN(targetReferenceUT) ? ut : targetReferenceUT;
+            TargetReferencePosition = targetReferencePosition;
+            HasTargetReferencePosition = hasTargetReferencePosition;
             IsLandedOrSplashed = isLandedOrSplashed;
         }
     }

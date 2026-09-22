@@ -120,8 +120,8 @@ namespace MuMech
 
         private static Vector3d TargetPositionAtUT(LandingGuidanceV2Snapshot snapshot, double ut)
         {
-            Vector3d target = snapshot.Body.GetWorldSurfacePosition(snapshot.TargetLatitude, snapshot.TargetLongitude, 0) -
-                snapshot.Body.position;
+            Vector3d target = snapshot.HasTargetReferencePosition ? snapshot.TargetReferencePosition :
+                snapshot.Body.GetWorldSurfacePosition(snapshot.TargetLatitude, snapshot.TargetLongitude, 0) - snapshot.Body.position;
             // Planning states are propagated to future burns.  The Unity surface
             // query above is anchored to the immutable target reference time,
             // not to a future state-vector epoch.  Using snapshot.UT here made

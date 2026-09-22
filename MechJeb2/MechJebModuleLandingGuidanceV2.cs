@@ -914,12 +914,14 @@ namespace MuMech
         {
             Core.StageStats.RequestUpdate();
             double availableDeltaV = Core.StageStats.VacStats.Sum(s => s.DeltaV);
+            Vector3d targetReferencePosition = MainBody.GetWorldSurfacePosition(V2ActiveTargetLatitude,
+                V2ActiveTargetLongitude, 0) - MainBody.position;
 
             return new LandingGuidanceV2Snapshot(++_snapshotVersion, VesselState.Time, MainBody,
                 VesselState.OrbitalPosition, VesselState.OrbitalVelocity, VesselState.Mass, availableDeltaV,
                 VesselState.LimitedMaxThrustAcceleration, VesselState.MinThrustAcceleration,
                 V2ActiveTargetLatitude, V2ActiveTargetLongitude,
-                Vessel.LandedOrSplashed);
+                Vessel.LandedOrSplashed, VesselState.Time, targetReferencePosition, true);
         }
 
         private void WriteCorrelatedTrace(LandingGuidanceV2Preflight preflight)
