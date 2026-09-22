@@ -122,7 +122,13 @@ namespace MuMech
         {
             Vector3d target = snapshot.Body.GetWorldSurfacePosition(snapshot.TargetLatitude, snapshot.TargetLongitude, 0) -
                 snapshot.Body.position;
-            double rotationDegrees = 360d * (ut - snapshot.UT) / snapshot.Body.rotationPeriod;
+            // Planning states are propagated to future burns.  The Unity surface
+            // query above is anchored to the immutable target reference time,
+            // not to a future state-vector epoch.  Using snapshot.UT here made
+            // every future candidate score its impact against a target displaced
+            // by the coast to that candidate, which can reject an otherwise
+            // reachable plane-alignment and deorbit sequence.
+            double rotationDegrees = 360d * (ut - snapshot.TargetReferenceUT) / snapshot.Body.rotationPeriod;
             return Quaternion.AngleAxis((float)rotationDegrees, snapshot.Body.angularVelocity) * target;
         }
 
