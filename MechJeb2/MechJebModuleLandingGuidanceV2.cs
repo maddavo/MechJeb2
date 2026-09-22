@@ -1019,6 +1019,11 @@ namespace MuMech
                     JsonNumber(airlessPlan?.PlaneAlignmentBurnUT ?? double.NaN), JsonNumber(airlessPlan?.StrategicBurnUT ?? double.NaN),
                     JsonNumber(airlessPlan?.BrakingEntryUT ?? double.NaN));
                 baseFields += string.Format(CultureInfo.InvariantCulture,
+                    ",\"targetReferenceUT\":{0},\"targetReferencePosition\":[{1},{2},{3}],\"hasTargetReferencePosition\":{4}",
+                    JsonNumber(snapshot.TargetReferenceUT), JsonNumber(snapshot.TargetReferencePosition.x),
+                    JsonNumber(snapshot.TargetReferencePosition.y), JsonNumber(snapshot.TargetReferencePosition.z),
+                    snapshot.HasTargetReferencePosition ? "true" : "false");
+                baseFields += string.Format(CultureInfo.InvariantCulture,
                     ",\"atmosphericPlanState\":{0},\"atmosphericTargetError\":{1},\"atmosphericEntryCorridor\":{2},\"atmosphericEndpointUncertainty\":{3},\"atmosphericTerminalReserve\":{4},\"atmosphericLandingMargin\":{5},\"atmosphericPlanReason\":{6},\"atmosphericStrategicEntryDeltaV\":{7},\"atmosphericStrategicEntryBurnUT\":{8},\"atmosphericEntryUT\":{9},\"atmosphericEntryTargetError\":{10}",
                     JsonString(atmosphericPlan?.State.ToString()), JsonNumber(atmosphericPlan?.PredictedTargetError ?? double.NaN),
                     JsonNumber(atmosphericPlan?.EntryCorridorRadius ?? double.NaN), JsonNumber(atmosphericPlan?.EndpointUncertainty ?? double.NaN),
