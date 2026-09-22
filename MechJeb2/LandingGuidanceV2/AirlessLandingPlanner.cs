@@ -165,24 +165,32 @@ namespace MuMech
                 Vector3d velocity = coast.WorldOrbitalVelocityAtUT(alignmentUT);
                 Vector3d up = position.normalized;
                 Vector3d horizontal = Vector3d.Exclude(up, velocity);
-                Vector3d targetRadial = TargetAt(source, alignmentUT + coast.period).normalized;
-                Vector3d planeNormal = Vector3d.Cross(position, targetRadial);
-                if (horizontal.sqrMagnitude < 1e-9 || planeNormal.sqrMagnitude < 1e-9) continue;
-                planeNormal.Normalize();
-                Vector3d desiredHorizontal = Vector3d.Cross(planeNormal, up).normalized * horizontal.magnitude;
-                if (Vector3d.Dot(desiredHorizontal, horizontal) < 0) desiredHorizontal = -desiredHorizontal;
-                Vector3d planeBurn = desiredHorizontal - horizontal;
-                if (planeBurn.magnitude > source.AvailableDeltaV) continue;
-
-                var alignedCoast = new Orbit();
-                alignedCoast.UpdateFromStateVectors(position, velocity + planeBurn, source.Body, alignmentUT);
-                if (!Finite(alignedCoast.period) || alignedCoast.eccentricity >= 1.0) continue;
-                var alignedSnapshot = new LandingGuidanceV2Snapshot(source.Version, alignmentUT, source.Body,
-                    position, velocity + planeBurn, source.Mass, source.AvailableDeltaV - planeBurn.magnitude,
-                    source.MaximumAcceleration, source.MinimumAcceleration, source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT);
                 for (int j = 1; j <= deorbitSamples; ++j)
                 {
-                    double deorbitUT = alignmentUT + 5.0 + alignedCoast.period * j / deorbitSamples;
+                    double deorbitUT = alignmentUT + 5.0 + coast.period * j / deorbitSamples;
+                    // First find the flight time of a deorbit candidate on the
+                    // unrotated coast.  That establishes the epoch at which the
+                    // target must lie in the new orbital plane.  Aligning to a
+                    // target one arbitrary orbit after the plane burn omitted
+                    // the body's rotation during coast-to-impact and left the
+                    // Mun test case kilometres crossrange.
+                    Candidate timing = SolveStrategicVector(source, coast, deorbitUT);
+                    if (!timing.Valid || !Finite(timing.Estimate.ImpactUT)) continue;
+                    Vector3d targetRadial = TargetAt(source, timing.Estimate.ImpactUT).normalized;
+                    Vector3d planeNormal = Vector3d.Cross(position, targetRadial);
+                    if (horizontal.sqrMagnitude < 1e-9 || planeNormal.sqrMagnitude < 1e-9) continue;
+                    planeNormal.Normalize();
+                    Vector3d desiredHorizontal = Vector3d.Cross(planeNormal, up).normalized * horizontal.magnitude;
+                    if (Vector3d.Dot(desiredHorizontal, horizontal) < 0) desiredHorizontal = -desiredHorizontal;
+                    Vector3d planeBurn = desiredHorizontal - horizontal;
+                    if (planeBurn.magnitude > source.AvailableDeltaV) continue;
+
+                    var alignedCoast = new Orbit();
+                    alignedCoast.UpdateFromStateVectors(position, velocity + planeBurn, source.Body, alignmentUT);
+                    if (!Finite(alignedCoast.period) || alignedCoast.eccentricity >= 1.0) continue;
+                    var alignedSnapshot = new LandingGuidanceV2Snapshot(source.Version, alignmentUT, source.Body,
+                        position, velocity + planeBurn, source.Mass, source.AvailableDeltaV - planeBurn.magnitude,
+                        source.MaximumAcceleration, source.MinimumAcceleration, source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT);
                     Candidate candidate = SolveStrategicVector(alignedSnapshot, alignedCoast, deorbitUT);
                     if (!candidate.Valid) continue;
                     candidate = candidate.WithPlaneAlignment(planeBurn, alignmentUT, source);
