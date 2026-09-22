@@ -80,17 +80,6 @@ namespace MuMech
             HasTargetReferencePosition = hasTargetReferencePosition;
             IsLandedOrSplashed = isLandedOrSplashed;
         }
-
-        // Compatibility with the integration branch's older V2 capture call.
-        // Current production captures provide the minimum acceleration and
-        // immutable target reference explicitly.
-        public LandingGuidanceV2Snapshot(long version, double ut, CelestialBody body, Vector3d position,
-            Vector3d velocity, double mass, double availableDeltaV, double maximumAcceleration,
-            double targetLatitude, double targetLongitude, bool isLandedOrSplashed)
-            : this(version, ut, body, position, velocity, mass, availableDeltaV, maximumAcceleration, 0,
-                targetLatitude, targetLongitude, isLandedOrSplashed)
-        {
-        }
     }
 
     public enum LandingGuidanceV2EstimateOutcome

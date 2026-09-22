@@ -1,8 +1,10 @@
 extern alias JetBrainsAnnotations;
 using System;
+using System.Collections;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using JetBrainsAnnotations::JetBrains.Annotations;
 using MechJebLib.Control;
 using UnityEngine;
@@ -22,6 +24,15 @@ namespace MuMech
         private long _snapshotVersion;
         private long _v1PredictionVersion;
         private ReentrySimulation.Result _lastV1Prediction;
+        private ReentrySimulation.Result _lastAtmosphericPlanPrediction;
+        private readonly Queue _readyAtmosphericCandidateResults = new Queue();
+        private ReentrySimulation.Result _atmosphericCandidateResult;
+        private LandingGuidanceV2Snapshot _atmosphericCandidateSnapshot;
+        private AtmosphericLandingPlan _atmosphericCandidatePlan;
+        private bool _atmosphericCandidateSimulationRunning;
+        private double _nextAtmosphericCandidateSimulationUT;
+        private long _atmosphericCandidateGeneration;
+        private bool _atmosphericWarpIssued;
         private string _lastV1Phase;
         private bool? _lastV1Burning;
         private bool? _lastWarped;
@@ -36,8 +47,8 @@ namespace MuMech
         private string _lastV2Phase;
         private double _activeTargetLatitude;
         private double _activeTargetLongitude;
-        private double _selectedTargetLatitude;
-        private double _selectedTargetLongitude;
+        private double _originalTargetLatitude;
+        private double _originalTargetLongitude;
         private bool _hasActiveTarget;
         private bool _visualRebaseDone;
         private LandingSiteAssessment _siteAssessment;
@@ -46,7 +57,7 @@ namespace MuMech
         private const double VisualRebaseAccuracyLimit = 500.0;
         private readonly DeltaSigmaThrottleModulator _terminalPwm = new DeltaSigmaThrottleModulator(0.02, 0.50);
 
-        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, AlignTrim, BoundedTrim, Coast, BrakingApproach, VisualAssessment, TerminalDescent, Complete, Rejected }
+        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, AlignTrim, BoundedTrim, Coast, WarpToAtmosphericEntry, AlignAtmosphericEntryBurn, AtmosphericEntryBurn, AtmosphericEntry, BrakingApproach, VisualAssessment, TerminalDivert, VelocityNull, TerminalDescent, Complete, Rejected }
 
         [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
         public bool PreviewEnabled;
@@ -60,12 +71,42 @@ namespace MuMech
         public LandingGuidanceV2Preflight Preflight { get; private set; }
 
         public bool IsPreviewOnly => _flightPhase == V2FlightPhase.Idle || _flightPhase == V2FlightPhase.Rejected || _flightPhase == V2FlightPhase.Complete;
-        public bool ControllerActive => _flightPhase == V2FlightPhase.Preflight || _flightPhase == V2FlightPhase.WarpToStrategic || _flightPhase == V2FlightPhase.AlignPlane || _flightPhase == V2FlightPhase.PlaneAlignment || _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.AlignTrim || _flightPhase == V2FlightPhase.BoundedTrim || _flightPhase == V2FlightPhase.Coast || _flightPhase == V2FlightPhase.BrakingApproach || _flightPhase == V2FlightPhase.VisualAssessment || _flightPhase == V2FlightPhase.TerminalDescent;
+        public bool ControllerActive => _flightPhase == V2FlightPhase.Preflight || _flightPhase == V2FlightPhase.WarpToStrategic || _flightPhase == V2FlightPhase.AlignPlane || _flightPhase == V2FlightPhase.PlaneAlignment || _flightPhase == V2FlightPhase.AlignStrategicBurn || _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.AlignTrim || _flightPhase == V2FlightPhase.BoundedTrim || _flightPhase == V2FlightPhase.Coast || _flightPhase == V2FlightPhase.WarpToAtmosphericEntry || _flightPhase == V2FlightPhase.AlignAtmosphericEntryBurn || _flightPhase == V2FlightPhase.AtmosphericEntryBurn || _flightPhase == V2FlightPhase.AtmosphericEntry || _flightPhase == V2FlightPhase.BrakingApproach || _flightPhase == V2FlightPhase.VisualAssessment || _flightPhase == V2FlightPhase.TerminalDivert || _flightPhase == V2FlightPhase.VelocityNull;
         public V2FlightPhase FlightPhase => _flightPhase;
         public string ControllerStatus { get; private set; } = "Idle";
         public bool HasV2ActiveTarget => _hasActiveTarget;
         public double V2ActiveTargetLatitude => _hasActiveTarget ? _activeTargetLatitude : (double)Core.Target.targetLatitude;
         public double V2ActiveTargetLongitude => _hasActiveTarget ? _activeTargetLongitude : (double)Core.Target.targetLongitude;
+        public double V2OriginalTargetLatitude => _hasActiveTarget ? _originalTargetLatitude : (double)Core.Target.targetLatitude;
+        public double V2OriginalTargetLongitude => _hasActiveTarget ? _originalTargetLongitude : (double)Core.Target.targetLongitude;
+        public LandingGuidanceV2TargetState TargetState
+        {
+            get
+            {
+                LandingGuidanceV2Estimate estimate = Preflight?.Estimate;
+                double predictedLatitude = double.NaN;
+                double predictedLongitude = double.NaN;
+                if (estimate != null && estimate.HasImpact && MainBody != null)
+                    MainBody.GetLatLngAltAtUT(estimate.ImpactUT, estimate.ImpactPosition, out predictedLatitude, out predictedLongitude, out _);
+                else
+                {
+                    // During V2 atmospheric planning the blue marker must show
+                    // V2's burn-correlated simulation, never a legacy current-
+                    // orbit prediction that has not had the proposed burn.
+                    ReentrySimulation.Result atmospheric = _atmosphericCandidateResult ??
+                        Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Result;
+                    if (atmospheric != null && atmospheric.Body == MainBody &&
+                        atmospheric.Outcome == ReentrySimulation.Outcome.LANDED)
+                    {
+                        predictedLatitude = atmospheric.EndPosition.Latitude;
+                        predictedLongitude = atmospheric.EndPosition.Longitude;
+                    }
+                }
+                return new LandingGuidanceV2TargetState(V2OriginalTargetLatitude, V2OriginalTargetLongitude,
+                    V2ActiveTargetLatitude, V2ActiveTargetLongitude, predictedLatitude, predictedLongitude,
+                    estimate?.SnapshotVersion ?? -1, _visualRebaseDone);
+            }
+        }
         public string SiteAssessmentStatus => _siteAssessment == null ? "Waiting for the local visual-assessment gate." : _siteAssessment.Detail;
 
         public MechJebModuleLandingGuidanceV2(MechJebCore core) : base(core)
@@ -73,53 +114,142 @@ namespace MuMech
             Enabled = true;
         }
 
+        public override void OnStart(PartModule.StartState state)
+        {
+            if (state != PartModule.StartState.None && state != PartModule.StartState.Editor)
+                Core.AddToPostDrawQueue(DrawV2MapMarkers);
+        }
+
         public override void OnFixedUpdate()
         {
             if (ControllerActive)
                 TickController();
-            if (PreviewEnabled && HighLogic.LoadedSceneIsFlight && Core.Target.PositionTargetExists && VesselState.Time >= _nextRefreshUT)
+            if (PreviewEnabled && HighLogic.LoadedSceneIsFlight &&
+                (Core.Target.PositionTargetExists || ControllerActive && _hasActiveTarget) && VesselState.Time >= _nextRefreshUT)
             {
                 _nextRefreshUT = VesselState.Time + RefreshInterval;
                 RefreshPreflight();
             }
         }
 
-        public bool StartAirlessLanding()
+        public bool StartLanding()
         {
             if (!HighLogic.LoadedSceneIsFlight || !Core.Target.PositionTargetExists)
                 return RejectController("Select a landing target before starting V2.");
             SetActiveTarget(Core.Target.targetLatitude, Core.Target.targetLongitude, false);
-            _selectedTargetLatitude = Core.Target.targetLatitude;
-            _selectedTargetLongitude = Core.Target.targetLongitude;
+            _originalTargetLatitude = Core.Target.targetLatitude;
+            _originalTargetLongitude = Core.Target.targetLongitude;
             _visualRebaseDone = false;
             _siteAssessment = null;
+            if (MainBody.atmosphere)
+            {
+                // V2 uses the existing re-entry simulator only as an estimator;
+                // it never starts the V1 landing controller.  The phase manager
+                // waits for a fresh, corridor-valid estimate before it requests
+                // attitude or throttle.
+                Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Users.Add(this);
+                RefreshPreflight(true);
+                TransitionTo(V2FlightPhase.Preflight, "V2 is acquiring a fresh atmospheric entry-corridor estimate.");
+                return true;
+            }
             RefreshPreflight(true);
-            if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate) return RejectController("V2 requires a current airless strategic-deorbit candidate.");
+            if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate)
+            {
+                TransitionTo(V2FlightPhase.Preflight,
+                    "V2 accepted the selected target and is waiting for a feasible airless strategic-deorbit plan.");
+                return true;
+            }
             _activePlan = Preflight.AirlessPlan;
             Core.Thrust.Users.Add(this); Core.Attitude.Users.Add(this);
             TransitionTo(V2FlightPhase.WarpToStrategic, "V2 plan accepted; moving to the strategic-deorbit burn gate.");
             return true;
         }
 
+        // Retained for save/UI compatibility while the visible V2 action is
+        // now body-neutral.
+        public bool StartAirlessLanding() => StartLanding();
+
         public void AbortAirlessLanding()
         {
             ReleaseV2Control(); TransitionTo(V2FlightPhase.Idle, "V2 landing aborted.");
         }
 
-        private bool RejectController(string reason) { ReleaseV2Control(); TransitionTo(V2FlightPhase.Rejected, reason); return false; }
+        private bool RejectController(string reason)
+        {
+            // A rejected start has not acquired V2 authority and must not
+            // change a player's manual warp. An active V2 run releases its
+            // own warp, thrust and attitude authority together.
+            if (ControllerActive) ReleaseV2Control();
+            else ClearAtmosphericCandidateResult();
+            TransitionTo(V2FlightPhase.Rejected, reason);
+            return false;
+        }
 
         private void TickController()
         {
             if (Vessel == null || Vessel.LandedOrSplashed) { ReleaseV2Control(); TransitionTo(V2FlightPhase.Complete, "V2 landing completed: vessel is landed or splashed."); return; }
-            if (Core.Landing != null && Core.Landing.Enabled) { RejectController("V1 Landing Guidance was engaged; V2 relinquished control."); return; }
-            SyncSelectedTarget();
+            if (Core.Landing != null && Core.Landing.Enabled)
+            {
+                // V1 is the selected controller. Do not change its warp or
+                // any other command while V2 removes only its own users.
+                ReleaseV2Control(false);
+                TransitionTo(V2FlightPhase.Rejected, "V1 Landing Guidance was engaged; V2 relinquished control.");
+                return;
+            }
             switch (_flightPhase)
             {
+                case V2FlightPhase.Preflight:
+                    // Start and command gates force an immediate plan. While
+                    // safely waiting, the normal planner cadence is the defined
+                    // replan event; do not consume a full strategic search every
+                    // physics frame.
+                    RefreshPreflight(false);
+                    if (MainBody.atmosphere)
+                    {
+                        if (Preflight?.AtmosphericPlan?.State == AtmosphericLandingPlanState.Candidate)
+                        {
+                            _atmosphericCandidatePlan = Preflight.AtmosphericPlan;
+                            if (_atmosphericCandidatePlan.StrategicEntryDeltaV.magnitude <= 0.5)
+                            {
+                                Core.Thrust.Users.Add(this);
+                                Core.Attitude.Users.Add(this);
+                                TransitionTo(V2FlightPhase.AtmosphericEntry,
+                                    "V2 validated the current atmospheric entry trajectory; beginning the independent entry profile.");
+                            }
+                            else
+                            {
+                                Core.Thrust.Users.Add(this);
+                                Core.Attitude.Users.Add(this);
+                                TransitionTo(V2FlightPhase.WarpToAtmosphericEntry,
+                                    "V2 validated its strategic atmospheric entry burn; moving to its burn gate.");
+                            }
+                        }
+                        else if (Preflight?.AtmosphericPlan?.State == AtmosphericLandingPlanState.Rejected)
+                            RejectController(Preflight.AtmosphericPlan.Reason);
+                        else
+                            ControllerStatus = "V2 is independently simulating the atmospheric entry candidate before requesting any vessel command.";
+                    }
+                    else if (Preflight?.AirlessPlan?.State == AirlessLandingPlanState.Candidate)
+                    {
+                        _activePlan = Preflight.AirlessPlan;
+                        Core.Thrust.Users.Add(this);
+                        Core.Attitude.Users.Add(this);
+                        TransitionTo(V2FlightPhase.WarpToStrategic,
+                            "V2 airless plan is now feasible; moving to the strategic-deorbit burn gate.");
+                    }
+                    else
+                    {
+                        ControllerStatus = "V2 is holding in airless preflight and will replan before requesting any vessel command.";
+                    }
+                    break;
                 case V2FlightPhase.WarpToStrategic:
                     Core.Thrust.ThrustOff();
-                    if (VesselState.Time < _activePlan.StrategicBurnUT - 20.0 && V2AutoWarp)
+                    double nextBurnUT = _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5
+                        ? _activePlan.PlaneAlignmentBurnUT
+                        : _activePlan.StrategicBurnUT;
+                    if (VesselState.Time < nextBurnUT - 20.0 && V2AutoWarp)
                     {
-                        Core.Warp.WarpToUT(_activePlan.StrategicBurnUT - 20.0);
+                        Core.Warp.WarpToUT(nextBurnUT - 20.0);
                         break;
                     }
                     Core.Warp.MinimumWarp(true);
@@ -130,11 +260,20 @@ namespace MuMech
                         break;
                     }
                     _activePlan = Preflight.AirlessPlan;
-                    if (_activePlan.StrategicBurnUT > VesselState.Time + 25.0)
+                    nextBurnUT = _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5
+                        ? _activePlan.PlaneAlignmentBurnUT
+                        : _activePlan.StrategicBurnUT;
+                    if (nextBurnUT > VesselState.Time + 25.0)
                         break;
-                    _burnTargetVelocity = VesselState.OrbitalVelocity + _activePlan.PlaneAlignmentDeltaV;
-                    TransitionTo(_activePlan.PlaneAlignmentDeltaVMagnitude > 0.5 ? V2FlightPhase.AlignPlane : V2FlightPhase.AlignStrategicBurn,
-                        _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5 ? "Aligning for the validated V2 plane-alignment burn." : "Aligning for the validated V2 strategic deorbit burn.");
+                    bool needsPlaneAlignment = _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5;
+                    // Each finite-burn phase owns its own target velocity. In
+                    // particular, a plan with no plane change must start the
+                    // strategic burn from its strategic vector, never inherit
+                    // a zero plane-alignment vector and falsely finish.
+                    _burnTargetVelocity = VesselState.OrbitalVelocity +
+                        (needsPlaneAlignment ? _activePlan.PlaneAlignmentDeltaV : _activePlan.StrategicDeorbitDeltaV);
+                    TransitionTo(needsPlaneAlignment ? V2FlightPhase.AlignPlane : V2FlightPhase.AlignStrategicBurn,
+                        needsPlaneAlignment ? "Aligning for the validated V2 plane-alignment burn." : "Aligning for the validated V2 strategic deorbit burn.");
                     break;
                 case V2FlightPhase.AlignPlane:
                     Core.Thrust.ThrustOff();
@@ -235,11 +374,105 @@ namespace MuMech
                     else if (Core.Hoverslam.IgnitionCountdown <= Time.fixedDeltaTime)
                     {
                         Core.Warp.MinimumWarp(true);
+                        // A hoverslam ignition time that was calculated before
+                        // warp cannot authorize terminal control after warp has
+                        // ended. Rebuild the immutable snapshot and require a
+                        // current impact estimate before entering braking.
+                        RefreshPreflight(true);
+                        if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact)
+                        {
+                            RejectController("V2 terminal braking lost its fresh impact trajectory after warp exit.");
+                            break;
+                        }
                         _lastAdjustedVelocity = new Vector3d(double.NaN, double.NaN, double.NaN);
                         TransitionTo(V2FlightPhase.BrakingApproach, "V2 braking approach has begun.");
                     }
                     break;
+                case V2FlightPhase.WarpToAtmosphericEntry:
+                    Core.Thrust.ThrustOff();
+                    if (_atmosphericCandidatePlan == null)
+                    {
+                        ReleaseV2Control();
+                        TransitionTo(V2FlightPhase.Preflight, "V2 atmospheric burn candidate expired; obtaining a fresh simulation.");
+                        break;
+                    }
+                    if (VesselState.Time < _atmosphericCandidatePlan.StrategicEntryBurnUT - 20.0 && V2AutoWarp)
+                    {
+                        Core.Warp.WarpToUT(_atmosphericCandidatePlan.StrategicEntryBurnUT - 20.0);
+                        _atmosphericWarpIssued = true;
+                        break;
+                    }
+                    Core.Warp.MinimumWarp(true);
+                    if (_atmosphericWarpIssued)
+                    {
+                        // Candidate dynamics may not cross a warp boundary.
+                        // Rebuild the snapshot and run a new V2 simulation
+                        // before asking for attitude or throttle.
+                        _atmosphericWarpIssued = false;
+                        ReleaseV2Control();
+                        TransitionTo(V2FlightPhase.Preflight,
+                            "V2 exited warp at the atmospheric burn gate; acquiring a fresh candidate simulation.");
+                        break;
+                    }
+                    RefreshPreflight(true);
+                    if (Preflight?.AtmosphericPlan?.State != AtmosphericLandingPlanState.Candidate ||
+                        Preflight.AtmosphericPlan.StrategicEntryDeltaV.magnitude <= 0.5 ||
+                        Preflight.AtmosphericPlan.StrategicEntryBurnUT < VesselState.Time - 2.0)
+                    {
+                        ReleaseV2Control();
+                        TransitionTo(V2FlightPhase.Preflight, "V2 atmospheric burn gate requires a fresh candidate simulation.");
+                        break;
+                    }
+                    _atmosphericCandidatePlan = Preflight.AtmosphericPlan;
+                    if (_atmosphericCandidatePlan.StrategicEntryBurnUT > VesselState.Time + 25.0)
+                        break;
+                    _burnTargetVelocity = VesselState.OrbitalVelocity + _atmosphericCandidatePlan.StrategicEntryDeltaV;
+                    TransitionTo(V2FlightPhase.AlignAtmosphericEntryBurn, "Aligning for the validated V2 atmospheric entry burn.");
+                    break;
+                case V2FlightPhase.AlignAtmosphericEntryBurn:
+                    Core.Thrust.ThrustOff();
+                    Core.Attitude.attitudeTo(_atmosphericCandidatePlan.StrategicEntryDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    if (Core.Attitude.attitudeError < 2.0)
+                    {
+                        BeginFiniteBurn("atmospheric_strategic_entry", _atmosphericCandidatePlan.StrategicEntryDeltaV.magnitude);
+                        TransitionTo(V2FlightPhase.AtmosphericEntryBurn, "Executing the finite V2 atmospheric entry burn.");
+                    }
+                    break;
+                case V2FlightPhase.AtmosphericEntryBurn:
+                    Core.Attitude.attitudeTo(_atmosphericCandidatePlan.StrategicEntryDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    double remainingEntryDv = Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity,
+                        _atmosphericCandidatePlan.StrategicEntryDeltaV.normalized);
+                    if (remainingEntryDv <= 0.5)
+                    {
+                        Core.Thrust.ThrustOff();
+                        ClearAtmosphericCandidateResult();
+                        Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Users.Add(this);
+                        TransitionTo(V2FlightPhase.Preflight,
+                            "V2 atmospheric entry burn complete; independently validating the actual post-burn trajectory.");
+                    }
+                    else Core.Thrust.ThrustForDv(remainingEntryDv, 0.5);
+                    break;
+                case V2FlightPhase.AtmosphericEntry:
+                    // Atmospheric flight is never warped.  Keep the vehicle
+                    // retrograde to the surface-relative flow while the model
+                    // based estimator is refreshed, then transfer only to the
+                    // local powered braking phase when its ignition solution is
+                    // current.
+                    Core.Warp.MinimumWarp(true);
+                    Core.Thrust.ThrustOff();
+                    Core.Attitude.attitudeTo(-VesselState.SurfaceVelocity, AttitudeReference.INERTIAL_COT, this);
+                    RefreshPreflight(false);
+                    if (Preflight?.AtmosphericPlan?.State == AtmosphericLandingPlanState.Rejected)
+                    {
+                        RejectController(Preflight.AtmosphericPlan.Reason);
+                        break;
+                    }
+                    if (!double.IsNaN(Core.Hoverslam.IgnitionUT) && !double.IsInfinity(Core.Hoverslam.IgnitionUT) &&
+                        Core.Hoverslam.IgnitionCountdown <= 5.0)
+                        TransitionTo(V2FlightPhase.BrakingApproach, "V2 atmospheric powered braking has begun.");
+                    break;
                 case V2FlightPhase.BrakingApproach:
+                    Core.Warp.MinimumWarp(true);
                     if (VesselState.AltitudeBottom <= VisualAssessmentAltitude && !_visualRebaseDone)
                     {
                         Core.Warp.MinimumWarp(true);
@@ -252,22 +485,34 @@ namespace MuMech
                     if (!double.IsNaN(_lastAdjustedVelocity.x) && Vector3d.Angle(_lastAdjustedVelocity, adjustedVelocity) > 10.0)
                     {
                         _terminalPwm.Reset();
-                        TransitionTo(V2FlightPhase.TerminalDescent, "V2 terminal descent is controlling velocity and touchdown.");
+                        TransitionTo(V2FlightPhase.TerminalDivert, "V2 terminal-divert guidance is tracking the active red target.");
                     }
                     _lastAdjustedVelocity = adjustedVelocity;
                     break;
                 case V2FlightPhase.VisualAssessment:
                     TickVisualAssessment();
                     break;
-                case V2FlightPhase.TerminalDescent:
-                    TickTerminalDescent();
+                case V2FlightPhase.TerminalDivert:
+                    TickTerminalDivert();
+                    break;
+                case V2FlightPhase.VelocityNull:
+                    TickVelocityNull();
                     break;
             }
         }
 
-        private void TickTerminalDescent()
+        private void TickTerminalDivert()
         {
             Vector3d velocityError = TerminalVelocityError();
+            Vector3d target = MainBody.GetWorldSurfacePosition(V2ActiveTargetLatitude, V2ActiveTargetLongitude,
+                MainBody.TerrainAltitude(V2ActiveTargetLatitude, V2ActiveTargetLongitude, true));
+            double horizontalError = Vector3d.Exclude(VesselState.Up, target - VesselState.CoM).magnitude;
+            if (horizontalError < 5.0 && VesselState.AltitudeBottom < 50.0)
+            {
+                _terminalPwm.Reset();
+                TransitionTo(V2FlightPhase.VelocityNull, "V2 velocity-null guidance is protecting touchdown speed and clearance.");
+                return;
+            }
             if (Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up) >= -1.0)
                 Core.Attitude.attitudeTo(Vector3d.up, AttitudeReference.SURFACE_NORTH, this);
             else
@@ -277,6 +522,19 @@ namespace MuMech
             _terminalPwm.MinOnTime = 0.50;
             _terminalPwm.MinOffTime = TimeWarp.fixedDeltaTime;
             Core.Thrust.TargetThrottle = _terminalPwm.ThrottleCommand(acceleration, VesselState.MinThrustAcceleration, VesselState.MaxThrustAcceleration, TimeWarp.fixedDeltaTime);
+        }
+
+        private void TickVelocityNull()
+        {
+            Core.Warp.MinimumWarp(true);
+            Core.Attitude.attitudeTo(Vector3d.up, AttitudeReference.SURFACE_NORTH, this);
+            double altitude = Math.Max(0.1, VesselState.AltitudeBottom);
+            double verticalSpeed = Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up);
+            double desiredAcceleration = Vessel.graviticAcceleration.magnitude + Math.Max(0, (verticalSpeed * verticalSpeed - 0.25) / (2.0 * altitude));
+            _terminalPwm.MinOnTime = 0.50;
+            _terminalPwm.MinOffTime = TimeWarp.fixedDeltaTime;
+            Core.Thrust.TargetThrottle = _terminalPwm.ThrottleCommand(desiredAcceleration, VesselState.MinThrustAcceleration,
+                VesselState.MaxThrustAcceleration, TimeWarp.fixedDeltaTime);
         }
 
         private void TickVisualAssessment()
@@ -306,7 +564,7 @@ namespace MuMech
                 RejectController("V2 local site assessment rejected the rebased target: " + _siteAssessment.Detail);
                 return;
             }
-            TransitionTo(V2FlightPhase.TerminalDescent, "V2 visual rebase complete; terminal guidance is tracking the assessed local target.");
+            TransitionTo(V2FlightPhase.TerminalDivert, "V2 visual rebase complete; terminal-divert guidance is tracking the assessed local target.");
         }
 
         private Vector3d TerminalVelocityError()
@@ -325,7 +583,7 @@ namespace MuMech
 
         public bool TryAdjustV2Target(double northMeters, double eastMeters)
         {
-            if (!ControllerActive || (_flightPhase != V2FlightPhase.VisualAssessment && _flightPhase != V2FlightPhase.TerminalDescent))
+            if (!ControllerActive || (_flightPhase != V2FlightPhase.VisualAssessment && _flightPhase != V2FlightPhase.TerminalDivert))
             {
                 ControllerStatus = "V2 target movement is available only during local assessment or terminal descent.";
                 return false;
@@ -364,7 +622,12 @@ namespace MuMech
             double divertCost = 4.0 * distance / timeToGround;
             Core.StageStats.RequestUpdate();
             double remainingDeltaV = Core.StageStats.VacStats.Sum(s => s.DeltaV);
-            double reserve = _activePlan == null ? 20.0 : _activePlan.TerminalDivertReserve;
+            // The player-facing local adjustment is paid from the plan's
+            // protected reserve on both body types. A fixed atmospheric value
+            // would bypass the uncertainty-based entry budget.
+            double reserve = _activePlan != null
+                ? _activePlan.TerminalDivertReserve
+                : Preflight?.AtmosphericPlan?.TerminalReserve ?? 20.0;
             if (remainingDeltaV < reserve + divertCost)
             {
                 reason = "V2 target movement rejected: it would consume the protected terminal-divert reserve.";
@@ -393,23 +656,31 @@ namespace MuMech
             return new LandingSiteAssessment(true, slope, roughness, "local terrain accepted: slope " + slope.ToString("F1") + " deg, roughness " + roughness.ToString("F1") + " m.");
         }
 
-        private void SyncSelectedTarget()
-        {
-            if (!_hasActiveTarget || Math.Abs((double)Core.Target.targetLatitude - _selectedTargetLatitude) < 1e-8 && Math.Abs((double)Core.Target.targetLongitude - _selectedTargetLongitude) < 1e-8)
-                return;
-            _selectedTargetLatitude = (double)Core.Target.targetLatitude;
-            _selectedTargetLongitude = (double)Core.Target.targetLongitude;
-            SetActiveTarget(_selectedTargetLatitude, _selectedTargetLongitude, true);
-            _siteAssessment = null;
-            _pendingTargetEvent = "target_updated_by_player";
-        }
-
         private void SetActiveTarget(double latitude, double longitude, bool traceEvent)
         {
             _activeTargetLatitude = latitude;
             _activeTargetLongitude = longitude;
             _hasActiveTarget = true;
             if (traceEvent) _pendingTargetEvent = _visualRebaseDone ? "visual_rebase_or_divert" : "target_initialized";
+        }
+
+        private void DrawV2MapMarkers()
+        {
+            if (!ControllerActive || !MapView.MapIsEnabled || MainBody == null || !_hasActiveTarget)
+                return;
+
+            // V2 markers are independent of the legacy target-controller marker:
+            // red remains the V2 active requested site, blue is only the fresh
+            // estimated touchdown, and the original user target is subdued after
+            // the one-time local rebase.
+            GLUtils.DrawGroundMarker(MainBody, V2ActiveTargetLatitude, V2ActiveTargetLongitude, Color.red, true, 0, MainBody.Radius / 12);
+            if (_visualRebaseDone)
+                GLUtils.DrawGroundMarker(MainBody, V2OriginalTargetLatitude, V2OriginalTargetLongitude,
+                    new Color(0.55f, 0.55f, 0.55f, 0.75f), true, 0, MainBody.Radius / 18);
+            LandingGuidanceV2TargetState targetState = TargetState;
+            if (!double.IsNaN(targetState.PredictedLatitude) && !double.IsNaN(targetState.PredictedLongitude))
+                GLUtils.DrawGroundMarker(MainBody, targetState.PredictedLatitude, targetState.PredictedLongitude,
+                    Color.blue, true, 0, MainBody.Radius / 14);
         }
 
         private sealed class LandingSiteAssessment
@@ -419,7 +690,16 @@ namespace MuMech
             { Accepted = accepted; Slope = slope; Roughness = roughness; Detail = detail; }
         }
 
-        private void ReleaseV2Control() { Core.Thrust.ThrustOff(); Core.Thrust.Users.Remove(this); Core.Attitude.Users.Remove(this); }
+        private void ReleaseV2Control(bool stopWarp = true)
+        {
+            if (stopWarp) Core.Warp.MinimumWarp(true);
+            Core.Thrust.ThrustOff();
+            Core.Thrust.Users.Remove(this);
+            Core.Attitude.Users.Remove(this);
+            Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Users.Remove(this);
+            ClearAtmosphericCandidateResult();
+            _atmosphericWarpIssued = false;
+        }
         private void BeginFiniteBurn(string name, double plannedDeltaV)
         {
             _phaseBurnName = name;
@@ -431,13 +711,16 @@ namespace MuMech
         {
             _flightPhase = next;
             ControllerStatus = status;
-            if (StructuredTraceEnabled && HighLogic.LoadedSceneIsFlight && Core.Target.PositionTargetExists && Vessel != null)
+            if (StructuredTraceEnabled && HighLogic.LoadedSceneIsFlight &&
+                (Core.Target.PositionTargetExists || ControllerActive && _hasActiveTarget) && Vessel != null)
                 RefreshPreflight();
         }
 
         public void RefreshPreflight(bool forcePlan = false)
         {
-            if (!HighLogic.LoadedSceneIsFlight || !Core.Target.PositionTargetExists || Vessel == null || MainBody == null)
+            ConsumeAtmosphericCandidateResults();
+            if (!HighLogic.LoadedSceneIsFlight || (!Core.Target.PositionTargetExists && !(_hasActiveTarget && ControllerActive)) ||
+                Vessel == null || MainBody == null)
             {
                 Preflight = null;
                 return;
@@ -468,20 +751,177 @@ namespace MuMech
             {
                 airlessPlan = Preflight.AirlessPlan;
             }
+            ReentrySimulation.Result atmosphericEstimate = _atmosphericCandidateResult;
+            AtmosphericLandingPlan atmosphericPlan;
+            bool candidateResultIsCurrent = _atmosphericCandidateResult != null && _atmosphericCandidateSnapshot != null &&
+                _atmosphericCandidateSnapshot.Body == snapshot.Body &&
+                VesselState.Time <= _nextAtmosphericCandidateSimulationUT;
+            bool refreshAtmosphericPlan = forcePlan || Preflight?.AtmosphericPlan == null ||
+                VesselState.Time >= _nextPlanRefreshUT || !ReferenceEquals(atmosphericEstimate, _lastAtmosphericPlanPrediction);
+            if (refreshAtmosphericPlan)
+            {
+                if (candidateResultIsCurrent && _atmosphericCandidatePlan != null)
+                    atmosphericPlan = AtmosphericLandingPlanner.Plan(_atmosphericCandidateSnapshot, atmosphericEstimate,
+                        _atmosphericCandidatePlan.StrategicEntryDeltaV, _atmosphericCandidatePlan.StrategicEntryBurnUT,
+                        _atmosphericCandidatePlan.EntryUT, _atmosphericCandidatePlan.EntryTargetError);
+                else
+                    atmosphericPlan = AtmosphericLandingPlanner.Plan(snapshot, null);
+                _lastAtmosphericPlanPrediction = atmosphericEstimate;
+                _nextPlanRefreshUT = VesselState.Time + PlanRefreshInterval;
+            }
+            else
+            {
+                atmosphericPlan = Preflight.AtmosphericPlan;
+            }
             Preflight = new LandingGuidanceV2Preflight(snapshot, estimate, estimatorValidation, assessment, airlessPlan,
-                brakingLowerBound);
+                brakingLowerBound, atmosphericPlan);
+            if (snapshot.Body.atmosphere && atmosphericPlan.State == AtmosphericLandingPlanState.WaitingForEstimate &&
+                atmosphericPlan.StrategicEntryBurnUT > 0 && !_atmosphericCandidateSimulationRunning &&
+                (forcePlan || _atmosphericCandidatePlan == null || VesselState.Time >= _nextAtmosphericCandidateSimulationUT))
+                StartAtmosphericCandidateSimulation(snapshot, atmosphericPlan);
             WriteCorrelatedTrace(Preflight);
+        }
+
+        // This is deliberately a V2-owned simulation job.  The legacy landing
+        // predictor remains an estimator for its own controller; V2 captures a
+        // vessel model and conic with the proposed entry burn already applied,
+        // then accepts only the result carrying that immutable plan.
+        private void StartAtmosphericCandidateSimulation(LandingGuidanceV2Snapshot snapshot, AtmosphericLandingPlan plan)
+        {
+            try
+            {
+                var preBurnOrbit = new Orbit();
+                preBurnOrbit.UpdateFromStateVectors(snapshot.Position, snapshot.Velocity, snapshot.Body, snapshot.UT);
+                Orbit entryOrbit;
+                if (plan.StrategicEntryDeltaV.magnitude <= 0.5)
+                {
+                    entryOrbit = preBurnOrbit;
+                }
+                else
+                {
+                    Vector3d position = preBurnOrbit.WorldBCIPositionAtUT(plan.StrategicEntryBurnUT);
+                    Vector3d velocity = preBurnOrbit.WorldOrbitalVelocityAtUT(plan.StrategicEntryBurnUT);
+                    var burnOrbit = new Orbit();
+                    burnOrbit.UpdateFromStateVectors(position, velocity, snapshot.Body, plan.StrategicEntryBurnUT);
+                    entryOrbit = burnOrbit.PerturbedOrbit(plan.StrategicEntryBurnUT, plan.StrategicEntryDeltaV);
+                }
+
+                MechJebModuleLandingPredictions predictor = Core.GetComputerModule<MechJebModuleLandingPredictions>();
+                var curves = ReentrySimulation.SimCurves.Borrow(snapshot.Body);
+                var simulatedVessel = SimulatedVessel.Borrow(Vessel, curves, entryOrbit.StartUT, -1);
+                var simulation = ReentrySimulation.Borrow(entryOrbit, entryOrbit.StartUT, simulatedVessel, curves,
+                    predictor?.descentSpeedPolicy, predictor?.decelEndAltitudeASL ?? 0,
+                    VesselState.LimitedMaxThrustAcceleration, predictor?.parachuteSemiDeployMultiplier ?? 3.0,
+                    0, false, 0.2, Time.fixedDeltaTime, predictor?.maxOrbits ?? 1.0,
+                    predictor?.noSkipToFreefall ?? false);
+                _atmosphericCandidateSimulationRunning = true;
+                _atmosphericCandidateSnapshot = snapshot;
+                _atmosphericCandidatePlan = plan;
+                _nextAtmosphericCandidateSimulationUT = VesselState.Time + PlanRefreshInterval;
+                ThreadPool.QueueUserWorkItem(RunAtmosphericCandidateSimulation,
+                    new AtmosphericCandidateSimulationJob(simulation, snapshot, plan, _atmosphericCandidateGeneration));
+            }
+            catch (Exception ex)
+            {
+                _atmosphericCandidateSimulationRunning = false;
+                ControllerStatus = "V2 could not start its independent atmospheric candidate simulation: " + ex.Message;
+            }
+        }
+
+        private void RunAtmosphericCandidateSimulation(object value)
+        {
+            var job = (AtmosphericCandidateSimulationJob)value;
+            try
+            {
+                ReentrySimulation.Result result = job.Simulation.RunSimulation();
+                lock (_readyAtmosphericCandidateResults)
+                    _readyAtmosphericCandidateResults.Enqueue(new AtmosphericCandidateSimulationResult(result, job.Snapshot, job.Plan, job.Generation));
+            }
+            catch (Exception)
+            {
+                // The worker must not call Unity APIs. Its missing result is
+                // treated as an unvalidated candidate on the Unity thread.
+            }
+            finally
+            {
+                job.Simulation.Release();
+            }
+        }
+
+        private void ConsumeAtmosphericCandidateResults()
+        {
+            lock (_readyAtmosphericCandidateResults)
+            {
+                while (_readyAtmosphericCandidateResults.Count > 0)
+                {
+                    var completed = (AtmosphericCandidateSimulationResult)_readyAtmosphericCandidateResults.Dequeue();
+                    if (completed.Generation != _atmosphericCandidateGeneration)
+                    {
+                        completed.Result.Release();
+                        continue;
+                    }
+                    _atmosphericCandidateSimulationRunning = false;
+                    if (completed.Result.Outcome == ReentrySimulation.Outcome.ERROR || completed.Result.Body == null)
+                    {
+                        completed.Result.Release();
+                        continue;
+                    }
+                    completed.Result.EndASL = completed.Result.Body.TerrainAltitude(completed.Result.EndPosition.Latitude,
+                        completed.Result.EndPosition.Longitude);
+                    if (_atmosphericCandidateResult != null)
+                        _atmosphericCandidateResult.Release();
+                    _atmosphericCandidateResult = completed.Result;
+                    _atmosphericCandidateSnapshot = completed.Snapshot;
+                    _atmosphericCandidatePlan = completed.Plan;
+                }
+            }
+        }
+
+        private void ClearAtmosphericCandidateResult()
+        {
+            _atmosphericCandidateGeneration++;
+            if (_atmosphericCandidateResult != null)
+            {
+                _atmosphericCandidateResult.Release();
+                _atmosphericCandidateResult = null;
+            }
+            _atmosphericCandidateSnapshot = null;
+            _atmosphericCandidatePlan = null;
+            _nextAtmosphericCandidateSimulationUT = 0;
+        }
+
+        private sealed class AtmosphericCandidateSimulationJob
+        {
+            public readonly ReentrySimulation Simulation;
+            public readonly LandingGuidanceV2Snapshot Snapshot;
+            public readonly AtmosphericLandingPlan Plan;
+            public readonly long Generation;
+            public AtmosphericCandidateSimulationJob(ReentrySimulation simulation, LandingGuidanceV2Snapshot snapshot, AtmosphericLandingPlan plan, long generation)
+            { Simulation = simulation; Snapshot = snapshot; Plan = plan; Generation = generation; }
+        }
+
+        private sealed class AtmosphericCandidateSimulationResult
+        {
+            public readonly ReentrySimulation.Result Result;
+            public readonly LandingGuidanceV2Snapshot Snapshot;
+            public readonly AtmosphericLandingPlan Plan;
+            public readonly long Generation;
+            public AtmosphericCandidateSimulationResult(ReentrySimulation.Result result, LandingGuidanceV2Snapshot snapshot, AtmosphericLandingPlan plan, long generation)
+            { Result = result; Snapshot = snapshot; Plan = plan; Generation = generation; }
         }
 
         private LandingGuidanceV2Snapshot CaptureSnapshot()
         {
             Core.StageStats.RequestUpdate();
             double availableDeltaV = Core.StageStats.VacStats.Sum(s => s.DeltaV);
+            Vector3d targetReferencePosition = MainBody.GetWorldSurfacePosition(V2ActiveTargetLatitude,
+                V2ActiveTargetLongitude, 0) - MainBody.position;
 
             return new LandingGuidanceV2Snapshot(++_snapshotVersion, VesselState.Time, MainBody,
                 VesselState.OrbitalPosition, VesselState.OrbitalVelocity, VesselState.Mass, availableDeltaV,
-                VesselState.LimitedMaxThrustAcceleration, Core.Target.targetLatitude, Core.Target.targetLongitude,
-                Vessel.LandedOrSplashed);
+                VesselState.LimitedMaxThrustAcceleration, VesselState.MinThrustAcceleration,
+                V2ActiveTargetLatitude, V2ActiveTargetLongitude,
+                Vessel.LandedOrSplashed, VesselState.Time, targetReferencePosition, true);
         }
 
         private void WriteCorrelatedTrace(LandingGuidanceV2Preflight preflight)
@@ -498,6 +938,8 @@ namespace MuMech
                 LandingGuidanceV2EstimatorValidation estimatorValidation = preflight.EstimatorValidation;
                 LandingGuidanceV2PreflightAssessment assessment = preflight.Assessment;
                 AirlessLandingPlan airlessPlan = preflight.AirlessPlan;
+                AtmosphericLandingPlan atmosphericPlan = preflight.AtmosphericPlan;
+                LandingGuidanceV2TargetState targetState = TargetState;
                 MechJebModuleLandingAutopilot landing = Core.Landing;
                 AutopilotStep step = landing?.CurrentStep;
                 string phase = step?.GetType().Name;
@@ -537,23 +979,23 @@ namespace MuMech
                 string baseFields = string.Format(CultureInfo.InvariantCulture,
                     "\"snapshotVersion\":{0},\"ut\":{1},\"body\":\"{2}\",\"targetLat\":{3},\"targetLon\":{4}," +
                     "\"position\":[{5},{6},{7}],\"velocity\":[{8},{9},{10}],\"mass\":{11}," +
-                    "\"availableDeltaV\":{12},\"maxAcceleration\":{13},\"outcome\":\"{14}\",\"impactUT\":{15}," +
-                    "\"targetError\":{16},\"brakingDeltaVLowerBound\":{17},\"deltaVAboveLowerBound\":{18}," +
-                    "\"v1Phase\":{19},\"v1Status\":{20},\"v1PredictionVersion\":{21},\"v1PredictionOutcome\":{22}," +
-                    "\"v1PredictionEndLat\":{23},\"v1PredictionEndLon\":{24},\"v1PredictionEndUT\":{25},\"v1TargetError\":{26}," +
-                    "\"warpRate\":{27},\"attitudeErrorDegrees\":{28},\"commandedThrottle\":{29},\"flightControlThrottle\":{30}," +
-                    "\"actualThrustAcceleration\":{31},\"forwardThrustAcceleration\":{32},\"mechjebRcsEnabled\":{33}," +
-                    "\"rcsActionGroupEnabled\":{34},\"rcsCommand\":[{35},{36},{37}],\"burnActive\":{38}," +
-                    "\"isLandedOrSplashed\":{39},\"estimatorApplicable\":{40},\"flightDataValid\":{41},\"validityReason\":{42}," +
-                    "\"estimatorRepeatOutcome\":{43},\"estimatorRepeatImpactUT\":{44},\"estimatorDeterministic\":{45},\"estimatorValidationDetail\":{46}," +
-                    "\"preflightState\":{47},\"preflightLocalGravity\":{48},\"preflightReason\":{49}," +
-                    "\"airlessPlanState\":{50},\"strategicDeorbitDeltaV\":{51},\"planTerminalLowerBound\":{52},\"planLowerBoundMargin\":{53}," +
-                    "\"planDownrange\":{54},\"planCrossRange\":{55},\"planCorridorLimit\":{56},\"planReason\":{57},\"v2CommandAuthorized\":{58},\"v2Phase\":{59},\"v2Status\":{60},\"v2AutoWarp\":{61}",
+                    "\"availableDeltaV\":{12},\"maxAcceleration\":{13},\"minAcceleration\":{14},\"outcome\":\"{15}\",\"impactUT\":{16}," +
+                    "\"targetError\":{17},\"brakingDeltaVLowerBound\":{18},\"deltaVAboveLowerBound\":{19}," +
+                    "\"v1Phase\":{20},\"v1Status\":{21},\"v1PredictionVersion\":{22},\"v1PredictionOutcome\":{23}," +
+                    "\"v1PredictionEndLat\":{24},\"v1PredictionEndLon\":{25},\"v1PredictionEndUT\":{26},\"v1TargetError\":{27}," +
+                    "\"warpRate\":{28},\"attitudeErrorDegrees\":{29},\"commandedThrottle\":{30},\"flightControlThrottle\":{31}," +
+                    "\"actualThrustAcceleration\":{32},\"forwardThrustAcceleration\":{33},\"mechjebRcsEnabled\":{34}," +
+                    "\"rcsActionGroupEnabled\":{35},\"rcsCommand\":[{36},{37},{38}],\"burnActive\":{39}," +
+                    "\"isLandedOrSplashed\":{40},\"estimatorApplicable\":{41},\"flightDataValid\":{42},\"validityReason\":{43}," +
+                    "\"estimatorRepeatOutcome\":{44},\"estimatorRepeatImpactUT\":{45},\"estimatorDeterministic\":{46},\"estimatorValidationDetail\":{47}," +
+                    "\"preflightState\":{48},\"preflightLocalGravity\":{49},\"preflightReason\":{50}," +
+                    "\"airlessPlanState\":{51},\"strategicDeorbitDeltaV\":{52},\"planTerminalLowerBound\":{53},\"planLowerBoundMargin\":{54}," +
+                    "\"planDownrange\":{55},\"planCrossRange\":{56},\"planCorridorLimit\":{57},\"planReason\":{58},\"v2CommandAuthorized\":{59},\"v2Phase\":{60},\"v2Status\":{61},\"v2AutoWarp\":{62},\"planPlaneBurnUT\":{63},\"planStrategicBurnUT\":{64},\"planBrakingEntryUT\":{65}",
                     snapshot.Version, JsonNumber(snapshot.UT), EscapeJson(snapshot.Body.bodyName), JsonNumber(snapshot.TargetLatitude),
                     JsonNumber(snapshot.TargetLongitude), JsonNumber(snapshot.Position.x), JsonNumber(snapshot.Position.y),
                     JsonNumber(snapshot.Position.z), JsonNumber(snapshot.Velocity.x), JsonNumber(snapshot.Velocity.y),
                     JsonNumber(snapshot.Velocity.z), JsonNumber(snapshot.Mass), JsonNumber(snapshot.AvailableDeltaV),
-                    JsonNumber(snapshot.MaximumAcceleration), estimate.Outcome, JsonNumber(estimate.ImpactUT), JsonNumber(estimate.TargetError),
+                    JsonNumber(snapshot.MaximumAcceleration), JsonNumber(snapshot.MinimumAcceleration), estimate.Outcome, JsonNumber(estimate.ImpactUT), JsonNumber(estimate.TargetError),
                     JsonNumber(preflight.BrakingDeltaVLowerBound), JsonNumber(preflight.DeltaVAboveLowerBound), v1Phase, v1Status,
                     _v1PredictionVersion, predOutcome, JsonNumber(predictionLat), JsonNumber(predictionLon),
                     JsonNumber(prediction?.EndUT ?? double.NaN), JsonNumber(predictionError), JsonNumber(warpRate),
@@ -572,14 +1014,43 @@ namespace MuMech
                     JsonNumber(airlessPlan?.TerminalBrakingLowerBound ?? double.NaN), JsonNumber(airlessPlan?.LowerBoundMargin ?? double.NaN),
                     JsonNumber(airlessPlan?.SignedDownrange ?? double.NaN), JsonNumber(airlessPlan?.CrossRange ?? double.NaN),
                     JsonNumber(airlessPlan?.CorridorLimit ?? double.NaN), JsonString(airlessPlan?.Reason),
-                    ControllerActive ? "true" : "false", JsonString(_flightPhase.ToString()), JsonString(ControllerStatus), V2AutoWarp ? "true" : "false");
+                    (airlessPlan != null && airlessPlan.CommandAuthorized || atmosphericPlan?.State == AtmosphericLandingPlanState.Candidate) ? "true" : "false",
+                    JsonString(_flightPhase.ToString()), JsonString(ControllerStatus), V2AutoWarp ? "true" : "false",
+                    JsonNumber(airlessPlan?.PlaneAlignmentBurnUT ?? double.NaN), JsonNumber(airlessPlan?.StrategicBurnUT ?? double.NaN),
+                    JsonNumber(airlessPlan?.BrakingEntryUT ?? double.NaN));
                 baseFields += string.Format(CultureInfo.InvariantCulture,
-                    ",\"v2ActiveTargetLat\":{0},\"v2ActiveTargetLon\":{1},\"v2VisualRebaseDone\":{2},\"v2SiteAccepted\":{3},\"v2SiteSlopeDegrees\":{4},\"v2SiteRoughness\":{5},\"v2SiteDetail\":{6},\"v2FiniteBurn\":{7},\"v2PlannedBurnDeltaV\":{8},\"v2DeliveredBurnDeltaV\":{9}",
-                    JsonNumber(V2ActiveTargetLatitude), JsonNumber(V2ActiveTargetLongitude), _visualRebaseDone ? "true" : "false",
+                    ",\"targetReferenceUT\":{0},\"targetReferencePosition\":[{1},{2},{3}],\"hasTargetReferencePosition\":{4}",
+                    JsonNumber(snapshot.TargetReferenceUT), JsonNumber(snapshot.TargetReferencePosition.x),
+                    JsonNumber(snapshot.TargetReferencePosition.y), JsonNumber(snapshot.TargetReferencePosition.z),
+                    snapshot.HasTargetReferencePosition ? "true" : "false");
+                baseFields += string.Format(CultureInfo.InvariantCulture,
+                    ",\"atmosphericPlanState\":{0},\"atmosphericTargetError\":{1},\"atmosphericEntryCorridor\":{2},\"atmosphericEndpointUncertainty\":{3},\"atmosphericTerminalReserve\":{4},\"atmosphericLandingMargin\":{5},\"atmosphericPlanReason\":{6},\"atmosphericStrategicEntryDeltaV\":{7},\"atmosphericStrategicEntryBurnUT\":{8},\"atmosphericEntryUT\":{9},\"atmosphericEntryTargetError\":{10}",
+                    JsonString(atmosphericPlan?.State.ToString()), JsonNumber(atmosphericPlan?.PredictedTargetError ?? double.NaN),
+                    JsonNumber(atmosphericPlan?.EntryCorridorRadius ?? double.NaN), JsonNumber(atmosphericPlan?.EndpointUncertainty ?? double.NaN),
+                    JsonNumber(atmosphericPlan?.TerminalReserve ?? double.NaN), JsonNumber(atmosphericPlan?.LandingMargin ?? double.NaN),
+                    JsonString(atmosphericPlan?.Reason), JsonNumber(atmosphericPlan?.StrategicEntryDeltaV.magnitude ?? double.NaN),
+                    JsonNumber(atmosphericPlan?.StrategicEntryBurnUT ?? double.NaN), JsonNumber(atmosphericPlan?.EntryUT ?? double.NaN),
+                    JsonNumber(atmosphericPlan?.EntryTargetError ?? double.NaN));
+                baseFields += ",\"terrainAltitude\":" + JsonNumber(estimate.TerrainAltitude);
+                baseFields += string.Format(CultureInfo.InvariantCulture,
+                    ",\"atmosphericCandidateSimulationRunning\":{0},\"atmosphericCandidateOutcome\":{1},\"atmosphericCandidateSnapshotVersion\":{2},\"atmosphericCandidatePlanSnapshotVersion\":{3}",
+                    _atmosphericCandidateSimulationRunning ? "true" : "false",
+                    JsonString(_atmosphericCandidateResult?.Outcome.ToString()), _atmosphericCandidateSnapshot?.Version ?? -1,
+                    _atmosphericCandidatePlan?.SnapshotVersion ?? -1);
+                baseFields += string.Format(CultureInfo.InvariantCulture,
+                    ",\"v2OriginalTargetLat\":{0},\"v2OriginalTargetLon\":{1},\"v2ActiveTargetLat\":{2},\"v2ActiveTargetLon\":{3},\"v2PredictedTargetLat\":{4},\"v2PredictedTargetLon\":{5},\"v2PredictionSnapshotVersion\":{6},\"v2VisualRebaseDone\":{7},\"v2SiteAccepted\":{8},\"v2SiteSlopeDegrees\":{9},\"v2SiteRoughness\":{10},\"v2SiteDetail\":{11},\"v2FiniteBurn\":{12},\"v2PlannedBurnDeltaV\":{13},\"v2DeliveredBurnDeltaV\":{14}",
+                    JsonNumber(targetState.OriginalLatitude), JsonNumber(targetState.OriginalLongitude),
+                    JsonNumber(targetState.ActiveLatitude), JsonNumber(targetState.ActiveLongitude),
+                    JsonNumber(targetState.PredictedLatitude), JsonNumber(targetState.PredictedLongitude), targetState.PredictionSnapshotVersion,
+                    targetState.VisualRebaseDone ? "true" : "false",
                     _siteAssessment != null && _siteAssessment.Accepted ? "true" : "false", JsonNumber(_siteAssessment?.Slope ?? double.NaN),
                     JsonNumber(_siteAssessment?.Roughness ?? double.NaN), JsonString(_siteAssessment?.Detail), JsonString(_phaseBurnName),
                     JsonNumber(_phaseBurnPlannedDeltaV), JsonNumber(_phaseBurnStartVelocity.sqrMagnitude > 0
                         ? (VesselState.OrbitalVelocity - _phaseBurnStartVelocity).magnitude : double.NaN));
+                baseFields += string.Format(CultureInfo.InvariantCulture,
+                    ",\"airlessPlanSnapshotVersion\":{0},\"activeAirlessPlanSnapshotVersion\":{1},\"atmosphericPlanSnapshotVersion\":{2}",
+                    airlessPlan?.SnapshotVersion ?? -1, _activePlan?.SnapshotVersion ?? -1,
+                    atmosphericPlan?.SnapshotVersion ?? -1);
 
                 var lines = new System.Collections.Generic.List<string>();
                 if (_lastV1Phase != phase)
