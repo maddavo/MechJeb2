@@ -3,6 +3,37 @@ using UnityEngine;
 namespace MuMech
 {
     /// <summary>
+    /// Player-facing V2 target semantics. Original remains a reference,
+    /// active is always the requested red target, and predicted is the
+    /// independent blue endpoint from the current immutable estimate.
+    /// </summary>
+    public sealed class LandingGuidanceV2TargetState
+    {
+        public readonly double OriginalLatitude;
+        public readonly double OriginalLongitude;
+        public readonly double ActiveLatitude;
+        public readonly double ActiveLongitude;
+        public readonly double PredictedLatitude;
+        public readonly double PredictedLongitude;
+        public readonly long PredictionSnapshotVersion;
+        public readonly bool VisualRebaseDone;
+
+        public LandingGuidanceV2TargetState(double originalLatitude, double originalLongitude,
+            double activeLatitude, double activeLongitude, double predictedLatitude, double predictedLongitude,
+            long predictionSnapshotVersion, bool visualRebaseDone)
+        {
+            OriginalLatitude = originalLatitude;
+            OriginalLongitude = originalLongitude;
+            ActiveLatitude = activeLatitude;
+            ActiveLongitude = activeLongitude;
+            PredictedLatitude = predictedLatitude;
+            PredictedLongitude = predictedLongitude;
+            PredictionSnapshotVersion = predictionSnapshotVersion;
+            VisualRebaseDone = visualRebaseDone;
+        }
+    }
+
+    /// <summary>
     /// Immutable data captured on the Unity thread for one V2 planning pass.
     /// The estimator must use this value object rather than live Vessel, Orbit, or
     /// predictor state so that a result can always identify the state that produced it.
@@ -17,13 +48,21 @@ namespace MuMech
         public readonly double Mass;
         public readonly double AvailableDeltaV;
         public readonly double MaximumAcceleration;
+        public readonly double MinimumAcceleration;
         public readonly double TargetLatitude;
         public readonly double TargetLongitude;
+        // The body-fixed target is sampled from Unity at this UT. Planning
+        // snapshots may be propagated to a future burn, but must retain this
+        // inertial reference instead of treating a future burn as "now".
+        public readonly double TargetReferenceUT;
+        public readonly Vector3d TargetReferencePosition;
+        public readonly bool HasTargetReferencePosition;
         public readonly bool IsLandedOrSplashed;
 
         public LandingGuidanceV2Snapshot(long version, double ut, CelestialBody body, Vector3d position,
-            Vector3d velocity, double mass, double availableDeltaV, double maximumAcceleration,
-            double targetLatitude, double targetLongitude, bool isLandedOrSplashed)
+            Vector3d velocity, double mass, double availableDeltaV, double maximumAcceleration, double minimumAcceleration,
+            double targetLatitude, double targetLongitude, bool isLandedOrSplashed, double targetReferenceUT = double.NaN,
+            Vector3d targetReferencePosition = default(Vector3d), bool hasTargetReferencePosition = false)
         {
             Version = version;
             UT = ut;
@@ -33,9 +72,24 @@ namespace MuMech
             Mass = mass;
             AvailableDeltaV = availableDeltaV;
             MaximumAcceleration = maximumAcceleration;
+            MinimumAcceleration = minimumAcceleration;
             TargetLatitude = targetLatitude;
             TargetLongitude = targetLongitude;
+            TargetReferenceUT = double.IsNaN(targetReferenceUT) ? ut : targetReferenceUT;
+            TargetReferencePosition = targetReferencePosition;
+            HasTargetReferencePosition = hasTargetReferencePosition;
             IsLandedOrSplashed = isLandedOrSplashed;
+        }
+
+        // Compatibility with the integration branch's older V2 capture call.
+        // Current production captures provide the minimum acceleration and
+        // immutable target reference explicitly.
+        public LandingGuidanceV2Snapshot(long version, double ut, CelestialBody body, Vector3d position,
+            Vector3d velocity, double mass, double availableDeltaV, double maximumAcceleration,
+            double targetLatitude, double targetLongitude, bool isLandedOrSplashed)
+            : this(version, ut, body, position, velocity, mass, availableDeltaV, maximumAcceleration, 0,
+                targetLatitude, targetLongitude, isLandedOrSplashed)
+        {
         }
     }
 
@@ -62,12 +116,14 @@ namespace MuMech
         public readonly Vector3d ImpactPosition;
         public readonly Vector3d ImpactVelocity;
         public readonly double TargetError;
+        public readonly double TerrainAltitude;
         public readonly string Detail;
 
         public bool HasImpact => Outcome == LandingGuidanceV2EstimateOutcome.Impact;
 
         public LandingGuidanceV2Estimate(long snapshotVersion, LandingGuidanceV2EstimateOutcome outcome,
-            double impactUT, Vector3d impactPosition, Vector3d impactVelocity, double targetError, string detail)
+            double impactUT, Vector3d impactPosition, Vector3d impactVelocity, double targetError, string detail,
+            double terrainAltitude = double.NaN)
         {
             SnapshotVersion = snapshotVersion;
             Outcome = outcome;
@@ -76,6 +132,7 @@ namespace MuMech
             ImpactVelocity = impactVelocity;
             TargetError = targetError;
             Detail = detail;
+            TerrainAltitude = terrainAltitude;
         }
     }
 
@@ -141,9 +198,59 @@ namespace MuMech
         Candidate
     }
 
+    public enum AtmosphericLandingPlanState
+    {
+        NotApplicable,
+        WaitingForEstimate,
+        Rejected,
+        Candidate
+    }
+
     /// <summary>
-    /// Immutable strategic-deorbit candidate. It is data only: V2 does not yet
-    /// hand this vector to attitude, throttle, RCS, staging, target, or warp.
+    /// A robust atmospheric entry plan. The endpoint is deliberately a corridor
+    /// assessment, not an exact-touchdown promise: atmosphere, lift, parachutes
+    /// and powered terminal response retain explicit uncertainty.
+    /// </summary>
+    public sealed class AtmosphericLandingPlan
+    {
+        public readonly long SnapshotVersion;
+        public readonly AtmosphericLandingPlanState State;
+        public readonly double PredictedTargetError;
+        public readonly double EntryCorridorRadius;
+        public readonly double EndpointUncertainty;
+        public readonly double TerminalReserve;
+        public readonly double LandingMargin;
+        public readonly Vector3d StrategicEntryDeltaV;
+        public readonly double StrategicEntryBurnUT;
+        public readonly double EntryUT;
+        public readonly double EntryTargetError;
+        public readonly string Reason;
+
+        public AtmosphericLandingPlan(long snapshotVersion, AtmosphericLandingPlanState state,
+            double predictedTargetError, double entryCorridorRadius, double endpointUncertainty,
+            double terminalReserve, double landingMargin, string reason,
+            Vector3d strategicEntryDeltaV = default(Vector3d), double strategicEntryBurnUT = double.NaN,
+            double entryUT = double.NaN, double entryTargetError = double.NaN)
+        {
+            SnapshotVersion = snapshotVersion;
+            State = state;
+            PredictedTargetError = predictedTargetError;
+            EntryCorridorRadius = entryCorridorRadius;
+            EndpointUncertainty = endpointUncertainty;
+            TerminalReserve = terminalReserve;
+            LandingMargin = landingMargin;
+            StrategicEntryDeltaV = strategicEntryDeltaV;
+            StrategicEntryBurnUT = strategicEntryBurnUT;
+            EntryUT = entryUT;
+            EntryTargetError = entryTargetError;
+            Reason = reason;
+        }
+    }
+
+    /// <summary>
+    /// Immutable strategic-deorbit candidate. It identifies the exact snapshot
+    /// that authorized planning; the phase manager must still take a fresh
+    /// snapshot at each command and warp boundary before using it.
     /// </summary>
     public sealed class AirlessLandingPlan
     {
@@ -155,6 +262,7 @@ namespace MuMech
         public readonly Vector3d StrategicDeorbitDeltaV;
         public readonly double StrategicDeorbitDeltaVMagnitude;
         public readonly double StrategicBurnUT;
+        public readonly double BrakingEntryUT;
         public readonly double TerminalBrakingLowerBound;
         public readonly double TrimBudget;
         public readonly double TerminalDivertReserve;
@@ -167,22 +275,24 @@ namespace MuMech
         public readonly LandingGuidanceV2Estimate CandidateEstimate;
         public readonly string Reason;
 
-        public bool CommandAuthorized => false;
+        public bool CommandAuthorized => State == AirlessLandingPlanState.Candidate;
 
         public AirlessLandingPlan(long snapshotVersion, AirlessLandingPlanState state, Vector3d strategicDeorbitDeltaV,
             double terminalBrakingLowerBound, double signedDownrange, double crossRange, double corridorLimit,
             LandingGuidanceV2Estimate candidateEstimate, double availableDeltaV, string reason, double strategicBurnUT = double.NaN,
             double trimBudget = 0, double terminalDivertReserve = 0, double contingency = 0,
-            Vector3d planeAlignmentDeltaV = default(Vector3d))
+            Vector3d planeAlignmentDeltaV = default(Vector3d), double planeAlignmentBurnUT = double.NaN,
+            double brakingEntryUT = double.NaN)
         {
             SnapshotVersion = snapshotVersion;
             State = state;
             PlaneAlignmentDeltaV = planeAlignmentDeltaV;
             PlaneAlignmentDeltaVMagnitude = planeAlignmentDeltaV.magnitude;
-            PlaneAlignmentBurnUT = strategicBurnUT;
+            PlaneAlignmentBurnUT = planeAlignmentBurnUT;
             StrategicDeorbitDeltaV = strategicDeorbitDeltaV;
             StrategicDeorbitDeltaVMagnitude = strategicDeorbitDeltaV.magnitude;
             StrategicBurnUT = strategicBurnUT;
+            BrakingEntryUT = brakingEntryUT;
             TerminalBrakingLowerBound = terminalBrakingLowerBound;
             TrimBudget = trimBudget;
             TerminalDivertReserve = terminalDivertReserve;
@@ -209,6 +319,7 @@ namespace MuMech
         public readonly LandingGuidanceV2EstimatorValidation EstimatorValidation;
         public readonly LandingGuidanceV2PreflightAssessment Assessment;
         public readonly AirlessLandingPlan AirlessPlan;
+        public readonly AtmosphericLandingPlan AtmosphericPlan;
         public readonly double BrakingDeltaVLowerBound;
         public readonly double DeltaVAboveLowerBound;
 
@@ -216,13 +327,14 @@ namespace MuMech
 
         public LandingGuidanceV2Preflight(LandingGuidanceV2Snapshot snapshot, LandingGuidanceV2Estimate estimate,
             LandingGuidanceV2EstimatorValidation estimatorValidation, LandingGuidanceV2PreflightAssessment assessment,
-            AirlessLandingPlan airlessPlan, double brakingDeltaVLowerBound)
+            AirlessLandingPlan airlessPlan, double brakingDeltaVLowerBound, AtmosphericLandingPlan atmosphericPlan = null)
         {
             Snapshot = snapshot;
             Estimate = estimate;
             EstimatorValidation = estimatorValidation;
             Assessment = assessment;
             AirlessPlan = airlessPlan;
+            AtmosphericPlan = atmosphericPlan;
             BrakingDeltaVLowerBound = brakingDeltaVLowerBound;
             DeltaVAboveLowerBound = snapshot == null ? double.NaN : snapshot.AvailableDeltaV - brakingDeltaVLowerBound;
         }
