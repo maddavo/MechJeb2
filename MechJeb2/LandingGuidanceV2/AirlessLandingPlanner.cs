@@ -1,5 +1,8 @@
 using System;
 using MechJebLib.HoverslamSimulation;
+using MechJebLib.Lambert;
+using MechJebLib.Primitives;
+using MechJebLibBindings;
 using UnityEngine;
 
 namespace MuMech
@@ -19,23 +22,41 @@ namespace MuMech
 
         public static AirlessLandingPlan Plan(LandingGuidanceV2Snapshot snapshot)
         {
-            if (snapshot == null || snapshot.Body == null || snapshot.IsLandedOrSplashed || snapshot.Body.atmosphere)
+            if (snapshot == null || ReferenceEquals(snapshot.Body, null) || snapshot.IsLandedOrSplashed || snapshot.Body.atmosphere)
                 return Reject(snapshot, "An airborne airless snapshot is required.");
             try
             {
-                var coast = new Orbit();
-                coast.UpdateFromStateVectors(snapshot.Position, snapshot.Velocity, snapshot.Body, snapshot.UT);
-                if (!Finite(coast.period) || coast.eccentricity >= 1.0)
+                var coast = new AirlessConicTrajectory(snapshot.Body.gravParameter, snapshot.UT,
+                    snapshot.Position, snapshot.Velocity);
+                if (!coast.IsBound)
                     return Reject(snapshot, "V2 requires a bound airless coast orbit before strategic-deorbit planning.");
 
-                Candidate best = default(Candidate);
-                double bestScore = double.PositiveInfinity;
+                // The former local deorbit perturbation search could improve an
+                // existing impact but could not discover the narrow targeting
+                // solution in the recorded Mun case.  Solve the complete
+                // two-body transfer to the rotating target at each coast epoch,
+                // then independently propagate and budget that proposed burn.
+                Candidate direct = SolveTargetedTransfers(snapshot, coast);
+                if (direct.Valid && direct.WithinCorridor)
+                {
+                    AirlessLandingBudget directBudget = CandidateBudget(direct);
+                    if (directBudget.Fits(snapshot.AvailableDeltaV))
+                        return new AirlessLandingPlan(snapshot.Version, AirlessLandingPlanState.Candidate, direct.Burn,
+                            directBudget.Terminal, direct.Downrange, direct.CrossRange, direct.Corridor, direct.Estimate,
+                            snapshot.AvailableDeltaV,
+                            "Direct rotating-target transfer satisfies the impact, long-side corridor, and budget constraints.",
+                            direct.BurnUT, directBudget.Trim, directBudget.Reserve, directBudget.Contingency,
+                            Vector3d.zero, double.NaN, direct.Estimate.ImpactUT - directBudget.BrakingTime);
+                }
+
+                Candidate best = direct;
+                double bestScore = direct.Valid ? CandidateScore(direct, snapshot.AvailableDeltaV) : double.PositiveInfinity;
                 for (int i = 0; i <= CoarseSamples; ++i)
-                    Consider(SolveStrategicVector(snapshot, coast, snapshot.UT + 10.0 + coast.period * i / CoarseSamples), snapshot.AvailableDeltaV, ref best, ref bestScore);
+                    Consider(SolveStrategicVector(snapshot, coast, snapshot.UT + 10.0 + coast.Period * i / CoarseSamples), snapshot.AvailableDeltaV, ref best, ref bestScore);
 
                 if (best.Valid)
                 {
-                    double span = coast.period / CoarseSamples;
+                    double span = coast.Period / CoarseSamples;
                     for (int i = 0; i <= RefinementSamples; ++i)
                     {
                         double ut = best.BurnUT - span + 2.0 * span * i / RefinementSamples;
@@ -122,16 +143,64 @@ namespace MuMech
             }
         }
 
-        private static Candidate SolveStrategicVector(LandingGuidanceV2Snapshot source, Orbit coast, double burnUT)
+        private static Candidate SolveTargetedTransfers(LandingGuidanceV2Snapshot source, AirlessConicTrajectory coast)
         {
-            Vector3d position = coast.WorldBCIPositionAtUT(burnUT);
-            Vector3d velocity = coast.WorldOrbitalVelocityAtUT(burnUT);
-            var burnOrbit = new Orbit();
-            burnOrbit.UpdateFromStateVectors(position, velocity, source.Body, burnUT);
-            Vector3d baselineBurn = OrbitalManeuverCalculator.DeltaVToChangePeriapsis(burnOrbit, burnUT, source.Body.Radius * 0.9);
-            Orbit baselineOrbit = burnOrbit.PerturbedOrbit(burnUT, baselineBurn);
-            double baselineImpactUT = baselineOrbit.NextTimeOfRadius(burnUT, source.Body.Radius);
-            if (!Finite(baselineImpactUT)) return default(Candidate);
+            Candidate best = default(Candidate);
+            double bestScore = double.PositiveInfinity;
+            const int epochSamples = 48;
+            const int flightSamples = 36;
+            const double minimumFlightTime = 45.0;
+
+            // Sample every possible strategic burn epoch over one coast orbit.
+            // For each epoch, solve the target's rotated surface position at a
+            // finite future impact time.  This explores the complete burn vector
+            // instead of nudging a retrograde seed in only two dimensions.
+            for (int epochIndex = 0; epochIndex <= epochSamples; ++epochIndex)
+            {
+                double burnUT = source.UT + 2.0 + coast.Period * epochIndex / epochSamples;
+                if (!coast.TryStateAt(burnUT, out Vector3d position, out Vector3d velocity)) continue;
+                V3 positionV3 = position.ToV3();
+                V3 velocityV3 = velocity.ToV3();
+                V3 angularMomentum = V3.Cross(positionV3, velocityV3);
+                if (angularMomentum.sqrMagnitude <= 1e-12) continue;
+
+                for (int flightIndex = 1; flightIndex <= flightSamples; ++flightIndex)
+                {
+                    double flightTime = minimumFlightTime + coast.Period * flightIndex / flightSamples;
+                    double impactUT = burnUT + flightTime;
+                    Vector3d target = TargetAt(source, impactUT);
+                    if (!Finite(target.x) || !Finite(target.y) || !Finite(target.z) || target.sqrMagnitude <= 0) continue;
+                    try
+                    {
+                        (V3 initialTransferVelocity, _) = Gooding.Solve(source.Body.gravParameter, positionV3,
+                            target.ToV3(), flightTime, TransferGeometry.Prograde, 0, angularMomentum);
+                        Vector3d burn = initialTransferVelocity.ToVector3d() - velocity;
+                        Candidate candidate = EvaluateVector(source, burnUT, position, velocity, burn);
+                        if (!candidate.Valid || !candidate.WithinCorridor) continue;
+
+                        double score = CandidateScore(candidate, source.AvailableDeltaV);
+                        if (score < bestScore)
+                        {
+                            best = candidate;
+                            bestScore = score;
+                        }
+                    }
+                    catch (Exception)
+                    {
+                        // A singular Lambert arc leaves all other sampled arcs eligible.
+                    }
+                }
+            }
+            return best;
+        }
+
+        private static Candidate SolveStrategicVector(LandingGuidanceV2Snapshot source, AirlessConicTrajectory coast, double burnUT)
+        {
+            if (!coast.TryStateAt(burnUT, out Vector3d position, out Vector3d velocity)) return default(Candidate);
+            Vector3d baselineBurn = BaselineDeorbitBurn(source, burnUT, position, velocity);
+            var baselineOrbit = new AirlessConicTrajectory(source.Body.gravParameter, burnUT, position, velocity + baselineBurn);
+            if (!baselineOrbit.TryNextRadiusCrossing(burnUT, source.Body.Radius, out double baselineImpactUT) || !Finite(baselineImpactUT))
+                return default(Candidate);
 
             Vector3d up = position.normalized;
             Vector3d horizontalVelocity = Vector3d.Exclude(up, velocity);
@@ -152,7 +221,7 @@ namespace MuMech
             return best;
         }
 
-        private static Candidate SolveWithPlaneAlignment(LandingGuidanceV2Snapshot source, Orbit coast)
+        private static Candidate SolveWithPlaneAlignment(LandingGuidanceV2Snapshot source, AirlessConicTrajectory coast)
         {
             Candidate best = default(Candidate);
             double bestScore = double.PositiveInfinity;
@@ -160,14 +229,13 @@ namespace MuMech
             const int deorbitSamples = 24;
             for (int i = 1; i <= alignmentSamples; ++i)
             {
-                double alignmentUT = source.UT + coast.period * i / alignmentSamples;
-                Vector3d position = coast.WorldBCIPositionAtUT(alignmentUT);
-                Vector3d velocity = coast.WorldOrbitalVelocityAtUT(alignmentUT);
+                double alignmentUT = source.UT + coast.Period * i / alignmentSamples;
+                if (!coast.TryStateAt(alignmentUT, out Vector3d position, out Vector3d velocity)) continue;
                 Vector3d up = position.normalized;
                 Vector3d horizontal = Vector3d.Exclude(up, velocity);
                 for (int j = 1; j <= deorbitSamples; ++j)
                 {
-                    double deorbitUT = alignmentUT + 5.0 + coast.period * j / deorbitSamples;
+                    double deorbitUT = alignmentUT + 5.0 + coast.Period * j / deorbitSamples;
                     // First find the flight time of a deorbit candidate on the
                     // unrotated coast.  That establishes the epoch at which the
                     // target must lie in the new orbital plane.  Aligning to a
@@ -176,22 +244,37 @@ namespace MuMech
                     // Mun test case kilometres crossrange.
                     Candidate timing = SolveStrategicVector(source, coast, deorbitUT);
                     if (!timing.Valid || !Finite(timing.Estimate.ImpactUT)) continue;
-                    Vector3d targetRadial = TargetAt(source, timing.Estimate.ImpactUT).normalized;
-                    Vector3d planeNormal = Vector3d.Cross(position, targetRadial);
-                    if (horizontal.sqrMagnitude < 1e-9 || planeNormal.sqrMagnitude < 1e-9) continue;
-                    planeNormal.Normalize();
-                    Vector3d desiredHorizontal = Vector3d.Cross(planeNormal, up).normalized * horizontal.magnitude;
-                    if (Vector3d.Dot(desiredHorizontal, horizontal) < 0) desiredHorizontal = -desiredHorizontal;
-                    Vector3d planeBurn = desiredHorizontal - horizontal;
+                    if (!TryPlaneAlignmentBurn(source, position, horizontal, timing.Estimate.ImpactUT, out Vector3d planeBurn)) continue;
                     if (planeBurn.magnitude > source.AvailableDeltaV) continue;
 
-                    var alignedCoast = new Orbit();
-                    alignedCoast.UpdateFromStateVectors(position, velocity + planeBurn, source.Body, alignmentUT);
-                    if (!Finite(alignedCoast.period) || alignedCoast.eccentricity >= 1.0) continue;
+                    var alignedCoast = new AirlessConicTrajectory(source.Body.gravParameter, alignmentUT,
+                        position, velocity + planeBurn);
+                    if (!alignedCoast.IsBound) continue;
                     var alignedSnapshot = new LandingGuidanceV2Snapshot(source.Version, alignmentUT, source.Body,
                         position, velocity + planeBurn, source.Mass, source.AvailableDeltaV - planeBurn.magnitude,
                     source.MaximumAcceleration, source.MinimumAcceleration, source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT, source.TargetReferencePosition, source.HasTargetReferencePosition);
                     Candidate candidate = SolveStrategicVector(alignedSnapshot, alignedCoast, deorbitUT);
+                    if (!candidate.Valid) continue;
+                    // The first estimate was made on the unaligned coast.  Feed
+                    // the resulting impact epoch back into the plane geometry so
+                    // the target and the new orbital plane converge together.
+                    for (int iteration = 0; iteration < 3; ++iteration)
+                    {
+                        if (!TryPlaneAlignmentBurn(source, position, horizontal, candidate.Estimate.ImpactUT,
+                            out Vector3d refinedPlaneBurn)) break;
+                        if ((refinedPlaneBurn - planeBurn).magnitude < 0.01) break;
+                        planeBurn = refinedPlaneBurn;
+                        if (planeBurn.magnitude > source.AvailableDeltaV) break;
+                        alignedCoast = new AirlessConicTrajectory(source.Body.gravParameter, alignmentUT,
+                            position, velocity + planeBurn);
+                        if (!alignedCoast.IsBound) break;
+                        alignedSnapshot = new LandingGuidanceV2Snapshot(source.Version, alignmentUT, source.Body,
+                            position, velocity + planeBurn, source.Mass, source.AvailableDeltaV - planeBurn.magnitude,
+                            source.MaximumAcceleration, source.MinimumAcceleration, source.TargetLatitude, source.TargetLongitude,
+                            false, source.TargetReferenceUT, source.TargetReferencePosition, source.HasTargetReferencePosition);
+                        candidate = SolveStrategicVector(alignedSnapshot, alignedCoast, deorbitUT);
+                        if (!candidate.Valid) break;
+                    }
                     if (!candidate.Valid) continue;
                     candidate = candidate.WithPlaneAlignment(planeBurn, alignmentUT, source);
                     double score = CandidateScore(candidate, source.AvailableDeltaV);
@@ -205,18 +288,17 @@ namespace MuMech
             return best;
         }
 
-        private static Candidate RefineAlignedStrategicVector(LandingGuidanceV2Snapshot source, Orbit originalCoast,
+        private static Candidate RefineAlignedStrategicVector(LandingGuidanceV2Snapshot source, AirlessConicTrajectory originalCoast,
             Candidate coarse)
         {
             if (!coarse.Valid || coarse.PlaneAlignmentBurn.sqrMagnitude < 1e-9 || !Finite(coarse.PlaneAlignmentBurnUT))
                 return coarse;
 
-            Vector3d position = originalCoast.WorldBCIPositionAtUT(coarse.PlaneAlignmentBurnUT);
-            Vector3d velocity = originalCoast.WorldOrbitalVelocityAtUT(coarse.PlaneAlignmentBurnUT);
-            var alignedCoast = new Orbit();
-            alignedCoast.UpdateFromStateVectors(position, velocity + coarse.PlaneAlignmentBurn, source.Body,
-                coarse.PlaneAlignmentBurnUT);
-            if (!Finite(alignedCoast.period) || alignedCoast.eccentricity >= 1.0)
+            if (!originalCoast.TryStateAt(coarse.PlaneAlignmentBurnUT, out Vector3d position, out Vector3d velocity))
+                return coarse;
+            var alignedCoast = new AirlessConicTrajectory(source.Body.gravParameter, coarse.PlaneAlignmentBurnUT,
+                position, velocity + coarse.PlaneAlignmentBurn);
+            if (!alignedCoast.IsBound)
                 return coarse;
 
             var alignedSnapshot = new LandingGuidanceV2Snapshot(source.Version, coarse.PlaneAlignmentBurnUT, source.Body,
@@ -225,7 +307,7 @@ namespace MuMech
                 source.MinimumAcceleration, source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT, source.TargetReferencePosition, source.HasTargetReferencePosition);
             Candidate best = coarse;
             double bestScore = CandidateScore(best, source.AvailableDeltaV);
-            double span = alignedCoast.period / 24.0;
+            double span = alignedCoast.Period / 24.0;
             for (int i = 0; i <= RefinementSamples; ++i)
             {
                 double burnUT = coarse.BurnUT - span + 2.0 * span * i / RefinementSamples;
@@ -249,8 +331,7 @@ namespace MuMech
             Candidate best = EvaluateVector(source, burnUT, position, velocity, seed);
             // Plane matching belongs exclusively to SolveWithPlaneAlignment.
             // Allowing this optimiser to refine along the orbit normal silently
-            // folds a plane change into a supposed deorbit burn and recreates
-            // the high-energy rejected plan from the Mun trace.
+            // folds a plane change into a supposed deorbit burn.
             Vector3d[] axes = { alongTrack, radial };
             double[] steps = { 80.0, 40.0, 20.0, 10.0, 5.0, 2.0, 0.5 };
             foreach (double step in steps)
@@ -293,6 +374,12 @@ namespace MuMech
             direction.Normalize();
             double downrange = Vector3d.Dot(error, direction);
             double crossRange = Math.Sqrt(Math.Max(0, error.sqrMagnitude - downrange * downrange));
+            // A Lambert transfer that terminates on the selected surface point
+            // is numerically centred on the corridor.  Preserve that physical
+            // result rather than letting sub-millimetre rounding turn it into a
+            // false "short side" rejection.
+            if (Math.Abs(downrange) < 0.001) downrange = 0;
+            if (crossRange < 0.001) crossRange = 0;
             double corridor = Math.Max(100.0, source.Body.Radius * 0.002);
             return new Candidate(source, burnUT, Vector3d.zero, burn, estimate, downrange, crossRange, corridor, source.AvailableDeltaV);
         }
@@ -347,7 +434,56 @@ namespace MuMech
         {
             Vector3d target = snapshot.HasTargetReferencePosition ? snapshot.TargetReferencePosition :
                 snapshot.Body.GetWorldSurfacePosition(snapshot.TargetLatitude, snapshot.TargetLongitude, 0) - snapshot.Body.position;
-            return Quaternion.AngleAxis((float)(360d * (ut - snapshot.TargetReferenceUT) / snapshot.Body.rotationPeriod), snapshot.Body.angularVelocity) * target;
+            double rotationRadians = 2.0 * Math.PI * (ut - snapshot.TargetReferenceUT) / snapshot.Body.rotationPeriod;
+            return AirlessImpactEstimator.RotateAroundAxis(target, snapshot.Body.angularVelocity, rotationRadians);
+        }
+
+        private static Vector3d BaselineDeorbitBurn(LandingGuidanceV2Snapshot source, double epoch, Vector3d position,
+            Vector3d velocity)
+        {
+            Vector3d up = position.normalized;
+            Vector3d horizontal = Vector3d.Exclude(up, velocity);
+            if (horizontal.sqrMagnitude < 1e-9) return Vector3d.zero;
+            Vector3d direction = -horizontal.normalized;
+            double targetPeriapsis = source.Body.Radius * 0.9;
+            double low = 0;
+            double high = Math.Min(source.AvailableDeltaV, Math.Max(10.0, horizontal.magnitude));
+            while (high < source.AvailableDeltaV)
+            {
+                var trial = new AirlessConicTrajectory(source.Body.gravParameter, epoch, position,
+                    velocity + high * direction);
+                if (Finite(trial.PeriapsisRadius) && trial.PeriapsisRadius <= targetPeriapsis) break;
+                high = Math.Min(source.AvailableDeltaV, high * 2.0);
+            }
+
+            var maximum = new AirlessConicTrajectory(source.Body.gravParameter, epoch, position,
+                velocity + high * direction);
+            if (!Finite(maximum.PeriapsisRadius) || maximum.PeriapsisRadius > targetPeriapsis)
+                return high * direction;
+
+            for (int i = 0; i < 32; ++i)
+            {
+                double middle = (low + high) / 2.0;
+                var trial = new AirlessConicTrajectory(source.Body.gravParameter, epoch, position,
+                    velocity + middle * direction);
+                if (Finite(trial.PeriapsisRadius) && trial.PeriapsisRadius <= targetPeriapsis) high = middle;
+                else low = middle;
+            }
+            return high * direction;
+        }
+
+        private static bool TryPlaneAlignmentBurn(LandingGuidanceV2Snapshot source, Vector3d position,
+            Vector3d horizontal, double impactUT, out Vector3d planeBurn)
+        {
+            planeBurn = Vector3d.zero;
+            Vector3d targetRadial = TargetAt(source, impactUT).normalized;
+            Vector3d planeNormal = Vector3d.Cross(position, targetRadial);
+            if (horizontal.sqrMagnitude < 1e-9 || planeNormal.sqrMagnitude < 1e-9) return false;
+            planeNormal.Normalize();
+            Vector3d desiredHorizontal = Vector3d.Cross(planeNormal, position.normalized).normalized * horizontal.magnitude;
+            if (Vector3d.Dot(desiredHorizontal, horizontal) < 0) desiredHorizontal = -desiredHorizontal;
+            planeBurn = desiredHorizontal - horizontal;
+            return Finite(planeBurn.x) && Finite(planeBurn.y) && Finite(planeBurn.z);
         }
 
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);

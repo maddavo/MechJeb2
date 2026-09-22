@@ -13,7 +13,7 @@ namespace MuMech
     {
         public static LandingGuidanceV2Estimate Estimate(LandingGuidanceV2Snapshot snapshot)
         {
-            if (snapshot == null || snapshot.Body == null || !IsFinite(snapshot.UT) ||
+            if (snapshot == null || ReferenceEquals(snapshot.Body, null) || !IsFinite(snapshot.UT) ||
                 !IsFinite(snapshot.Position) || !IsFinite(snapshot.Velocity) || snapshot.Position.sqrMagnitude <= 0)
             {
                 return new LandingGuidanceV2Estimate(snapshot?.Version ?? -1,
@@ -37,19 +37,23 @@ namespace MuMech
 
             try
             {
-                var orbit = new Orbit();
-                orbit.UpdateFromStateVectors(snapshot.Position, snapshot.Velocity, snapshot.Body, snapshot.UT);
+                var orbit = new AirlessConicTrajectory(snapshot.Body.gravParameter, snapshot.UT,
+                    snapshot.Position, snapshot.Velocity);
                 double surfaceRadius = snapshot.Body.Radius;
 
-                if (!IsFinite(orbit.PeR) || orbit.PeR > surfaceRadius)
+                // A transfer that is constructed to meet the sea-level surface
+                // can differ from that radius by floating-point roundoff.  Do
+                // not reject a valid tangent/intersection before the actual
+                // next-radius-crossing solver has evaluated it.
+                if (!IsFinite(orbit.PeriapsisRadius) || orbit.PeriapsisRadius > surfaceRadius + 0.01)
                 {
                     return new LandingGuidanceV2Estimate(snapshot.Version, LandingGuidanceV2EstimateOutcome.NoImpact,
                         double.NaN, Vector3d.zero, Vector3d.zero, double.NaN,
                         "The snapshot orbit does not intersect the body's sea-level surface.");
                 }
 
-                double impactUT = orbit.NextTimeOfRadius(snapshot.UT, surfaceRadius);
-                if (!IsFinite(impactUT) || impactUT < snapshot.UT)
+                if (!orbit.TryNextRadiusCrossing(snapshot.UT, surfaceRadius, out double impactUT) ||
+                    !IsFinite(impactUT) || impactUT < snapshot.UT)
                 {
                     return new LandingGuidanceV2Estimate(snapshot.Version, LandingGuidanceV2EstimateOutcome.NoImpact,
                         double.NaN, Vector3d.zero, Vector3d.zero, double.NaN,
@@ -66,12 +70,12 @@ namespace MuMech
                 {
                     try
                     {
-                        Vector3d trialPosition = orbit.WorldBCIPositionAtUT(impactUT);
+                        if (!orbit.TryStateAt(impactUT, out Vector3d trialPosition, out _)) break;
                         snapshot.Body.GetLatLngAltAtUT(impactUT, trialPosition, out double latitude, out double longitude, out _);
                         terrainAltitude = snapshot.Body.TerrainAltitude(latitude, longitude, true);
                         double terrainRadius = surfaceRadius + Math.Max(0, terrainAltitude);
-                        double refinedUT = orbit.NextTimeOfRadius(snapshot.UT, terrainRadius);
-                        if (!IsFinite(refinedUT) || refinedUT < snapshot.UT)
+                        if (!orbit.TryNextRadiusCrossing(snapshot.UT, terrainRadius, out double refinedUT) ||
+                            !IsFinite(refinedUT) || refinedUT < snapshot.UT)
                             break;
                         terrainRefined = true;
                         if (Math.Abs(refinedUT - impactUT) < 0.01)
@@ -88,8 +92,10 @@ namespace MuMech
                     }
                 }
 
-                Vector3d impactPosition = orbit.WorldBCIPositionAtUT(impactUT);
-                Vector3d impactVelocity = orbit.WorldOrbitalVelocityAtUT(impactUT);
+                if (!orbit.TryStateAt(impactUT, out Vector3d impactPosition, out Vector3d impactVelocity))
+                    return new LandingGuidanceV2Estimate(snapshot.Version, LandingGuidanceV2EstimateOutcome.NoImpact,
+                        double.NaN, Vector3d.zero, Vector3d.zero, double.NaN,
+                        "The conic could not propagate to its surface intersection.");
                 Vector3d targetPosition = TargetPositionAtUT(snapshot, impactUT);
                 double targetError = Vector3d.Distance(impactPosition, targetPosition);
 
@@ -128,8 +134,17 @@ namespace MuMech
             // every future candidate score its impact against a target displaced
             // by the coast to that candidate, which can reject an otherwise
             // reachable plane-alignment and deorbit sequence.
-            double rotationDegrees = 360d * (ut - snapshot.TargetReferenceUT) / snapshot.Body.rotationPeriod;
-            return Quaternion.AngleAxis((float)rotationDegrees, snapshot.Body.angularVelocity) * target;
+            double rotationRadians = 2.0 * Math.PI * (ut - snapshot.TargetReferenceUT) / snapshot.Body.rotationPeriod;
+            return RotateAroundAxis(target, snapshot.Body.angularVelocity, rotationRadians);
+        }
+
+        internal static Vector3d RotateAroundAxis(Vector3d vector, Vector3d axis, double radians)
+        {
+            if (axis.sqrMagnitude < 1e-12) return vector;
+            axis.Normalize();
+            double cosine = Math.Cos(radians);
+            double sine = Math.Sin(radians);
+            return vector * cosine + Vector3d.Cross(axis, vector) * sine + axis * Vector3d.Dot(axis, vector) * (1.0 - cosine);
         }
 
         private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
