@@ -82,7 +82,9 @@ namespace MuMech
                     if (_planeChangeDVLeft < 0.1F)
                     {
                         Core.Thrust.ThrustOff();
-                        return new LowDeorbitBurn(Core); //DecelerationBurn(Core); would by cool to immediately proceed to DecelerationBurn instead, can't figure out how to convince trajectory predicted to do so with Pe>0, must be done in ReentrySimulation.cs somewhere.
+                        // Preserve the proven Solver Basis V1 phase handoff.
+                        // LowDeorbitBurn was the historical stalled path.
+                        return new DeorbitBurn(Core);
                     }
                 }
                 else
