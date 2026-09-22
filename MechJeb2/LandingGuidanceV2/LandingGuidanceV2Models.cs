@@ -51,11 +51,15 @@ namespace MuMech
         public readonly double MinimumAcceleration;
         public readonly double TargetLatitude;
         public readonly double TargetLongitude;
+        // The body-fixed target is sampled from Unity at this UT. Planning
+        // snapshots may be propagated to a future burn, but must retain this
+        // inertial reference instead of treating a future burn as "now".
+        public readonly double TargetReferenceUT;
         public readonly bool IsLandedOrSplashed;
 
         public LandingGuidanceV2Snapshot(long version, double ut, CelestialBody body, Vector3d position,
             Vector3d velocity, double mass, double availableDeltaV, double maximumAcceleration, double minimumAcceleration,
-            double targetLatitude, double targetLongitude, bool isLandedOrSplashed)
+            double targetLatitude, double targetLongitude, bool isLandedOrSplashed, double targetReferenceUT = double.NaN)
         {
             Version = version;
             UT = ut;
@@ -68,6 +72,7 @@ namespace MuMech
             MinimumAcceleration = minimumAcceleration;
             TargetLatitude = targetLatitude;
             TargetLongitude = targetLongitude;
+            TargetReferenceUT = double.IsNaN(targetReferenceUT) ? ut : targetReferenceUT;
             IsLandedOrSplashed = isLandedOrSplashed;
         }
     }
