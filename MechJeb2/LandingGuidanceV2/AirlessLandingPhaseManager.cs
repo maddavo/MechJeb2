@@ -234,6 +234,32 @@ namespace MuMech
         }
     }
 
+    /// <summary>
+    /// Authorizes a terminal coast warp only after terminal-braking attitude
+    /// has remained inside the authority gate at 1x for a sustained interval.
+    /// A single stale attitude sample must never start rails warp.
+    /// </summary>
+    public sealed class AirlessTerminalWarpGate
+    {
+        public const double AttitudeHoldSeconds = 2.0;
+        private double _readySinceUT = double.NaN;
+
+        public bool ObserveAttitude(double ut, double attitudeErrorDegrees)
+        {
+            if (double.IsNaN(ut) || double.IsInfinity(ut) ||
+                double.IsNaN(attitudeErrorDegrees) || double.IsInfinity(attitudeErrorDegrees) ||
+                attitudeErrorDegrees > AirlessLandingPhaseManager.AttitudeReadyDegrees)
+            {
+                _readySinceUT = double.NaN;
+                return false;
+            }
+            if (double.IsNaN(_readySinceUT)) _readySinceUT = ut;
+            return ut - _readySinceUT >= AttitudeHoldSeconds;
+        }
+
+        public void Reset() => _readySinceUT = double.NaN;
+    }
+
     public enum AirlessLandingPhaseManagerPhase
     {
         Idle, PreparePlaneAlignmentWarp, WarpToPlaneAlignment, AlignPlaneAlignment, PlaneAlignmentBurn, AwaitStrategicReplan,

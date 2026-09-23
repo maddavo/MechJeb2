@@ -58,6 +58,7 @@ namespace MuMech
         // decides when authority may be requested; this module performs the
         // resulting KSP commands.
         private readonly AirlessLandingPhaseManager _airlessPhaseManager = new AirlessLandingPhaseManager();
+        private readonly AirlessTerminalWarpGate _terminalWarpGate = new AirlessTerminalWarpGate();
         private string _lastV2Phase;
         private double _activeTargetLatitude;
         private double _activeTargetLongitude;
@@ -168,6 +169,7 @@ namespace MuMech
             _originalTargetLongitude = Core.Target.targetLongitude;
             _visualRebaseDone = false;
             _airlessDescentCommitted = false;
+            _terminalWarpGate.Reset();
             _siteAssessment = null;
             if (MainBody.atmosphere)
             {
@@ -504,14 +506,27 @@ namespace MuMech
                         break;
                     }
                     Core.Attitude.attitudeTo(Core.Hoverslam.IgnitionAttitude, AttitudeReference.INERTIAL_COT, this);
-                    if (Core.Attitude.attitudeError >= 2.0)
+                    if (!_terminalWarpGate.ObserveAttitude(VesselState.Time, Core.Attitude.attitudeError))
                     {
                         Core.Thrust.ThrustOff();
-                        ControllerStatus = "V2 is holding 1x until it has terminal-braking attitude authority.";
+                        ControllerStatus = "V2 is holding at 1x until terminal-braking attitude remains inside the authority gate.";
                         break;
                     }
                     if (V2AutoWarp && VesselState.Time < Core.Hoverslam.IgnitionUT - 10.0)
+                    {
+                        // The target and impact state must be evaluated at the
+                        // instant rails warp is requested. The post-trim
+                        // estimate is not valid authority for a later warp.
+                        RefreshPreflight(false, true);
+                        if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact || _activePlan == null ||
+                            Preflight.Estimate.TargetError > _activePlan.CorridorLimit)
+                        {
+                            _terminalWarpGate.Reset();
+                            BeginAirlessRecoveryReplan("V2 denied terminal auto-warp because the fresh impact endpoint left the target corridor.");
+                            break;
+                        }
                         Core.Warp.WarpToUT(Core.Hoverslam.IgnitionUT - 10.0);
+                    }
                     else if (Core.Hoverslam.IgnitionCountdown <= Time.fixedDeltaTime)
                     {
                         Core.Warp.MinimumWarp(true);
@@ -651,6 +666,7 @@ namespace MuMech
         {
             Core.Thrust.ThrustOff();
             Core.Warp.MinimumWarp(true);
+            _terminalWarpGate.Reset();
             // Discard any candidate made before the executed burn. The next
             // Preflight tick owns an immutable post-burn snapshot and waits for
             // its worker result before it can request a second finite burn.
@@ -934,6 +950,7 @@ namespace MuMech
         private void TransitionTo(V2FlightPhase next, string status)
         {
             _flightPhase = next;
+            if (next == V2FlightPhase.Coast) _terminalWarpGate.Reset();
             ControllerStatus = status;
             if (StructuredTraceEnabled && HighLogic.LoadedSceneIsFlight &&
                 (Core.Target.PositionTargetExists || ControllerActive && _hasActiveTarget) && Vessel != null)
