@@ -56,6 +56,12 @@ namespace MuMech
                 if (!coast.IsBound)
                     return Reject(snapshot, "V2 requires a bound airless coast orbit before strategic-deorbit planning.");
 
+                // A target-transfer burn cannot be scheduled after the
+                // unburned vehicle has already reached the surface.  Rails
+                // warp previously accepted this stale epoch and carried V2
+                // past impact while it remained in WarpToStrategic.
+                LandingGuidanceV2Estimate currentImpact = AirlessImpactEstimator.Estimate(snapshot);
+
                 // The former local deorbit perturbation search could improve an
                 // existing impact but could not discover the narrow targeting
                 // solution in the recorded Mun case.  Solve the complete
@@ -103,6 +109,10 @@ namespace MuMech
                         best.Valid
                             ? "The closest strategic vector is outside the long-side corridor; no engine command was authorized."
                             : "No finite airless strategic-deorbit vector produced a valid impact trajectory.");
+
+                if (currentImpact.HasImpact && best.BurnUT >= currentImpact.ImpactUT - 0.25)
+                    return Reject(snapshot, best.Burn, best.Estimate, best.Downrange, best.CrossRange, best.Corridor,
+                        "V2 rejected the strategic burn because the current unburned trajectory impacts before its planned burn epoch.");
 
                 AirlessLandingBudget budget = CandidateBudget(best);
                 if (!budget.Fits(snapshot.AvailableDeltaV))
