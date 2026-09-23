@@ -123,7 +123,29 @@ namespace MuMech
                 return false;
             }
 
-            Candidate candidate = EvaluateVector(snapshot, snapshot.UT, snapshot.Position, snapshot.Velocity,
+            // The plan's epoch represents the midpoint of a finite burn.  The
+            // controller takes its fresh snapshot at ignition, then propagates
+            // that unburned state to the committed midpoint before checking the
+            // impulse-equivalent vector.  Evaluating the vector at ignition
+            // treats a correctly timed finite burn as an early impulse and
+            // falsely rejects it.
+            if (snapshot.UT > committedPlan.StrategicBurnUT + 0.25)
+            {
+                reason = "V2 reached the strategic validation gate after the committed burn midpoint.";
+                return false;
+            }
+            Vector3d position = snapshot.Position;
+            Vector3d velocity = snapshot.Velocity;
+            if (snapshot.UT < committedPlan.StrategicBurnUT)
+            {
+                var coast = new AirlessConicTrajectory(snapshot.Body.gravParameter, snapshot.UT, position, velocity);
+                if (!coast.IsBound || !coast.TryStateAt(committedPlan.StrategicBurnUT, out position, out velocity))
+                {
+                    reason = "V2 could not propagate the fresh ignition snapshot to the committed burn midpoint.";
+                    return false;
+                }
+            }
+            Candidate candidate = EvaluateVector(snapshot, committedPlan.StrategicBurnUT, position, velocity,
                 committedPlan.StrategicDeorbitDeltaV);
             if (!candidate.Valid || !candidate.WithinCorridor)
             {

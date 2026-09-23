@@ -210,7 +210,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
-        public void LatestRecordedWarpPlanRejectsEarlyGateAndPassesExactIgnition()
+        public void LatestRecordedWarpPlanValidatesFiniteBurnFromItsIgnitionSnapshot()
         {
             const double ut = 24108735.542233;
             var snapshot = new LandingGuidanceV2Snapshot(18, ut, CreateMun(),
@@ -239,8 +239,11 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
                 snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude,
                 snapshot.TargetLongitude, false, plan.StrategicBurnUT - 0.52,
                 RotateTarget(snapshot, plan.StrategicBurnUT - 0.52), true, snapshot.TargetTerrainAltitude);
-            Assert.False(AirlessLandingPlanner.TryValidateCommittedStrategicBurn(earlyGate, plan,
-                out _, out _));
+            // The fresh snapshot is taken at finite-burn ignition.  Validation
+            // propagates it to the planned impulse midpoint, avoiding the old
+            // false rejection caused by treating ignition as an early impulse.
+            Assert.True(AirlessLandingPlanner.TryValidateCommittedStrategicBurn(earlyGate, plan,
+                out _, out string ignitionReason), ignitionReason);
         }
 
         private static LandingGuidanceV2Snapshot RecordedMunSnapshot()
