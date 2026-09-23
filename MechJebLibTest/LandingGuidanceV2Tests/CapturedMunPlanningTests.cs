@@ -121,6 +121,38 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.True(plan.BrakingEntryUT > plan.StrategicBurnUT);
         }
 
+        [Fact]
+        public void EarlierRecordedMunSnapshotAlsoProducesAFeasiblePlan()
+        {
+            const double ut = 24108738.842233;
+            var snapshot = new LandingGuidanceV2Snapshot(25, ut, CreateMun(),
+                new Vector3d(237658.944818, -4540.145469, -24262.014012),
+                new Vector3d(53.192611, 5.436655, 519.367374),
+                36.077968, 810.440609, 27.717748, 0,
+                0.165, -130.626389, false, ut,
+                new Vector3d(-97232.142734, 575.957857, 174772.934666), true);
+            AirlessLandingPlan plan = AirlessLandingPlanner.Plan(snapshot);
+            Assert.True(plan.State == AirlessLandingPlanState.Candidate,
+                plan.Reason + " downrange=" + plan.SignedDownrange + " crossrange=" + plan.CrossRange +
+                " corridor=" + plan.CorridorLimit + " dv=" + plan.StrategicDeorbitDeltaVMagnitude);
+        }
+
+        [Fact]
+        public void StartedV2MunSnapshotProducesAFeasiblePlan()
+        {
+            const double ut = 24108753.762232;
+            var snapshot = new LandingGuidanceV2Snapshot(30, ut, CreateMun(),
+                new Vector3d(220388.272710, -4456.631803, -92198.965400),
+                new Vector3d(201.649583, 5.757169, 481.563639),
+                36.077968, 810.440603, 27.717750, 0,
+                0.165, -130.626389, false, ut,
+                new Vector3d(-36056.402455, 575.957857, 196722.149527), true);
+            AirlessLandingPlan plan = AirlessLandingPlanner.Plan(snapshot);
+            Assert.True(plan.State == AirlessLandingPlanState.Candidate,
+                plan.Reason + " downrange=" + plan.SignedDownrange + " crossrange=" + plan.CrossRange +
+                " corridor=" + plan.CorridorLimit + " dv=" + plan.StrategicDeorbitDeltaVMagnitude);
+        }
+
         private static LandingGuidanceV2Snapshot RecordedMunSnapshot()
         {
             const double ut = 24108762.642232;

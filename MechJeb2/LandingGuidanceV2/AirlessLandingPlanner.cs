@@ -432,8 +432,7 @@ namespace MuMech
 
         private static Vector3d TargetAt(LandingGuidanceV2Snapshot snapshot, double ut)
         {
-            Vector3d target = snapshot.HasTargetReferencePosition ? snapshot.TargetReferencePosition :
-                snapshot.Body.GetWorldSurfacePosition(snapshot.TargetLatitude, snapshot.TargetLongitude, 0) - snapshot.Body.position;
+            Vector3d target = AirlessTargetGeometry.ReferenceSurfacePosition(snapshot);
             double rotationRadians = 2.0 * Math.PI * (ut - snapshot.TargetReferenceUT) / snapshot.Body.rotationPeriod;
             return AirlessImpactEstimator.RotateAroundAxis(target, snapshot.Body.angularVelocity, rotationRadians);
         }
