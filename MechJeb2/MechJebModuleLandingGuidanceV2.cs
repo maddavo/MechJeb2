@@ -360,7 +360,7 @@ namespace MuMech
                         Core.Attitude.attitudeError, remainingPlaneDv);
                     if (planeBurnDecision.Directive == AirlessLandingPhaseDirective.RequestFiniteBurnThrottle)
                     {
-                        Core.Thrust.ThrustForDv(remainingPlaneDv, 0.5);
+                        CommandFiniteBurnThrottle(remainingPlaneDv);
                         break;
                     }
                     if (planeBurnDecision.Directive == AirlessLandingPhaseDirective.RequestAttitude)
@@ -431,7 +431,7 @@ namespace MuMech
                         Core.Attitude.attitudeError, remainingDv);
                     if (strategicBurnDecision.Directive == AirlessLandingPhaseDirective.RequestFiniteBurnThrottle)
                     {
-                        Core.Thrust.ThrustForDv(remainingDv, 0.5);
+                        CommandFiniteBurnThrottle(remainingDv);
                         break;
                     }
                     if (strategicBurnDecision.Directive == AirlessLandingPhaseDirective.RequestAttitude)
@@ -489,7 +489,7 @@ namespace MuMech
                         else
                             BeginAirlessRecoveryReplan(postTrim.Reason);
                     }
-                    else Core.Thrust.ThrustForDv(RemainingFiniteBurnDeltaV, 0.5);
+                    else CommandFiniteBurnThrottle(RemainingFiniteBurnDeltaV);
                     break;
                 case V2FlightPhase.Coast:
                     Core.Thrust.ThrustOff();
@@ -590,7 +590,7 @@ namespace MuMech
                         TransitionTo(V2FlightPhase.Preflight,
                             "V2 atmospheric entry burn complete; independently validating the actual post-burn trajectory.");
                     }
-                    else Core.Thrust.ThrustForDv(remainingEntryDv, 0.5);
+                    else CommandFiniteBurnThrottle(remainingEntryDv);
                     break;
                 case V2FlightPhase.AtmosphericEntry:
                     // Atmospheric flight is never warped.  Keep the vehicle
@@ -903,6 +903,16 @@ namespace MuMech
             // completion frame would corrupt the trace and burn authority.
             _finiteBurnTracking = false;
             Core.Thrust.ThrustOff();
+        }
+
+        private void CommandFiniteBurnThrottle(double remainingDeltaV)
+        {
+            Core.Thrust.ThrustForDv(remainingDeltaV, 0.5);
+            // ThrustForDv handles response/spool dynamics. The V2-local cap
+            // then limits its final half metre per second to 2% throttle so a
+            // high-TWR vessel has fine measured-delta-v authority.
+            Core.Thrust.TargetThrottle = FiniteBurnProgress.LimitThrottleForFineControl(remainingDeltaV,
+                Core.Thrust.TargetThrottle);
         }
 
         private void BeginFiniteBurn(string name, double plannedDeltaV)

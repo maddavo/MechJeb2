@@ -202,6 +202,8 @@ namespace MuMech
     /// </summary>
     public sealed class FiniteBurnProgress
     {
+        public const double FineControlStartDeltaV = 0.50;
+        public const float FineControlThrottleCap = 0.02f;
         public readonly double PlannedDeltaV;
         public double DeliveredDeltaV { get; private set; }
         public double RemainingDeltaV => Math.Max(0, PlannedDeltaV - DeliveredDeltaV);
@@ -218,6 +220,17 @@ namespace MuMech
             if (double.IsNaN(deltaTime) || double.IsInfinity(deltaTime) ||
                 double.IsNaN(actualThrustAcceleration) || double.IsInfinity(actualThrustAcceleration)) return;
             DeliveredDeltaV += Math.Max(0, deltaTime) * Math.Max(0, actualThrustAcceleration);
+        }
+
+        // V2's finite-burn authority has its own final-delta-v throttle cap.
+        // It does not change the vessel's persistent throttle limiter, which
+        // belongs to the player and other MechJeb controllers.
+        public static float LimitThrottleForFineControl(double remainingDeltaV, float requestedThrottle)
+        {
+            if (double.IsNaN(remainingDeltaV) || double.IsInfinity(remainingDeltaV)) return 0;
+            return remainingDeltaV <= FineControlStartDeltaV
+                ? Math.Min(requestedThrottle, FineControlThrottleCap)
+                : requestedThrottle;
         }
     }
 
