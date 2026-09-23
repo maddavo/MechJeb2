@@ -276,6 +276,11 @@ namespace MuMech
         }
 
         public void Reset() => _readySinceUT = double.NaN;
+
+        public static bool EndpointIsCurrentAndWithinCorridor(LandingGuidanceV2Estimate estimate, double corridorLimit) =>
+            estimate != null && estimate.HasImpact && !double.IsNaN(estimate.TargetError) &&
+            !double.IsInfinity(estimate.TargetError) && !double.IsNaN(corridorLimit) &&
+            !double.IsInfinity(corridorLimit) && estimate.TargetError <= corridorLimit;
     }
 
     /// <summary>

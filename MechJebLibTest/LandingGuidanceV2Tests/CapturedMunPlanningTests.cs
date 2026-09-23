@@ -389,6 +389,24 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void RecordedTerminalWarpExitOutsideCorridorIsDenied()
+        {
+            // The 2026-09-23 V2 trace showed this state after terminal warp:
+            // post-trim estimate was 265 m, but the fresh physical state had
+            // drifted to a 7.45 km miss. Rails must never be authorized from
+            // the old estimate.
+            var snapshot = new LandingGuidanceV2Snapshot(767, 24109671.740519, CreateMun(),
+                new Vector3d(-62332.156092, 162.143502, 196193.948137),
+                new Vector3d(-530.060654, 9.255353, -224.960816),
+                35.706558, 779.996775, 28.006067, 0, 0.165, -130.626389, false,
+                24108734.462233, new Vector3d(-74229.781420, 575.957857, 185713.779303), true, 4350.290494);
+            LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(snapshot);
+            Assert.True(estimate.HasImpact, estimate.Detail);
+            Assert.True(estimate.TargetError > 7000, "targetError=" + estimate.TargetError);
+            Assert.False(AirlessTerminalWarpGate.EndpointIsCurrentAndWithinCorridor(estimate, 400));
+        }
+
+        [Fact]
         public void RecordedMunFiniteStrategicBurnReachesThePlannedImpactCorridor()
         {
             // This is a deterministic closed-loop burn execution, not an
