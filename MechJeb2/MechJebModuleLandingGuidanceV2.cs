@@ -85,6 +85,10 @@ namespace MuMech
         private string _pendingTargetEvent;
         private const double VisualAssessmentAltitude = 750.0;
         private const double VisualRebaseAccuracyLimit = 500.0;
+        // Terminal hoverslam ignition is a burn *deadline*, not the point at
+        // which V2 may first begin acquiring braking attitude.  Leave coast
+        // with enough 1x time to settle the physical thrust vector.
+        private const double TerminalBrakingAlignmentLeadSeconds = 15.0;
         private readonly DeltaSigmaThrottleModulator _terminalPwm = new DeltaSigmaThrottleModulator(0.02, 0.50);
 
         public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, AlignTrim, BoundedTrim, Coast, WarpToAtmosphericEntry, AlignAtmosphericEntryBurn, AtmosphericEntryBurn, AtmosphericEntry, BrakingApproach, VisualAssessment, TerminalDivert, VelocityNull, Complete, Rejected }
@@ -194,6 +198,7 @@ namespace MuMech
             _activePlan = Preflight.AirlessPlan;
             if (!StartAirlessPhaseManager()) return false;
             Core.Thrust.Users.Add(this); Core.Attitude.Users.Add(this);
+            Core.Hoverslam.Users.Add(this);
             TransitionTo(V2FlightPhase.WarpToStrategic, "V2 plan accepted; moving to the strategic-deorbit burn gate.");
             return true;
         }
@@ -587,7 +592,7 @@ namespace MuMech
                         }
                         Core.Warp.WarpToUT(Core.Hoverslam.IgnitionUT - 10.0);
                     }
-                    else if (Core.Hoverslam.IgnitionCountdown <= Time.fixedDeltaTime)
+                    else if (Core.Hoverslam.IgnitionCountdown <= TerminalBrakingAlignmentLeadSeconds)
                     {
                         Core.Warp.MinimumWarp(true);
                         // A hoverslam ignition time that was calculated before
@@ -601,7 +606,8 @@ namespace MuMech
                             break;
                         }
                         _lastAdjustedVelocity = new Vector3d(double.NaN, double.NaN, double.NaN);
-                        TransitionTo(V2FlightPhase.BrakingApproach, "V2 braking approach has begun.");
+                        TransitionTo(V2FlightPhase.BrakingApproach,
+                            "V2 left coast before terminal ignition to align and begin controlled braking.");
                     }
                     break;
                 case V2FlightPhase.WarpToAtmosphericEntry:
@@ -1016,6 +1022,7 @@ namespace MuMech
             Core.Thrust.ThrustOff();
             Core.Thrust.Users.Remove(this);
             Core.Attitude.Users.Remove(this);
+            Core.Hoverslam.Users.Remove(this);
             Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Users.Remove(this);
             ClearAtmosphericCandidateResult();
             _atmosphericInitialWarpIssued = false;
