@@ -790,7 +790,6 @@ namespace MuMech
 
         private void TickTerminalDivert()
         {
-            Vector3d velocityError = TerminalVelocityError();
             Vector3d target = MainBody.GetWorldSurfacePosition(V2ActiveTargetLatitude, V2ActiveTargetLongitude,
                 MainBody.TerrainAltitude(V2ActiveTargetLatitude, V2ActiveTargetLongitude, true));
             double horizontalError = Vector3d.Exclude(VesselState.Up, target - VesselState.CoM).magnitude;
@@ -800,43 +799,48 @@ namespace MuMech
                 TransitionTo(V2FlightPhase.VelocityNull, "V2 velocity-null guidance is protecting touchdown speed and clearance.");
                 return;
             }
-            Vector3d divertDirection = Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up) >= -1.0
-                ? VesselState.Up : -velocityError;
-            Core.Attitude.attitudeTo(divertDirection, AttitudeReference.INERTIAL_COT, this);
-            _commandedV2AttitudeVector = divertDirection;
-            if (!BurnAlignmentReady(divertDirection))
+            AirlessTerminalGuidanceCommand command = TerminalCommand(target);
+            if (!command.Valid)
+            {
+                RejectController(command.RejectionReason);
+                return;
+            }
+            Core.Attitude.attitudeTo(command.ThrustDirection, AttitudeReference.INERTIAL_COT, this);
+            _commandedV2AttitudeVector = command.ThrustDirection;
+            if (!BurnAlignmentReady(command.ThrustDirection))
             {
                 Core.Thrust.ThrustOff();
                 _terminalPwm.Reset();
                 ControllerStatus = "V2 terminal divert is holding throttle until the measured thrust vector is aligned and settled.";
                 return;
             }
-            double altitude = Math.Max(0.1, VesselState.AltitudeBottom);
-            double acceleration = Vessel.graviticAcceleration.magnitude + 0.5 * (VesselState.SurfaceVelocity.sqrMagnitude - 0.25) / altitude;
             _terminalPwm.MinOnTime = 0.50;
             _terminalPwm.MinOffTime = TimeWarp.fixedDeltaTime;
-            Core.Thrust.TargetThrottle = _terminalPwm.ThrottleCommand(acceleration, VesselState.MinThrustAcceleration, VesselState.MaxThrustAcceleration, TimeWarp.fixedDeltaTime);
+            Core.Thrust.TargetThrottle = _terminalPwm.ThrottleCommand(command.DesiredAcceleration,
+                VesselState.MinThrustAcceleration, VesselState.MaxThrustAcceleration, TimeWarp.fixedDeltaTime);
         }
 
         private void TickVelocityNull()
         {
             Core.Warp.MinimumWarp(true);
-            Vector3d nullDirection = VesselState.Up;
-            Core.Attitude.attitudeTo(nullDirection, AttitudeReference.INERTIAL_COT, this);
-            _commandedV2AttitudeVector = nullDirection;
-            if (!BurnAlignmentReady(nullDirection))
+            AirlessTerminalGuidanceCommand command = TerminalCommand(VesselState.CoM);
+            if (!command.Valid)
+            {
+                RejectController(command.RejectionReason);
+                return;
+            }
+            Core.Attitude.attitudeTo(command.ThrustDirection, AttitudeReference.INERTIAL_COT, this);
+            _commandedV2AttitudeVector = command.ThrustDirection;
+            if (!BurnAlignmentReady(command.ThrustDirection))
             {
                 Core.Thrust.ThrustOff();
                 _terminalPwm.Reset();
                 ControllerStatus = "V2 velocity-null is holding throttle until the measured thrust vector is aligned and settled.";
                 return;
             }
-            double altitude = Math.Max(0.1, VesselState.AltitudeBottom);
-            double verticalSpeed = Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up);
-            double desiredAcceleration = Vessel.graviticAcceleration.magnitude + Math.Max(0, (verticalSpeed * verticalSpeed - 0.25) / (2.0 * altitude));
             _terminalPwm.MinOnTime = 0.50;
             _terminalPwm.MinOffTime = TimeWarp.fixedDeltaTime;
-            Core.Thrust.TargetThrottle = _terminalPwm.ThrottleCommand(desiredAcceleration, VesselState.MinThrustAcceleration,
+            Core.Thrust.TargetThrottle = _terminalPwm.ThrottleCommand(command.DesiredAcceleration, VesselState.MinThrustAcceleration,
                 VesselState.MaxThrustAcceleration, TimeWarp.fixedDeltaTime);
         }
 
@@ -885,15 +889,13 @@ namespace MuMech
         {
             Vector3d target = MainBody.GetWorldSurfacePosition(V2ActiveTargetLatitude, V2ActiveTargetLongitude,
                 MainBody.TerrainAltitude(V2ActiveTargetLatitude, V2ActiveTargetLongitude, true));
-            Vector3d horizontalError = Vector3d.Exclude(VesselState.Up, target - VesselState.CoM);
-            double verticalSpeed = -Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up);
-            double timeToGround = Math.Max(3.0, VesselState.AltitudeBottom / Math.Max(0.5, verticalSpeed));
-            Vector3d desiredHorizontalVelocity = horizontalError.sqrMagnitude < 1.0
-                ? Vector3d.zero
-                : horizontalError.normalized * Math.Min(12.0, horizontalError.magnitude / timeToGround);
-            Vector3d desiredVelocity = desiredHorizontalVelocity - Core.Hoverslam.FinalDescentSpeed * VesselState.Up;
-            return VesselState.SurfaceVelocity - desiredVelocity;
+            return TerminalCommand(target).VelocityError;
         }
+
+        private AirlessTerminalGuidanceCommand TerminalCommand(Vector3d target) =>
+            AirlessTerminalGuidance.Calculate(target - VesselState.CoM, VesselState.SurfaceVelocity, VesselState.Up,
+                VesselState.AltitudeBottom, Vessel.graviticAcceleration.magnitude, VesselState.MinThrustAcceleration,
+                VesselState.MaxThrustAcceleration, Core.Hoverslam.FinalDescentSpeed);
 
         public bool TryAdjustV2Target(double northMeters, double eastMeters)
         {
