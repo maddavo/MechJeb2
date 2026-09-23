@@ -63,6 +63,15 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void FiniteBurnCapsThrottleForTheLastHalfMetrePerSecond()
+        {
+            Assert.Equal(0.75f, FiniteBurnProgress.LimitThrottleForFineControl(0.501, 0.75f));
+            Assert.Equal(FiniteBurnProgress.FineControlThrottleCap,
+                FiniteBurnProgress.LimitThrottleForFineControl(0.50, 0.75f));
+            Assert.Equal(0.01f, FiniteBurnProgress.LimitThrottleForFineControl(0.01, 0.01f));
+        }
+
+        [Fact]
         public void FiniteBurnDropsThrottleWhenAttitudeLeavesTheAuthorityGate()
         {
             var manager = ReadyForStrategicWarp(1000, 30, 0);
