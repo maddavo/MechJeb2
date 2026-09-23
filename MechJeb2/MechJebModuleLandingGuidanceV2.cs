@@ -50,9 +50,10 @@ namespace MuMech
         private Vector3d _burnTargetVelocity;
         private Vector3d _trimDeltaV;
         private Vector3d _lastAdjustedVelocity;
-        private Vector3d _phaseBurnStartVelocity;
         private double _phaseBurnPlannedDeltaV;
         private string _phaseBurnName;
+        private FiniteBurnProgress _finiteBurnProgress;
+        private bool _finiteBurnTracking;
         // Pure phase gate shared with the controller-validation harness. It
         // decides when authority may be requested; this module performs the
         // resulting KSP commands.
@@ -242,6 +243,7 @@ namespace MuMech
                 TransitionTo(V2FlightPhase.Rejected, "V1 Landing Guidance was engaged; V2 relinquished control.");
                 return;
             }
+            UpdateFiniteBurnProgress();
             switch (_flightPhase)
             {
                 case V2FlightPhase.Preflight:
@@ -291,6 +293,18 @@ namespace MuMech
                     break;
                 case V2FlightPhase.WarpToStrategic:
                     Core.Thrust.ThrustOff();
+                    // A burn attitude is acquired before V2 is permitted to
+                    // enter rails.  The phase manager returns no warp command
+                    // until this observation is inside its authority gate.
+                    bool preparingPlaneWarp = _airlessPhaseManager.Phase == AirlessLandingPhaseManagerPhase.PreparePlaneAlignmentWarp;
+                    bool preparingStrategicWarp = _airlessPhaseManager.Phase == AirlessLandingPhaseManagerPhase.PrepareStrategicWarp;
+                    if (preparingPlaneWarp || preparingStrategicWarp)
+                    {
+                        Vector3d preWarpBurn = preparingPlaneWarp
+                            ? _activePlan.PlaneAlignmentDeltaV
+                            : _activePlan.StrategicDeorbitDeltaV;
+                        Core.Attitude.attitudeTo(preWarpBurn, AttitudeReference.INERTIAL_COT, this);
+                    }
                     AirlessLandingPhaseDecision warpDecision = _airlessPhaseManager.Tick(VesselState.Time, V2AutoWarp,
                         Core.Attitude.attitudeError, double.NaN);
                     if (warpDecision.Directive == AirlessLandingPhaseDirective.Reject)
@@ -301,6 +315,16 @@ namespace MuMech
                     if (warpDecision.Directive == AirlessLandingPhaseDirective.RequestWarp)
                     {
                         Core.Warp.WarpToUT(warpDecision.WarpUT);
+                        break;
+                    }
+                    if (warpDecision.Directive == AirlessLandingPhaseDirective.RequestAttitude)
+                    {
+                        ControllerStatus = "V2 is holding at 1x until the next finite burn attitude is confirmed before warp.";
+                        break;
+                    }
+                    if (warpDecision.Directive == AirlessLandingPhaseDirective.WarpAuthorized)
+                    {
+                        ControllerStatus = "V2 confirmed the next burn attitude at 1x; auto-warp is now authorized.";
                         break;
                     }
                     // The scheduler has exited rails. The phase manager marks
@@ -331,8 +355,7 @@ namespace MuMech
                     break;
                 case V2FlightPhase.PlaneAlignment:
                     Core.Attitude.attitudeTo(_activePlan.PlaneAlignmentDeltaV, AttitudeReference.INERTIAL_COT, this);
-                    double remainingPlaneDv = Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity,
-                        _activePlan.PlaneAlignmentDeltaV.normalized);
+                    double remainingPlaneDv = RemainingFiniteBurnDeltaV;
                     AirlessLandingPhaseDecision planeBurnDecision = _airlessPhaseManager.Tick(VesselState.Time, false,
                         Core.Attitude.attitudeError, remainingPlaneDv);
                     if (planeBurnDecision.Directive == AirlessLandingPhaseDirective.RequestFiniteBurnThrottle)
@@ -350,7 +373,7 @@ namespace MuMech
                         RejectController(planeBurnDecision.Reason ?? "V2 plane-alignment phase did not retain finite-burn authority.");
                         break;
                     }
-                    Core.Thrust.ThrustOff();
+                    FinishFiniteBurn();
                     RefreshPreflight(true);
                     if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate)
                     {
@@ -403,7 +426,7 @@ namespace MuMech
                     break;
                 case V2FlightPhase.StrategicBurn:
                     Core.Attitude.attitudeTo(_activePlan.StrategicDeorbitDeltaV, AttitudeReference.INERTIAL_COT, this);
-                    double remainingDv = Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _activePlan.StrategicDeorbitDeltaV.normalized);
+                    double remainingDv = RemainingFiniteBurnDeltaV;
                     AirlessLandingPhaseDecision strategicBurnDecision = _airlessPhaseManager.Tick(VesselState.Time, false,
                         Core.Attitude.attitudeError, remainingDv);
                     if (strategicBurnDecision.Directive == AirlessLandingPhaseDirective.RequestFiniteBurnThrottle)
@@ -421,7 +444,7 @@ namespace MuMech
                         RejectController(strategicBurnDecision.Reason ?? "V2 strategic phase did not retain finite-burn authority.");
                         break;
                     }
-                    Core.Thrust.ThrustOff();
+                    FinishFiniteBurn();
                     RefreshPreflight(false, true);
                     LandingGuidanceV2Snapshot trimSnapshot = CaptureSnapshot();
                     AirlessPostBurnDecision postBurn = AirlessLandingPlanner.DecidePostBurn(trimSnapshot, _activePlan, true);
@@ -455,9 +478,9 @@ namespace MuMech
                             "V2 paused the bounded trim because attitude authority left the finite-burn gate.");
                         break;
                     }
-                    if (Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _trimDeltaV.normalized) <= 0.25)
+                    if (RemainingFiniteBurnDeltaV <= AirlessLandingPhaseManager.BurnCompleteDeltaV)
                     {
-                        Core.Thrust.ThrustOff();
+                        FinishFiniteBurn();
                         RefreshPreflight();
                         LandingGuidanceV2Snapshot postTrimSnapshot = CaptureSnapshot();
                         AirlessPostBurnDecision postTrim = AirlessLandingPlanner.DecidePostBurn(postTrimSnapshot, _activePlan, false);
@@ -466,7 +489,7 @@ namespace MuMech
                         else
                             BeginAirlessRecoveryReplan(postTrim.Reason);
                     }
-                    else Core.Thrust.ThrustForDv(Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _trimDeltaV.normalized), 0.5);
+                    else Core.Thrust.ThrustForDv(RemainingFiniteBurnDeltaV, 0.5);
                     break;
                 case V2FlightPhase.Coast:
                     Core.Thrust.ThrustOff();
@@ -558,11 +581,10 @@ namespace MuMech
                     break;
                 case V2FlightPhase.AtmosphericEntryBurn:
                     Core.Attitude.attitudeTo(_atmosphericCandidatePlan.StrategicEntryDeltaV, AttitudeReference.INERTIAL_COT, this);
-                    double remainingEntryDv = Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity,
-                        _atmosphericCandidatePlan.StrategicEntryDeltaV.normalized);
-                    if (remainingEntryDv <= 0.5)
+                    double remainingEntryDv = RemainingFiniteBurnDeltaV;
+                    if (remainingEntryDv <= AirlessLandingPhaseManager.BurnCompleteDeltaV)
                     {
-                        Core.Thrust.ThrustOff();
+                        FinishFiniteBurn();
                         ClearAtmosphericCandidateResult();
                         Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Users.Add(this);
                         TransitionTo(V2FlightPhase.Preflight,
@@ -859,12 +881,44 @@ namespace MuMech
             Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Users.Remove(this);
             ClearAtmosphericCandidateResult();
             _atmosphericWarpIssued = false;
+            _finiteBurnTracking = false;
         }
+        private double RemainingFiniteBurnDeltaV => _finiteBurnProgress == null
+            ? 0
+            : _finiteBurnProgress.RemainingDeltaV;
+
+        private void UpdateFiniteBurnProgress()
+        {
+            if (!_finiteBurnTracking || _finiteBurnProgress == null || VesselState == null) return;
+            // CurrentThrustAcceleration is the measured forward engine
+            // acceleration from the completed physics frame. DeltaT is that
+            // frame's physical duration, so their product is delivered delta-v.
+            _finiteBurnProgress.Integrate(VesselState.DeltaT, VesselState.CurrentThrustAcceleration);
+        }
+
+        private void FinishFiniteBurn()
+        {
+            // TickController integrates exactly once per physics frame before
+            // phase dispatch. Do not integrate again here: double-counting the
+            // completion frame would corrupt the trace and burn authority.
+            _finiteBurnTracking = false;
+            Core.Thrust.ThrustOff();
+        }
+
         private void BeginFiniteBurn(string name, double plannedDeltaV)
         {
+            // A trim may pause to regain attitude. Preserve its measured
+            // delivery when it resumes; resetting it would allow the same burn
+            // to spend the planned delta-v repeatedly.
+            bool resume = _finiteBurnProgress != null && _phaseBurnName == name &&
+                Math.Abs(_phaseBurnPlannedDeltaV - plannedDeltaV) < 0.001;
             _phaseBurnName = name;
             _phaseBurnPlannedDeltaV = plannedDeltaV;
-            _phaseBurnStartVelocity = VesselState.OrbitalVelocity;
+            if (!resume)
+            {
+                _finiteBurnProgress = new FiniteBurnProgress(plannedDeltaV);
+            }
+            _finiteBurnTracking = true;
         }
 
         private void TransitionTo(V2FlightPhase next, string status)
@@ -1314,8 +1368,7 @@ namespace MuMech
                     targetState.VisualRebaseDone ? "true" : "false",
                     _siteAssessment != null && _siteAssessment.Accepted ? "true" : "false", JsonNumber(_siteAssessment?.Slope ?? double.NaN),
                     JsonNumber(_siteAssessment?.Roughness ?? double.NaN), JsonString(_siteAssessment?.Detail), JsonString(_phaseBurnName),
-                    JsonNumber(_phaseBurnPlannedDeltaV), JsonNumber(_phaseBurnStartVelocity.sqrMagnitude > 0
-                        ? (VesselState.OrbitalVelocity - _phaseBurnStartVelocity).magnitude : double.NaN));
+                    JsonNumber(_phaseBurnPlannedDeltaV), JsonNumber(_finiteBurnProgress?.DeliveredDeltaV ?? double.NaN));
                 baseFields += string.Format(CultureInfo.InvariantCulture,
                     ",\"airlessPlanSnapshotVersion\":{0},\"activeAirlessPlanSnapshotVersion\":{1},\"atmosphericPlanSnapshotVersion\":{2},\"airlessPlanningDurationMilliseconds\":{3},\"phaseManagerWorkUnits\":{4}",
                     airlessPlan?.SnapshotVersion ?? -1, _activePlan?.SnapshotVersion ?? -1,

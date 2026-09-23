@@ -343,8 +343,13 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
 
             var manager = new AirlessLandingPhaseManager();
             manager.Start(validated, lead);
+            // Warp is prohibited until the future burn attitude has already
+            // converged at 1x. This recovery candidate is already too late
+            // for rails, so the same gate advances directly to warp exit.
+            Assert.Equal(AirlessLandingPhaseDirective.WarpAuthorized,
+                manager.Tick(ignitionUT, true, 0.1, double.NaN).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.ExitWarpAndRequestAttitude,
-                manager.Tick(ignitionUT, true, 90, double.NaN).Directive);
+                manager.Tick(ignitionUT, true, 0.1, double.NaN).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.RequireFreshStrategicValidation,
                 manager.Tick(ignitionUT, false, 0.1, double.NaN).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude,
@@ -379,6 +384,51 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.Equal(AirlessPostBurnAction.Replan, decision.Action);
             Assert.True(decision.Estimate.HasImpact);
             Assert.Contains("fresh complete target-transfer plan", decision.Reason);
+        }
+
+        [Fact]
+        public void RecordedMunFiniteStrategicBurnReachesThePlannedImpactCorridor()
+        {
+            // This is a deterministic closed-loop burn execution, not an
+            // impulse-only planner check. It coasts to finite-burn ignition,
+            // applies the planned vector in 20 ms measured-thrust samples
+            // through two-body propagation, then evaluates the actual state.
+            LandingGuidanceV2Snapshot start = RecordedMunSnapshot();
+            AirlessLandingPlan plan = AirlessLandingPlanner.Plan(start);
+            Assert.True(plan.CommandAuthorized, plan.Reason);
+            double duration = plan.StrategicDeorbitDeltaVMagnitude / start.MaximumAcceleration;
+            double ignitionUT = plan.StrategicBurnUT - duration * 0.5;
+            Assert.True(ignitionUT >= start.UT, "ignition=" + ignitionUT + " start=" + start.UT);
+
+            var coast = new AirlessConicTrajectory(start.Body.gravParameter, start.UT, start.Position, start.Velocity);
+            Assert.True(coast.TryStateAt(ignitionUT, out Vector3d position, out Vector3d velocity));
+            Vector3d thrustDirection = plan.StrategicDeorbitDeltaV.normalized;
+            double ut = ignitionUT;
+            double elapsed = 0;
+            var progress = new FiniteBurnProgress(plan.StrategicDeorbitDeltaVMagnitude);
+            while (elapsed < duration)
+            {
+                double dt = Math.Min(0.02, duration - elapsed);
+                var step = new AirlessConicTrajectory(start.Body.gravParameter, ut, position, velocity);
+                Assert.True(step.TryStateAt(ut + dt, out position, out velocity));
+                velocity += thrustDirection * (start.MaximumAcceleration * dt);
+                progress.Integrate(dt, start.MaximumAcceleration);
+                ut += dt;
+                elapsed += dt;
+            }
+            Assert.True(progress.IsComplete(0.001));
+            Assert.InRange(progress.RemainingDeltaV, 0, 0.001);
+
+            var postBurn = new LandingGuidanceV2Snapshot(start.Version + 1, ut, start.Body, position, velocity,
+                start.Mass, start.AvailableDeltaV - progress.DeliveredDeltaV, start.MaximumAcceleration,
+                start.MinimumAcceleration, start.TargetLatitude, start.TargetLongitude, false,
+                start.TargetReferenceUT, start.TargetReferencePosition, start.HasTargetReferencePosition,
+                start.TargetTerrainAltitude);
+            LandingGuidanceV2Estimate actual = AirlessImpactEstimator.Estimate(postBurn);
+            Assert.True(actual.HasImpact, actual.Detail);
+            Assert.True(actual.TargetError <= plan.CorridorLimit,
+                "actualError=" + actual.TargetError + " corridor=" + plan.CorridorLimit +
+                " duration=" + duration + " delivered=" + progress.DeliveredDeltaV);
         }
 
         private static LandingGuidanceV2Snapshot RecordedMunSnapshot()
