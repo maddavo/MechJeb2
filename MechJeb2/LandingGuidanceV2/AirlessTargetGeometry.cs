@@ -21,6 +21,8 @@ namespace MuMech
 
         internal static double TerrainAltitude(LandingGuidanceV2Snapshot snapshot)
         {
+            if (!double.IsNaN(snapshot.TargetTerrainAltitude) && !double.IsInfinity(snapshot.TargetTerrainAltitude))
+                return Math.Max(0, snapshot.TargetTerrainAltitude);
             try
             {
                 double terrain = snapshot.Body.TerrainAltitude(snapshot.TargetLatitude, snapshot.TargetLongitude, true);
