@@ -12,7 +12,10 @@ namespace MuMech
     {
         public const double WarpSettleMargin = 20.0;
         public const double AttitudeReadyDegrees = 2.0;
-        public const double BurnCompleteDeltaV = 0.5;
+        // Completion must be materially tighter than the landing corridor.
+        // The thrust controller ramps down for the final portion, while this
+        // tolerance only absorbs a final physics-frame sample.
+        public const double BurnCompleteDeltaV = 0.10;
 
         private AirlessLandingPlan _plan;
         private bool _strategicGateValidated;
@@ -34,9 +37,13 @@ namespace MuMech
                 Phase = AirlessLandingPhaseManagerPhase.Rejected;
                 return Reject(reason);
             }
+            // Acquiring burn attitude is a prerequisite for warp.  Rails warp
+            // cannot be the mechanism that creates the time needed to turn a
+            // vessel, so establish the attitude at 1x first and retain the
+            // normal post-warp attitude/validation gate as a second check.
             Phase = plan.PlaneAlignmentDeltaVMagnitude > BurnCompleteDeltaV
-                ? AirlessLandingPhaseManagerPhase.WarpToPlaneAlignment
-                : AirlessLandingPhaseManagerPhase.WarpToStrategicBurn;
+                ? AirlessLandingPhaseManagerPhase.PreparePlaneAlignmentWarp
+                : AirlessLandingPhaseManagerPhase.PrepareStrategicWarp;
             return Decision(AirlessLandingPhaseDirective.None);
         }
 
@@ -46,6 +53,16 @@ namespace MuMech
             if (_plan == null) return Reject("V2 phase manager has no active airless plan.");
             switch (Phase)
             {
+                case AirlessLandingPhaseManagerPhase.PreparePlaneAlignmentWarp:
+                    if (attitudeErrorDegrees > AttitudeReadyDegrees)
+                        return Decision(AirlessLandingPhaseDirective.RequestAttitude);
+                    Phase = AirlessLandingPhaseManagerPhase.WarpToPlaneAlignment;
+                    return Decision(AirlessLandingPhaseDirective.WarpAuthorized);
+                case AirlessLandingPhaseManagerPhase.PrepareStrategicWarp:
+                    if (attitudeErrorDegrees > AttitudeReadyDegrees)
+                        return Decision(AirlessLandingPhaseDirective.RequestAttitude);
+                    Phase = AirlessLandingPhaseManagerPhase.WarpToStrategicBurn;
+                    return Decision(AirlessLandingPhaseDirective.WarpAuthorized);
                 case AirlessLandingPhaseManagerPhase.WarpToPlaneAlignment:
                     return TickWarp(ut, autoWarp, _plan.PlaneAlignmentBurnUT - PlaneBurnLeadSeconds,
                         AirlessLandingPhaseManagerPhase.AlignPlaneAlignment);
@@ -127,7 +144,7 @@ namespace MuMech
             _plan = plan;
             _requiresStrategicReplan = false;
             _strategicGateValidated = false;
-            Phase = AirlessLandingPhaseManagerPhase.WarpToStrategicBurn;
+            Phase = AirlessLandingPhaseManagerPhase.PrepareStrategicWarp;
             return Decision(AirlessLandingPhaseDirective.None);
         }
 
@@ -177,15 +194,42 @@ namespace MuMech
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
     }
 
+    /// <summary>
+    /// Tracks a finite powered burn from measured thrust acceleration rather
+    /// than orbital velocity. Gravity changes orbital velocity during an
+    /// otherwise correctly aimed burn, so it must never be used as a burn
+    /// completion meter.
+    /// </summary>
+    public sealed class FiniteBurnProgress
+    {
+        public readonly double PlannedDeltaV;
+        public double DeliveredDeltaV { get; private set; }
+        public double RemainingDeltaV => Math.Max(0, PlannedDeltaV - DeliveredDeltaV);
+        public bool IsComplete(double tolerance = AirlessLandingPhaseManager.BurnCompleteDeltaV) =>
+            RemainingDeltaV <= Math.Max(0, tolerance);
+
+        public FiniteBurnProgress(double plannedDeltaV)
+        {
+            PlannedDeltaV = Math.Max(0, plannedDeltaV);
+        }
+
+        public void Integrate(double deltaTime, double actualThrustAcceleration)
+        {
+            if (double.IsNaN(deltaTime) || double.IsInfinity(deltaTime) ||
+                double.IsNaN(actualThrustAcceleration) || double.IsInfinity(actualThrustAcceleration)) return;
+            DeliveredDeltaV += Math.Max(0, deltaTime) * Math.Max(0, actualThrustAcceleration);
+        }
+    }
+
     public enum AirlessLandingPhaseManagerPhase
     {
-        Idle, WarpToPlaneAlignment, AlignPlaneAlignment, PlaneAlignmentBurn, AwaitStrategicReplan,
-        WarpToStrategicBurn, AlignStrategicBurn, StrategicBurn, Coast, Rejected
+        Idle, PreparePlaneAlignmentWarp, WarpToPlaneAlignment, AlignPlaneAlignment, PlaneAlignmentBurn, AwaitStrategicReplan,
+        PrepareStrategicWarp, WarpToStrategicBurn, AlignStrategicBurn, StrategicBurn, Coast, Rejected
     }
 
     public enum AirlessLandingPhaseDirective
     {
-        None, RequestWarp, ExitWarpAndRequestAttitude, RequestAttitude, RequireFreshStrategicValidation,
+        None, WarpAuthorized, RequestWarp, ExitWarpAndRequestAttitude, RequestAttitude, RequireFreshStrategicValidation,
         BeginFiniteBurn, RequestFiniteBurnThrottle, FiniteBurnComplete, RequireStrategicReplan, Reject
     }
 
