@@ -57,12 +57,16 @@ namespace MuMech
         public readonly double TargetReferenceUT;
         public readonly Vector3d TargetReferencePosition;
         public readonly bool HasTargetReferencePosition;
+        // Captured at the selected target. This keeps the target's terrain
+        // radius immutable across future strategic-burn and impact epochs.
+        public readonly double TargetTerrainAltitude;
         public readonly bool IsLandedOrSplashed;
 
         public LandingGuidanceV2Snapshot(long version, double ut, CelestialBody body, Vector3d position,
             Vector3d velocity, double mass, double availableDeltaV, double maximumAcceleration, double minimumAcceleration,
             double targetLatitude, double targetLongitude, bool isLandedOrSplashed, double targetReferenceUT = double.NaN,
-            Vector3d targetReferencePosition = default(Vector3d), bool hasTargetReferencePosition = false)
+            Vector3d targetReferencePosition = default(Vector3d), bool hasTargetReferencePosition = false,
+            double targetTerrainAltitude = double.NaN)
         {
             Version = version;
             UT = ut;
@@ -78,6 +82,7 @@ namespace MuMech
             TargetReferenceUT = double.IsNaN(targetReferenceUT) ? ut : targetReferenceUT;
             TargetReferencePosition = targetReferencePosition;
             HasTargetReferencePosition = hasTargetReferencePosition;
+            TargetTerrainAltitude = targetTerrainAltitude;
             IsLandedOrSplashed = isLandedOrSplashed;
         }
     }
@@ -93,9 +98,9 @@ namespace MuMech
     }
 
     /// <summary>
-    /// A deterministic, terrain-free airless-body estimate.  Terrain refinement and
-    /// atmospheric estimation are separate future responsibilities; this result must
-    /// never imply that a sea-level intersection certifies a safe landing site.
+    /// A deterministic airless-body estimate at the selected target's captured terrain
+    /// radius. Atmospheric estimation remains separate; this result does not certify
+    /// terrain safety outside the selected contact surface.
     /// </summary>
     public sealed class LandingGuidanceV2Estimate
     {

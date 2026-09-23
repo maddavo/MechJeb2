@@ -164,7 +164,7 @@ namespace MuMech
                     Vector3d candidateBurn = sign * magnitude * direction;
                     var candidateSnapshot = new LandingGuidanceV2Snapshot(snapshot.Version, snapshot.UT, snapshot.Body,
                         snapshot.Position, snapshot.Velocity + candidateBurn, snapshot.Mass, snapshot.AvailableDeltaV,
-                        snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude, snapshot.TargetLongitude, false, snapshot.TargetReferenceUT, snapshot.TargetReferencePosition, snapshot.HasTargetReferencePosition);
+                        snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude, snapshot.TargetLongitude, false, snapshot.TargetReferenceUT, snapshot.TargetReferencePosition, snapshot.HasTargetReferencePosition, snapshot.TargetTerrainAltitude);
                     LandingGuidanceV2Estimate candidate = AirlessImpactEstimator.Estimate(candidateSnapshot);
                     if (!candidate.HasImpact || candidate.TargetError >= bestError) continue;
                     correction = candidateBurn;
@@ -295,7 +295,7 @@ namespace MuMech
                     if (!alignedCoast.IsBound) continue;
                     var alignedSnapshot = new LandingGuidanceV2Snapshot(source.Version, alignmentUT, source.Body,
                         position, velocity + planeBurn, source.Mass, source.AvailableDeltaV - planeBurn.magnitude,
-                    source.MaximumAcceleration, source.MinimumAcceleration, source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT, source.TargetReferencePosition, source.HasTargetReferencePosition);
+                    source.MaximumAcceleration, source.MinimumAcceleration, source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT, source.TargetReferencePosition, source.HasTargetReferencePosition, source.TargetTerrainAltitude);
                     Candidate candidate = SolveStrategicVector(alignedSnapshot, alignedCoast, deorbitUT);
                     if (!candidate.Valid) continue;
                     // The first estimate was made on the unaligned coast.  Feed
@@ -314,7 +314,7 @@ namespace MuMech
                         alignedSnapshot = new LandingGuidanceV2Snapshot(source.Version, alignmentUT, source.Body,
                             position, velocity + planeBurn, source.Mass, source.AvailableDeltaV - planeBurn.magnitude,
                             source.MaximumAcceleration, source.MinimumAcceleration, source.TargetLatitude, source.TargetLongitude,
-                            false, source.TargetReferenceUT, source.TargetReferencePosition, source.HasTargetReferencePosition);
+                            false, source.TargetReferenceUT, source.TargetReferencePosition, source.HasTargetReferencePosition, source.TargetTerrainAltitude);
                         candidate = SolveStrategicVector(alignedSnapshot, alignedCoast, deorbitUT);
                         if (!candidate.Valid) break;
                     }
@@ -347,7 +347,7 @@ namespace MuMech
             var alignedSnapshot = new LandingGuidanceV2Snapshot(source.Version, coarse.PlaneAlignmentBurnUT, source.Body,
                 position, velocity + coarse.PlaneAlignmentBurn, source.Mass,
                 source.AvailableDeltaV - coarse.PlaneAlignmentBurn.magnitude, source.MaximumAcceleration,
-                source.MinimumAcceleration, source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT, source.TargetReferencePosition, source.HasTargetReferencePosition);
+                source.MinimumAcceleration, source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT, source.TargetReferencePosition, source.HasTargetReferencePosition, source.TargetTerrainAltitude);
             Candidate best = coarse;
             double bestScore = CandidateScore(best, source.AvailableDeltaV);
             double span = alignedCoast.Period / 24.0;
@@ -407,7 +407,7 @@ namespace MuMech
             if (burn.magnitude > source.AvailableDeltaV) return default(Candidate);
             var state = new LandingGuidanceV2Snapshot(source.Version, burnUT, source.Body, position, velocity + burn,
                 source.Mass, source.AvailableDeltaV, source.MaximumAcceleration, source.MinimumAcceleration,
-                source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT, source.TargetReferencePosition, source.HasTargetReferencePosition);
+                source.TargetLatitude, source.TargetLongitude, false, source.TargetReferenceUT, source.TargetReferencePosition, source.HasTargetReferencePosition, source.TargetTerrainAltitude);
             LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(state);
             if (!estimate.HasImpact) return default(Candidate);
             Vector3d error = estimate.ImpactPosition - TargetAt(source, estimate.ImpactUT);

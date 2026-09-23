@@ -4,7 +4,7 @@ using UnityEngine;
 namespace MuMech
 {
     /// <summary>
-    /// Computes the next sea-level intersection of an airless body's two-body orbit.
+    /// Computes the next intersection with the selected airless target's captured terrain radius.
     /// A new Orbit is reconstructed from the immutable snapshot for every call.  This
     /// prevents the result from inheriting mutable state from KSP's patched orbit or a
     /// previous prediction result.
@@ -39,17 +39,22 @@ namespace MuMech
             {
                 var orbit = new AirlessConicTrajectory(snapshot.Body.gravParameter, snapshot.UT,
                     snapshot.Position, snapshot.Velocity);
-                double surfaceRadius = snapshot.Body.Radius;
+                // The strategic planner and the estimator must describe the
+                // same contact surface.  The target terrain elevation is captured
+                // once with the immutable snapshot; querying whatever terrain lies
+                // under a provisional miss makes repeated planning depend on live
+                // KSP state and makes a selected elevated site impossible to hit.
+                double terrainAltitude = AirlessTargetGeometry.TerrainAltitude(snapshot);
+                double surfaceRadius = snapshot.Body.Radius + terrainAltitude;
 
-                // A transfer that is constructed to meet the sea-level surface
-                // can differ from that radius by floating-point roundoff.  Do
-                // not reject a valid tangent/intersection before the actual
-                // next-radius-crossing solver has evaluated it.
+                // A transfer constructed to meet the selected site's terrain
+                // radius can differ by floating-point roundoff. Do not reject a
+                // valid tangent/intersection before the crossing solver runs.
                 if (!IsFinite(orbit.PeriapsisRadius) || orbit.PeriapsisRadius > surfaceRadius + 0.01)
                 {
                     return new LandingGuidanceV2Estimate(snapshot.Version, LandingGuidanceV2EstimateOutcome.NoImpact,
                         double.NaN, Vector3d.zero, Vector3d.zero, double.NaN,
-                        "The snapshot orbit does not intersect the body's sea-level surface.");
+                        "The snapshot orbit does not intersect the selected target terrain radius.");
                 }
 
                 if (!orbit.TryNextRadiusCrossing(snapshot.UT, surfaceRadius, out double impactUT) ||
@@ -57,39 +62,7 @@ namespace MuMech
                 {
                     return new LandingGuidanceV2Estimate(snapshot.Version, LandingGuidanceV2EstimateOutcome.NoImpact,
                         double.NaN, Vector3d.zero, Vector3d.zero, double.NaN,
-                        "The next surface-intersection time is not valid.");
-                }
-
-                // Terrain is refined from the deterministic conic solution in a
-                // bounded fixed iteration count.  It improves the terminal
-                // altitude without allowing a mutable terrain query to feed an
-                // unbounded predictor loop.
-                double terrainAltitude = 0;
-                bool terrainRefined = false;
-                for (int i = 0; i < 4; ++i)
-                {
-                    try
-                    {
-                        if (!orbit.TryStateAt(impactUT, out Vector3d trialPosition, out _)) break;
-                        snapshot.Body.GetLatLngAltAtUT(impactUT, trialPosition, out double latitude, out double longitude, out _);
-                        terrainAltitude = snapshot.Body.TerrainAltitude(latitude, longitude, true);
-                        double terrainRadius = surfaceRadius + Math.Max(0, terrainAltitude);
-                        if (!orbit.TryNextRadiusCrossing(snapshot.UT, terrainRadius, out double refinedUT) ||
-                            !IsFinite(refinedUT) || refinedUT < snapshot.UT)
-                            break;
-                        terrainRefined = true;
-                        if (Math.Abs(refinedUT - impactUT) < 0.01)
-                        {
-                            impactUT = refinedUT;
-                            break;
-                        }
-                        impactUT = refinedUT;
-                    }
-                    catch (Exception)
-                    {
-                        terrainAltitude = double.NaN;
-                        break;
-                    }
+                        "The next selected-target terrain intersection time is not valid.");
                 }
 
                 if (!orbit.TryStateAt(impactUT, out Vector3d impactPosition, out Vector3d impactVelocity))
@@ -101,9 +74,8 @@ namespace MuMech
 
                 return new LandingGuidanceV2Estimate(snapshot.Version, LandingGuidanceV2EstimateOutcome.Impact, impactUT,
                     impactPosition, impactVelocity, targetError,
-                    terrainRefined
-                        ? "Deterministic airless conic intersection with bounded terrain refinement."
-                        : "Deterministic airless conic intersection; terrain refinement was unavailable.", terrainAltitude);
+                    "Deterministic airless conic intersection at the captured selected-target terrain radius.",
+                    terrainAltitude);
             }
             catch (Exception ex)
             {

@@ -52,7 +52,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
                         if (!transfer.TryStateAt(burnUT + flightTime, out Vector3d arrived, out _)) continue;
                         double error = Vector3d.Distance(arrived, target);
                         double deltaV = (ToVector3d(transferVelocity) - velocity).magnitude;
-                        bool reachesSurfaceAtTarget = transfer.TryNextRadiusCrossing(burnUT, snapshot.Body.Radius, out double crossingUT) &&
+                        bool reachesSurfaceAtTarget = transfer.TryNextRadiusCrossing(burnUT, snapshot.Body.Radius + snapshot.TargetTerrainAltitude, out double crossingUT) &&
                             Math.Abs(crossingUT - (burnUT + flightTime)) < 1.0;
                         if (error < bestError)
                         {
@@ -73,7 +73,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             var transferSnapshot = new LandingGuidanceV2Snapshot(snapshot.Version, bestBurnUT, snapshot.Body,
                 bestPosition, bestVelocity, snapshot.Mass, snapshot.AvailableDeltaV, snapshot.MaximumAcceleration,
                 snapshot.MinimumAcceleration, snapshot.TargetLatitude, snapshot.TargetLongitude, false,
-                snapshot.TargetReferenceUT, snapshot.TargetReferencePosition, snapshot.HasTargetReferencePosition);
+                snapshot.TargetReferenceUT, snapshot.TargetReferencePosition, snapshot.HasTargetReferencePosition, snapshot.TargetTerrainAltitude);
             LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(transferSnapshot);
             Assert.True(bestError < 1.0 && Math.Abs(bestCrossingDifference) < 1.0 && bestDeltaV < snapshot.AvailableDeltaV && estimate.HasImpact,
                 "bestError=" + bestError + " dv=" + bestDeltaV + " crossingDifference=" + bestCrossingDifference +
@@ -130,7 +130,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
                 new Vector3d(53.192611, 5.436655, 519.367374),
                 36.077968, 810.440609, 27.717748, 0,
                 0.165, -130.626389, false, ut,
-                new Vector3d(-97232.142734, 575.957857, 174772.934666), true);
+                new Vector3d(-97232.142734, 575.957857, 174772.934666), true, 4350.290494);
             AirlessLandingPlan plan = AirlessLandingPlanner.Plan(snapshot);
             Assert.True(plan.State == AirlessLandingPlanState.Candidate,
                 plan.Reason + " downrange=" + plan.SignedDownrange + " crossrange=" + plan.CrossRange +
@@ -146,7 +146,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
                 new Vector3d(201.649583, 5.757169, 481.563639),
                 36.077968, 810.440603, 27.717750, 0,
                 0.165, -130.626389, false, ut,
-                new Vector3d(-36056.402455, 575.957857, 196722.149527), true);
+                new Vector3d(-36056.402455, 575.957857, 196722.149527), true, 4350.290494);
             AirlessLandingPlan plan = AirlessLandingPlanner.Plan(snapshot);
             Assert.True(plan.State == AirlessLandingPlanState.Candidate,
                 plan.Reason + " downrange=" + plan.SignedDownrange + " crossrange=" + plan.CrossRange +
@@ -167,12 +167,42 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             var gateSnapshot = new LandingGuidanceV2Snapshot(snapshot.Version + 1, planned.StrategicBurnUT,
                 snapshot.Body, gatePosition, gateVelocity, snapshot.Mass, snapshot.AvailableDeltaV,
                 snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude,
-                snapshot.TargetLongitude, false, planned.StrategicBurnUT, targetAtGate, true);
+                snapshot.TargetLongitude, false, planned.StrategicBurnUT, targetAtGate, true, 4350.290494);
 
             Assert.True(AirlessLandingPlanner.TryValidateCommittedStrategicBurn(gateSnapshot, planned,
                 out AirlessLandingPlan validated, out string reason), reason);
             Assert.True(validated.State == AirlessLandingPlanState.Candidate);
             Assert.Equal(gateSnapshot.UT, validated.StrategicBurnUT, 6);
+            Assert.True(validated.CandidateEstimate.HasImpact);
+            Assert.True(validated.SignedDownrange >= 0 && validated.SignedDownrange <= validated.CorridorLimit);
+            Assert.True(validated.CrossRange <= validated.CorridorLimit);
+            Assert.True(validated.LowerBoundMargin >= 0);
+        }
+
+        [Fact]
+        public void RecordedWarpPlanRemainsValidAtItsExactStrategicIgnitionUT()
+        {
+            const double ut = 24109518.539994;
+            var snapshot = new LandingGuidanceV2Snapshot(717, ut, CreateMun(),
+                new Vector3d(238650.736775, 3067.806340, -11602.139401),
+                new Vector3d(25.191984, 9.112790, 521.391966),
+                36.077968, 810.440756, 27.717764, 0,
+                0.165, -130.626389, false, ut,
+                new Vector3d(178892.060012, 575.957857, 89427.619543), true, 4350.290494);
+            AirlessLandingPlan plan = AirlessLandingPlanner.Plan(snapshot);
+            Assert.True(plan.State == AirlessLandingPlanState.Candidate, plan.Reason);
+
+            var coast = new AirlessConicTrajectory(snapshot.Body.gravParameter, snapshot.UT,
+                snapshot.Position, snapshot.Velocity);
+            Assert.True(coast.TryStateAt(plan.StrategicBurnUT, out Vector3d gatePosition, out Vector3d gateVelocity));
+            Vector3d targetAtGate = RotateTarget(snapshot, plan.StrategicBurnUT);
+            var gate = new LandingGuidanceV2Snapshot(718, plan.StrategicBurnUT, snapshot.Body,
+                gatePosition, gateVelocity, snapshot.Mass, snapshot.AvailableDeltaV,
+                snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude,
+                snapshot.TargetLongitude, false, plan.StrategicBurnUT, targetAtGate, true, snapshot.TargetTerrainAltitude);
+
+            Assert.True(AirlessLandingPlanner.TryValidateCommittedStrategicBurn(gate, plan,
+                out AirlessLandingPlan validated, out string reason), reason);
             Assert.True(validated.CandidateEstimate.HasImpact);
             Assert.True(validated.SignedDownrange >= 0 && validated.SignedDownrange <= validated.CorridorLimit);
             Assert.True(validated.CrossRange <= validated.CorridorLimit);
@@ -187,7 +217,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
                 new Vector3d(26.684653, 5.945045, 521.392817),
                 36.077968, 810.440609, 27.717749, 0,
                 0.165, -130.626389, false, ut,
-                new Vector3d(-97232.142734, 575.957857, 174772.934666), true);
+                new Vector3d(-97232.142734, 575.957857, 174772.934666), true, 4350.290494);
         }
 
         private static CelestialBody CreateMun()
@@ -207,7 +237,8 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             double radians = 2.0 * Math.PI * (ut - snapshot.TargetReferenceUT) / snapshot.Body.rotationPeriod;
             double c = Math.Cos(radians);
             double s = Math.Sin(radians);
-            Vector3d target = snapshot.TargetReferencePosition;
+            Vector3d target = snapshot.TargetReferencePosition.normalized *
+                (snapshot.Body.Radius + (double.IsNaN(snapshot.TargetTerrainAltitude) ? 0 : snapshot.TargetTerrainAltitude));
             return target * c + Vector3d.Cross(axis, target) * s + axis * Vector3d.Dot(axis, target) * (1.0 - c);
         }
 

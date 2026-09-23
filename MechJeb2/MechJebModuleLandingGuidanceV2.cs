@@ -44,6 +44,7 @@ namespace MuMech
         private Vector3d _phaseBurnStartVelocity;
         private double _phaseBurnPlannedDeltaV;
         private string _phaseBurnName;
+        private bool _strategicBurnGateValidated;
         private string _lastV2Phase;
         private double _activeTargetLatitude;
         private double _activeTargetLongitude;
@@ -249,46 +250,25 @@ namespace MuMech
                         Core.Warp.WarpToUT(nextBurnUT - 20.0);
                         break;
                     }
+                    // The warp scheduler owns the early exit. Alignment begins
+                    // at 1x, but the finite vector remains scheduled for its
+                    // actual plan UT. Applying it at the early settle gate
+                    // changes the target corridor and must never be treated as
+                    // a valid strategic burn.
                     Core.Warp.MinimumWarp(true);
-                    LandingGuidanceV2Snapshot burnGateSnapshot = CaptureSnapshot();
                     bool needsPlaneAlignment = _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5;
-                    if (needsPlaneAlignment)
-                    {
-                        // This is the separately counted plane-alignment gate.
-                        // It has no surface-intersection yet; target/corridor
-                        // validation occurs after the alignment burn has made a
-                        // new strategic state. Do not confuse it with the
-                        // strategic-vector validation below.
-                        if (_activePlan.PlaneAlignmentDeltaVMagnitude + _activePlan.StrategicDeorbitDeltaVMagnitude >
-                            burnGateSnapshot.AvailableDeltaV)
-                        {
-                            RejectController("V2 plane-alignment gate no longer preserves the available delta-V budget.");
-                            break;
-                        }
-                    }
-                    else if (!AirlessLandingPlanner.TryValidateCommittedStrategicBurn(burnGateSnapshot, _activePlan,
-                        out AirlessLandingPlan validatedPlan, out string validationReason))
-                    {
-                        RejectController("V2 plan failed fresh validation at the strategic-burn gate: " + validationReason);
-                        break;
-                    }
-                    else
-                    {
-                        _activePlan = validatedPlan;
-                        SetValidatedAirlessPreflight(burnGateSnapshot, validatedPlan);
-                    }
-                    // Each finite-burn phase owns its own target velocity. In
-                    // particular, a plan with no plane change must start the
-                    // strategic burn from its strategic vector, never inherit
-                    // a zero plane-alignment vector and falsely finish.
+                    _strategicBurnGateValidated = false;
                     _burnTargetVelocity = VesselState.OrbitalVelocity +
                         (needsPlaneAlignment ? _activePlan.PlaneAlignmentDeltaV : _activePlan.StrategicDeorbitDeltaV);
                     TransitionTo(needsPlaneAlignment ? V2FlightPhase.AlignPlane : V2FlightPhase.AlignStrategicBurn,
-                        needsPlaneAlignment ? "Aligning for the validated V2 plane-alignment burn." : "Aligning for the validated V2 strategic deorbit burn.");
+                        needsPlaneAlignment ? "Settled at 1x; aligning for the scheduled V2 plane-alignment burn." :
+                        "Settled at 1x; aligning for the scheduled V2 strategic deorbit burn.");
                     break;
                 case V2FlightPhase.AlignPlane:
                     Core.Thrust.ThrustOff();
                     Core.Attitude.attitudeTo(_activePlan.PlaneAlignmentDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    if (VesselState.Time < _activePlan.PlaneAlignmentBurnUT - 0.1)
+                        break;
                     if (Core.Attitude.attitudeError < 2.0)
                     {
                         BeginFiniteBurn("plane_alignment", _activePlan.PlaneAlignmentDeltaVMagnitude);
@@ -312,7 +292,24 @@ namespace MuMech
                     else Core.Thrust.ThrustForDv(Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _activePlan.PlaneAlignmentDeltaV.normalized), 0.5);
                     break;
                 case V2FlightPhase.AlignStrategicBurn:
-                    Core.Thrust.ThrustOff(); Core.Attitude.attitudeTo(_activePlan.StrategicDeorbitDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    Core.Thrust.ThrustOff();
+                    Core.Attitude.attitudeTo(_activePlan.StrategicDeorbitDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    if (VesselState.Time < _activePlan.StrategicBurnUT - 0.1)
+                        break;
+                    if (!_strategicBurnGateValidated)
+                    {
+                        LandingGuidanceV2Snapshot burnSnapshot = CaptureSnapshot();
+                        if (!AirlessLandingPlanner.TryValidateCommittedStrategicBurn(burnSnapshot, _activePlan,
+                            out AirlessLandingPlan validatedPlan, out string validationReason))
+                        {
+                            RejectController("V2 plan failed fresh validation at the strategic ignition gate: " + validationReason);
+                            break;
+                        }
+                        _activePlan = validatedPlan;
+                        SetValidatedAirlessPreflight(burnSnapshot, validatedPlan);
+                        _burnTargetVelocity = VesselState.OrbitalVelocity + _activePlan.StrategicDeorbitDeltaV;
+                        _strategicBurnGateValidated = true;
+                    }
                     if (Core.Attitude.attitudeError < 2.0)
                     {
                         BeginFiniteBurn("strategic_deorbit", _activePlan.StrategicDeorbitDeltaVMagnitude);
@@ -965,12 +962,15 @@ namespace MuMech
             double availableDeltaV = Core.StageStats.VacStats.Sum(s => s.DeltaV);
             Vector3d targetReferencePosition = MainBody.GetWorldSurfacePosition(V2ActiveTargetLatitude,
                 V2ActiveTargetLongitude, 0) - MainBody.position;
+            double targetTerrainAltitude;
+            try { targetTerrainAltitude = Math.Max(0, MainBody.TerrainAltitude(V2ActiveTargetLatitude, V2ActiveTargetLongitude, true)); }
+            catch (Exception) { targetTerrainAltitude = double.NaN; }
 
             return new LandingGuidanceV2Snapshot(++_snapshotVersion, VesselState.Time, MainBody,
                 VesselState.OrbitalPosition, VesselState.OrbitalVelocity, VesselState.Mass, availableDeltaV,
                 VesselState.LimitedMaxThrustAcceleration, VesselState.MinThrustAcceleration,
                 V2ActiveTargetLatitude, V2ActiveTargetLongitude,
-                Vessel.LandedOrSplashed, VesselState.Time, targetReferencePosition, true);
+                Vessel.LandedOrSplashed, VesselState.Time, targetReferencePosition, true, targetTerrainAltitude);
         }
 
         private void WriteCorrelatedTrace(LandingGuidanceV2Preflight preflight)
@@ -1071,7 +1071,7 @@ namespace MuMech
                     ",\"targetReferenceUT\":{0},\"targetReferencePosition\":[{1},{2},{3}],\"targetTerrainAltitude\":{4},\"hasTargetReferencePosition\":{5}",
                     JsonNumber(snapshot.TargetReferenceUT), JsonNumber(snapshot.TargetReferencePosition.x),
                     JsonNumber(snapshot.TargetReferencePosition.y), JsonNumber(snapshot.TargetReferencePosition.z),
-                    JsonNumber(AirlessTargetGeometry.TerrainAltitude(snapshot)), snapshot.HasTargetReferencePosition ? "true" : "false");
+                    JsonNumber(snapshot.TargetTerrainAltitude), snapshot.HasTargetReferencePosition ? "true" : "false");
                 baseFields += string.Format(CultureInfo.InvariantCulture,
                     ",\"atmosphericPlanState\":{0},\"atmosphericTargetError\":{1},\"atmosphericEntryCorridor\":{2},\"atmosphericEndpointUncertainty\":{3},\"atmosphericTerminalReserve\":{4},\"atmosphericLandingMargin\":{5},\"atmosphericPlanReason\":{6},\"atmosphericStrategicEntryDeltaV\":{7},\"atmosphericStrategicEntryBurnUT\":{8},\"atmosphericEntryUT\":{9},\"atmosphericEntryTargetError\":{10}",
                     JsonString(atmosphericPlan?.State.ToString()), JsonNumber(atmosphericPlan?.PredictedTargetError ?? double.NaN),
