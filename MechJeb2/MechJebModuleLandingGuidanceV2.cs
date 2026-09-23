@@ -325,7 +325,7 @@ namespace MuMech
                     if (remainingDv <= 0.5)
                     {
                         Core.Thrust.ThrustOff();
-                        RefreshPreflight(true);
+                        RefreshPreflight(false, true);
                         if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact)
                         {
                             RejectController("V2 strategic burn did not produce a fresh valid impact trajectory.");
@@ -389,7 +389,7 @@ namespace MuMech
                         // warp cannot authorize terminal control after warp has
                         // ended. Rebuild the immutable snapshot and require a
                         // current impact estimate before entering braking.
-                        RefreshPreflight(true);
+                        RefreshPreflight(false, true);
                         if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact)
                         {
                             RejectController("V2 terminal braking lost its fresh impact trajectory after warp exit.");
@@ -745,7 +745,7 @@ namespace MuMech
                 brakingLowerBound, Preflight?.AtmosphericPlan);
         }
 
-        public void RefreshPreflight(bool forcePlan = false)
+        public void RefreshPreflight(bool forcePlan = false, bool forceRefresh = false)
         {
             ConsumeAtmosphericCandidateResults();
             if (!HighLogic.LoadedSceneIsFlight || (!Core.Target.PositionTargetExists && !(_hasActiveTarget && ControllerActive)) ||
@@ -761,7 +761,7 @@ namespace MuMech
             // must never turn that into synchronous predictor/planner work on
             // every frame.  Burn and warp gates pass forcePlan=true and retain
             // their required fresh snapshot/revalidation semantics.
-            if (!forcePlan && VesselState.Time < _nextRefreshUT)
+            if (!forcePlan && !forceRefresh && VesselState.Time < _nextRefreshUT)
                 return;
             _nextRefreshUT = VesselState.Time + RefreshInterval;
 
@@ -781,14 +781,24 @@ namespace MuMech
             // preview, but every start and command gate forces a plan from this
             // exact snapshot before V2 can request thrust or attitude.
             AirlessLandingPlan airlessPlan;
-            if (forcePlan || Preflight?.AirlessPlan == null || VesselState.Time >= _nextPlanRefreshUT)
+            // Once V2 has accepted a finite airless burn, it owns that plan.
+            // Re-searching for a cheaper future burn every 30 vessel seconds
+            // while rails warp is active continuously moves the ignition gate
+            // and freezes the Unity thread. The committed vector is instead
+            // freshly validated at the burn gate. A new search is permitted
+            // only before commitment or at an explicit replan phase such as
+            // after a separately executed plane-alignment burn.
+            bool retainCommittedAirlessPlan = !forcePlan && !MainBody.atmosphere && ControllerActive &&
+                _flightPhase != V2FlightPhase.Preflight && _activePlan != null;
+            if (!retainCommittedAirlessPlan &&
+                (forcePlan || Preflight?.AirlessPlan == null || VesselState.Time >= _nextPlanRefreshUT))
             {
                 airlessPlan = AirlessLandingPlanner.Plan(snapshot);
                 _nextPlanRefreshUT = VesselState.Time + PlanRefreshInterval;
             }
             else
             {
-                airlessPlan = Preflight.AirlessPlan;
+                airlessPlan = retainCommittedAirlessPlan ? _activePlan : Preflight.AirlessPlan;
             }
             ReentrySimulation.Result atmosphericEstimate = _atmosphericCandidateResult;
             AtmosphericLandingPlan atmosphericPlan;
