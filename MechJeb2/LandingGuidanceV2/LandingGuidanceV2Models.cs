@@ -170,6 +170,10 @@ namespace MuMech
         public readonly double BrakingDeltaVLowerBound;
         public readonly double DeltaVAboveLowerBound;
         public readonly string Reason;
+        public readonly double TargetReferenceUT;
+        public readonly Vector3d TargetReferencePosition;
+        public readonly bool HasTargetReferencePosition;
+        public readonly double TargetTerrainAltitude;
 
         public bool CommandAuthorized => false;
 
@@ -269,6 +273,10 @@ namespace MuMech
         public readonly double CorridorLimit;
         public readonly LandingGuidanceV2Estimate CandidateEstimate;
         public readonly string Reason;
+        public readonly double TargetReferenceUT;
+        public readonly Vector3d TargetReferencePosition;
+        public readonly bool HasTargetReferencePosition;
+        public readonly double TargetTerrainAltitude;
 
         public bool CommandAuthorized => State == AirlessLandingPlanState.Candidate;
 
@@ -277,7 +285,9 @@ namespace MuMech
             LandingGuidanceV2Estimate candidateEstimate, double availableDeltaV, string reason, double strategicBurnUT = double.NaN,
             double trimBudget = 0, double terminalDivertReserve = 0, double contingency = 0,
             Vector3d planeAlignmentDeltaV = default(Vector3d), double planeAlignmentBurnUT = double.NaN,
-            double brakingEntryUT = double.NaN)
+            double brakingEntryUT = double.NaN, double targetReferenceUT = double.NaN,
+            Vector3d targetReferencePosition = default(Vector3d), bool hasTargetReferencePosition = false,
+            double targetTerrainAltitude = double.NaN)
         {
             SnapshotVersion = snapshotVersion;
             State = state;
@@ -299,6 +309,10 @@ namespace MuMech
             CorridorLimit = corridorLimit;
             CandidateEstimate = candidateEstimate;
             Reason = reason;
+            TargetReferenceUT = targetReferenceUT;
+            TargetReferencePosition = targetReferencePosition;
+            HasTargetReferencePosition = hasTargetReferencePosition;
+            TargetTerrainAltitude = targetTerrainAltitude;
         }
 
     }

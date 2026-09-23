@@ -47,12 +47,8 @@ namespace MuMech
                 {
                     AirlessLandingBudget directBudget = CandidateBudget(direct);
                     if (directBudget.Fits(snapshot.AvailableDeltaV))
-                        return new AirlessLandingPlan(snapshot.Version, AirlessLandingPlanState.Candidate, direct.Burn,
-                            directBudget.Terminal, direct.Downrange, direct.CrossRange, direct.Corridor, direct.Estimate,
-                            snapshot.AvailableDeltaV,
-                            "Direct rotating-target transfer satisfies the impact, long-side corridor, and budget constraints.",
-                            direct.BurnUT, directBudget.Trim, directBudget.Reserve, directBudget.Contingency,
-                            Vector3d.zero, double.NaN, direct.Estimate.ImpactUT - directBudget.BrakingTime);
+                        return CandidatePlan(snapshot, direct, directBudget,
+                            "Direct rotating-target transfer satisfies the impact, long-side corridor, and budget constraints.");
                 }
 
                 Candidate best = direct;
@@ -94,11 +90,8 @@ namespace MuMech
                     return Reject(snapshot, best.Burn, best.Estimate, best.Downrange, best.CrossRange, best.Corridor, budget,
                         "Usable delta-V is below the V2 strategic, trim, terminal-reserve, and contingency budget.");
 
-                return new AirlessLandingPlan(snapshot.Version, AirlessLandingPlanState.Candidate, best.Burn,
-                    budget.Terminal, best.Downrange, best.CrossRange, best.Corridor, best.Estimate, snapshot.AvailableDeltaV,
-                    "Future strategic vector satisfies the impact, long-side corridor, and budget constraints.", best.BurnUT,
-                    budget.Trim, budget.Reserve, budget.Contingency, best.PlaneAlignmentBurn, best.PlaneAlignmentBurnUT,
-                    best.Estimate.ImpactUT - budget.BrakingTime);
+                return CandidatePlan(snapshot, best, budget,
+                    "Future strategic vector satisfies the impact, long-side corridor, and budget constraints.");
             }
             catch (Exception ex)
             {
@@ -126,6 +119,14 @@ namespace MuMech
             if (committedPlan.PlaneAlignmentDeltaVMagnitude > 0.5)
             {
                 reason = "V2 cannot validate a combined plane-alignment and strategic vector at one burn gate.";
+                return false;
+            }
+            if (!committedPlan.HasTargetReferencePosition || !snapshot.HasTargetReferencePosition ||
+                Math.Abs(committedPlan.TargetReferenceUT - snapshot.TargetReferenceUT) > 0.001 ||
+                (committedPlan.TargetReferencePosition - snapshot.TargetReferencePosition).sqrMagnitude > 1e-4 ||
+                Math.Abs(committedPlan.TargetTerrainAltitude - snapshot.TargetTerrainAltitude) > 0.001)
+            {
+                reason = "V2 ignition snapshot does not retain the plan's immutable target reference and terrain epoch.";
                 return false;
             }
 
@@ -535,7 +536,8 @@ namespace MuMech
                 budget.Terminal, candidate.Downrange, candidate.CrossRange, candidate.Corridor, candidate.Estimate,
                 snapshot.AvailableDeltaV, reason, candidate.BurnUT, budget.Trim, budget.Reserve, budget.Contingency,
                 candidate.PlaneAlignmentBurn, candidate.PlaneAlignmentBurnUT,
-                candidate.Estimate.ImpactUT - budget.BrakingTime);
+                candidate.Estimate.ImpactUT - budget.BrakingTime, snapshot.TargetReferenceUT,
+                snapshot.TargetReferencePosition, snapshot.HasTargetReferencePosition, snapshot.TargetTerrainAltitude);
 
         private static AirlessLandingPlan Reject(LandingGuidanceV2Snapshot snapshot, string reason) =>
             Reject(snapshot, Vector3d.zero, null, double.NaN, double.NaN, double.NaN, reason);
