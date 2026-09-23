@@ -7,7 +7,7 @@ using UnityEngine;
 
 namespace MuMech
 {
-    public enum AirlessPostBurnAction { Coast, RecoveryTrim, ControlledTerminalContingency }
+    public enum AirlessPostBurnAction { Coast, RecoveryTrim, Replan }
 
     /// <summary>
     /// A deterministic post-burn decision. Once a finite airless deorbit burn
@@ -203,23 +203,25 @@ namespace MuMech
             AirlessLandingPlan committedPlan, bool allowRecoveryTrim)
         {
             LandingGuidanceV2Estimate estimate = snapshot == null ? null : AirlessImpactEstimator.Estimate(snapshot);
-            if (estimate == null || !estimate.HasImpact)
-                return new AirlessPostBurnDecision(AirlessPostBurnAction.ControlledTerminalContingency,
-                    Vector3d.zero, estimate, 0,
-                    "V2 lost the predicted impact after its finite burn and retained controlled terminal authority.");
-            if (estimate.TargetError <= committedPlan.CorridorLimit)
+            if (estimate != null && estimate.HasImpact && estimate.TargetError <= committedPlan.CorridorLimit)
                 return new AirlessPostBurnDecision(AirlessPostBurnAction.Coast, Vector3d.zero, estimate, 0,
                     "Strategic deorbit is inside the accepted target corridor; coasting to V2 braking approach.");
-            if (allowRecoveryTrim && TryPlanRecoveryTrim(snapshot, committedPlan, out Vector3d correction,
-                    out LandingGuidanceV2Estimate recovered, out double recoveryBudget))
+
+            // A finite-burn result outside the corridor must be corrected by a
+            // new complete rotating-target transfer, not merely an improvement
+            // in the scalar miss distance. A bounded trim may be used only
+            // when its own propagated endpoint is inside that same corridor.
+            if (allowRecoveryTrim && estimate != null && estimate.HasImpact &&
+                TryPlanRecoveryTrim(snapshot, committedPlan, out Vector3d correction,
+                    out LandingGuidanceV2Estimate recovered, out double recoveryBudget) &&
+                recovered.TargetError <= committedPlan.CorridorLimit)
                 return new AirlessPostBurnDecision(AirlessPostBurnAction.RecoveryTrim, correction, recovered,
-                    recoveryBudget, "V2 found a reserve-protected recovery trim after the strategic burn.");
-            if (CanContinueToTerminal(snapshot, committedPlan, out string continuationReason))
-                return new AirlessPostBurnDecision(AirlessPostBurnAction.Coast, Vector3d.zero, estimate, 0,
-                    continuationReason);
-            return new AirlessPostBurnDecision(AirlessPostBurnAction.ControlledTerminalContingency,
-                Vector3d.zero, estimate, 0,
-                "V2 could not prove the residual correction budget and retained controlled terminal authority.");
+                    recoveryBudget, "V2 found a reserve-protected recovery trim whose propagated endpoint is inside the target corridor.");
+
+            return new AirlessPostBurnDecision(AirlessPostBurnAction.Replan, Vector3d.zero, estimate, 0,
+                estimate == null || !estimate.HasImpact
+                    ? "V2 lost the predicted impact after its finite burn; acquiring a fresh complete target-transfer plan."
+                    : "V2 finite-burn endpoint is outside the target corridor; acquiring a fresh complete target-transfer plan.");
         }
 
         /// <summary>

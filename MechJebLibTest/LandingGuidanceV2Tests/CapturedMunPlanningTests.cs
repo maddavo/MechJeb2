@@ -290,6 +290,31 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void RecordedPostStrategicStateCanBeReplannedIntoTheTargetCorridor()
+        {
+            // Snapshot 206 from the failed 2026-09-23 run, immediately after
+            // the finite strategic burn. It has a valid but 11 km-long miss.
+            // A controller may not coast or warp this state unless a new
+            // correction is independently proven to return to the corridor.
+            var postStrategic = new LandingGuidanceV2Snapshot(206, 24108857.921943, CreateMun(),
+                new Vector3d(-50579.221954, -3760.922914, -233496.709043),
+                new Vector3d(483.843193, -1.407125, -102.351519),
+                35.722613, 782.080494, 27.993481, 0, 0.165, -130.626389, false,
+                24108734.642233, new Vector3d(198001.793865, 575.957857, 28194.997763), true, 4350.290494);
+            LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(postStrategic);
+            Assert.True(estimate.HasImpact);
+            Assert.True(estimate.TargetError > 10000, "targetError=" + estimate.TargetError);
+            AirlessLandingPlan replan = AirlessLandingPlanner.Plan(postStrategic);
+            Assert.True(replan.State == AirlessLandingPlanState.Candidate, replan.Reason + " error=" + estimate.TargetError);
+            Assert.True(replan.CandidateEstimate.HasImpact);
+            Assert.True(replan.CandidateEstimate.TargetError <= replan.CorridorLimit,
+                "error=" + replan.CandidateEstimate.TargetError + " corridor=" + replan.CorridorLimit);
+            Assert.True(replan.LowerBoundMargin >= 0, "margin=" + replan.LowerBoundMargin);
+            Assert.True(replan.StrategicBurnUT >= postStrategic.UT);
+            Assert.True(replan.StrategicBurnUT < replan.CandidateEstimate.ImpactUT);
+        }
+
+        [Fact]
         public void RecordedPostStrategicResidualUsesProtectedRecoveryTrim()
         {
             // Trace record 207 from the unsafe 2026-09-23 V2 run. The finite
@@ -309,12 +334,12 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
 
             // This snapshot is deliberately conservative enough that the
             // reserve calculation cannot prove a terminal allocation. The
-            // required result is controlled contingency, never a rejected
-            // controller which releases the vessel onto the impact trajectory.
+            // required result is a complete fresh replan, never coast, warp,
+            // or a rejected controller that releases the vessel.
             AirlessPostBurnDecision decision = AirlessLandingPlanner.DecidePostBurn(postStrategic, committed, true);
-            Assert.Equal(AirlessPostBurnAction.ControlledTerminalContingency, decision.Action);
+            Assert.Equal(AirlessPostBurnAction.Replan, decision.Action);
             Assert.True(decision.Estimate.HasImpact);
-            Assert.Contains("retained controlled terminal authority", decision.Reason);
+            Assert.Contains("fresh complete target-transfer plan", decision.Reason);
         }
 
         private static LandingGuidanceV2Snapshot RecordedMunSnapshot()

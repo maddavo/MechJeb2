@@ -72,6 +72,19 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void FiniteBurnDropsThrottleWhenAttitudeLeavesTheAuthorityGate()
+        {
+            var manager = new AirlessLandingPhaseManager();
+            manager.Start(Candidate(100, 1000, 1200, 30));
+            manager.Tick(980, true, 90, double.NaN);
+            manager.Tick(1000, true, 0.1, double.NaN);
+            manager.AcceptStrategicValidation(101, 1000, true);
+            Assert.Equal(AirlessLandingPhaseDirective.BeginFiniteBurn, manager.Tick(1000, true, 0.1, 30).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude, manager.Tick(1000.1, true, 2.01, 20).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestFiniteBurnThrottle, manager.Tick(1000.2, true, 0.1, 20).Directive);
+        }
+
+        [Fact]
         public void PlaneBurnRequiresAChronologicalReplanBeforeStrategicWarp()
         {
             var manager = new AirlessLandingPhaseManager();

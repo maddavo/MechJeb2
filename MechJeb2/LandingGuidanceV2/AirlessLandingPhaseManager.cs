@@ -61,7 +61,11 @@ namespace MuMech
                     return Decision(AirlessLandingPhaseDirective.BeginFiniteBurn);
                 case AirlessLandingPhaseManagerPhase.PlaneAlignmentBurn:
                     if (remainingBurnDeltaV > BurnCompleteDeltaV)
+                    {
+                        if (attitudeErrorDegrees > AttitudeReadyDegrees)
+                            return Decision(AirlessLandingPhaseDirective.RequestAttitude);
                         return Decision(AirlessLandingPhaseDirective.RequestFiniteBurnThrottle);
+                    }
                     Phase = AirlessLandingPhaseManagerPhase.AwaitStrategicReplan;
                     _requiresStrategicReplan = true;
                     return Decision(AirlessLandingPhaseDirective.FiniteBurnComplete);
@@ -78,7 +82,11 @@ namespace MuMech
                     return Decision(AirlessLandingPhaseDirective.BeginFiniteBurn);
                 case AirlessLandingPhaseManagerPhase.StrategicBurn:
                     if (remainingBurnDeltaV > BurnCompleteDeltaV)
+                    {
+                        if (attitudeErrorDegrees > AttitudeReadyDegrees)
+                            return Decision(AirlessLandingPhaseDirective.RequestAttitude);
                         return Decision(AirlessLandingPhaseDirective.RequestFiniteBurnThrottle);
+                    }
                     Phase = AirlessLandingPhaseManagerPhase.Coast;
                     return Decision(AirlessLandingPhaseDirective.FiniteBurnComplete);
                 case AirlessLandingPhaseManagerPhase.Coast:
