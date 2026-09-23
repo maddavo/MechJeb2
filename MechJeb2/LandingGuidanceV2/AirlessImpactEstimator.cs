@@ -126,14 +126,13 @@ namespace MuMech
 
         private static Vector3d TargetPositionAtUT(LandingGuidanceV2Snapshot snapshot, double ut)
         {
-            Vector3d target = snapshot.HasTargetReferencePosition ? snapshot.TargetReferencePosition :
-                snapshot.Body.GetWorldSurfacePosition(snapshot.TargetLatitude, snapshot.TargetLongitude, 0) - snapshot.Body.position;
-            // Planning states are propagated to future burns.  The Unity surface
-            // query above is anchored to the immutable target reference time,
-            // not to a future state-vector epoch.  Using snapshot.UT here made
-            // every future candidate score its impact against a target displaced
-            // by the coast to that candidate, which can reject an otherwise
-            // reachable plane-alignment and deorbit sequence.
+            // The selected target is a terrain location.  Its reference vector
+            // arrives at sea level from KSP, so recover the selected site's
+            // fixed terrain radius before rotating it into the candidate epoch.
+            // Solving a transfer to the buried sea-level point makes the later
+            // terrain refinement advance contact by seconds and can turn a
+            // valid selected site into a multi-kilometre false corridor miss.
+            Vector3d target = AirlessTargetGeometry.ReferenceSurfacePosition(snapshot);
             double rotationRadians = 2.0 * Math.PI * (ut - snapshot.TargetReferenceUT) / snapshot.Body.rotationPeriod;
             return RotateAroundAxis(target, snapshot.Body.angularVelocity, rotationRadians);
         }

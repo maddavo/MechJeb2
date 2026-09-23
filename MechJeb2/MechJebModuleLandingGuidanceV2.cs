@@ -57,7 +57,7 @@ namespace MuMech
         private const double VisualRebaseAccuracyLimit = 500.0;
         private readonly DeltaSigmaThrottleModulator _terminalPwm = new DeltaSigmaThrottleModulator(0.02, 0.50);
 
-        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, AlignTrim, BoundedTrim, Coast, WarpToAtmosphericEntry, AlignAtmosphericEntryBurn, AtmosphericEntryBurn, AtmosphericEntry, BrakingApproach, VisualAssessment, TerminalDivert, VelocityNull, TerminalDescent, Complete, Rejected }
+        public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, AlignTrim, BoundedTrim, Coast, WarpToAtmosphericEntry, AlignAtmosphericEntryBurn, AtmosphericEntryBurn, AtmosphericEntry, BrakingApproach, VisualAssessment, TerminalDivert, VelocityNull, Complete, Rejected }
 
         [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
         public bool PreviewEnabled;
@@ -125,11 +125,8 @@ namespace MuMech
             if (ControllerActive)
                 TickController();
             if (PreviewEnabled && HighLogic.LoadedSceneIsFlight &&
-                (Core.Target.PositionTargetExists || ControllerActive && _hasActiveTarget) && VesselState.Time >= _nextRefreshUT)
-            {
-                _nextRefreshUT = VesselState.Time + RefreshInterval;
+                (Core.Target.PositionTargetExists || ControllerActive && _hasActiveTarget))
                 RefreshPreflight();
-            }
         }
 
         public bool StartLanding()
@@ -713,7 +710,13 @@ namespace MuMech
             ControllerStatus = status;
             if (StructuredTraceEnabled && HighLogic.LoadedSceneIsFlight &&
                 (Core.Target.PositionTargetExists || ControllerActive && _hasActiveTarget) && Vessel != null)
-                RefreshPreflight();
+            {
+                // A phase event must be emitted immediately, but a transition
+                // must not synchronously rebuild the estimator/planner a second
+                // time after its gate has already produced a fresh preflight.
+                if (Preflight != null) WriteCorrelatedTrace(Preflight);
+                else RefreshPreflight(true);
+            }
         }
 
         public void RefreshPreflight(bool forcePlan = false)
@@ -725,6 +728,16 @@ namespace MuMech
                 Preflight = null;
                 return;
             }
+
+            // Estimation, deterministic replay, trace serialization, and any
+            // scheduled plan search run at a bounded vessel-time cadence.  The
+            // phase manager may call this method on every physics tick, but it
+            // must never turn that into synchronous predictor/planner work on
+            // every frame.  Burn and warp gates pass forcePlan=true and retain
+            // their required fresh snapshot/revalidation semantics.
+            if (!forcePlan && VesselState.Time < _nextRefreshUT)
+                return;
+            _nextRefreshUT = VesselState.Time + RefreshInterval;
 
             LandingGuidanceV2Snapshot snapshot = CaptureSnapshot();
             LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(snapshot);
@@ -1019,10 +1032,10 @@ namespace MuMech
                     JsonNumber(airlessPlan?.PlaneAlignmentBurnUT ?? double.NaN), JsonNumber(airlessPlan?.StrategicBurnUT ?? double.NaN),
                     JsonNumber(airlessPlan?.BrakingEntryUT ?? double.NaN));
                 baseFields += string.Format(CultureInfo.InvariantCulture,
-                    ",\"targetReferenceUT\":{0},\"targetReferencePosition\":[{1},{2},{3}],\"hasTargetReferencePosition\":{4}",
+                    ",\"targetReferenceUT\":{0},\"targetReferencePosition\":[{1},{2},{3}],\"targetTerrainAltitude\":{4},\"hasTargetReferencePosition\":{5}",
                     JsonNumber(snapshot.TargetReferenceUT), JsonNumber(snapshot.TargetReferencePosition.x),
                     JsonNumber(snapshot.TargetReferencePosition.y), JsonNumber(snapshot.TargetReferencePosition.z),
-                    snapshot.HasTargetReferencePosition ? "true" : "false");
+                    JsonNumber(AirlessTargetGeometry.TerrainAltitude(snapshot)), snapshot.HasTargetReferencePosition ? "true" : "false");
                 baseFields += string.Format(CultureInfo.InvariantCulture,
                     ",\"atmosphericPlanState\":{0},\"atmosphericTargetError\":{1},\"atmosphericEntryCorridor\":{2},\"atmosphericEndpointUncertainty\":{3},\"atmosphericTerminalReserve\":{4},\"atmosphericLandingMargin\":{5},\"atmosphericPlanReason\":{6},\"atmosphericStrategicEntryDeltaV\":{7},\"atmosphericStrategicEntryBurnUT\":{8},\"atmosphericEntryUT\":{9},\"atmosphericEntryTargetError\":{10}",
                     JsonString(atmosphericPlan?.State.ToString()), JsonNumber(atmosphericPlan?.PredictedTargetError ?? double.NaN),
