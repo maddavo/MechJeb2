@@ -155,8 +155,16 @@ namespace MuMech
                 committedPlan.StrategicDeorbitDeltaV);
             if (!candidate.Valid || !candidate.WithinCorridor)
             {
-                reason = "The committed V2 strategic vector no longer reaches the required long-side target corridor.";
-                return false;
+                // Rails and KSP's patched-conic state can differ slightly from
+                // the ideal coast used at plan time. Retarget at the existing
+                // finite-burn midpoint from this fresh state; do not search a
+                // later epoch, which would restart auto-warp indefinitely.
+                candidate = SolveTargetedTransferAtEpoch(snapshot, committedPlan.StrategicBurnUT);
+                if (!candidate.Valid || !candidate.WithinCorridor)
+                {
+                    reason = "The committed V2 strategic vector no longer reaches the required long-side target corridor.";
+                    return false;
+                }
             }
 
             AirlessLandingBudget budget = CandidateBudget(candidate);
@@ -167,7 +175,7 @@ namespace MuMech
             }
 
             validatedPlan = CandidatePlan(snapshot, candidate, budget,
-                "Committed strategic vector passed fresh burn-gate impact, corridor, and budget validation.");
+                "Fresh ignition snapshot passed impact, corridor, and budget validation at the committed burn midpoint.");
             return true;
         }
 
@@ -260,6 +268,42 @@ namespace MuMech
                     {
                         // A singular Lambert arc leaves all other sampled arcs eligible.
                     }
+                }
+            }
+            return best;
+        }
+
+        private static Candidate SolveTargetedTransferAtEpoch(LandingGuidanceV2Snapshot source, double burnUT)
+        {
+            if (burnUT < source.UT - 0.25) return default(Candidate);
+            var coast = new AirlessConicTrajectory(source.Body.gravParameter, source.UT, source.Position, source.Velocity);
+            if (!coast.IsBound || !coast.TryStateAt(burnUT, out Vector3d position, out Vector3d velocity))
+                return default(Candidate);
+            V3 positionV3 = position.ToV3();
+            V3 velocityV3 = velocity.ToV3();
+            V3 angularMomentum = V3.Cross(positionV3, velocityV3);
+            if (angularMomentum.sqrMagnitude <= 1e-12) return default(Candidate);
+
+            Candidate best = default(Candidate);
+            double bestScore = double.PositiveInfinity;
+            const int flightSamples = 72;
+            const double minimumFlightTime = 45.0;
+            for (int i = 1; i <= flightSamples; ++i)
+            {
+                double flightTime = minimumFlightTime + coast.Period * i / flightSamples;
+                try
+                {
+                    Vector3d target = TargetAt(source, burnUT + flightTime);
+                    (V3 initialVelocity, _) = Gooding.Solve(source.Body.gravParameter, positionV3, target.ToV3(),
+                        flightTime, TransferGeometry.Prograde, 0, angularMomentum);
+                    Candidate trial = EvaluateVector(source, burnUT, position, velocity, initialVelocity.ToVector3d() - velocity);
+                    if (!trial.Valid || !trial.WithinCorridor) continue;
+                    double score = CandidateScore(trial, source.AvailableDeltaV);
+                    if (score < bestScore) { best = trial; bestScore = score; }
+                }
+                catch (Exception)
+                {
+                    // A singular Lambert arc leaves other transfer times eligible.
                 }
             }
             return best;

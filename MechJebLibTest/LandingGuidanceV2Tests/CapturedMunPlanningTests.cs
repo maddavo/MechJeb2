@@ -246,6 +246,35 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
                 out _, out string ignitionReason), ignitionReason);
         }
 
+        [Fact]
+        public void FreshIgnitionSnapshotRetainsThePlanTargetReferenceEpoch()
+        {
+            const double planUT = 24108743.982232;
+            var planSnapshot = new LandingGuidanceV2Snapshot(35, planUT, CreateMun(),
+                new Vector3d(237759.381593, -4511.915183, -23266.167898),
+                new Vector3d(51.017075, 5.547743, 519.583661),
+                36.077968, 810.440638, 27.717748, 0,
+                0.165, -130.626389, false, planUT,
+                new Vector3d(-96039.528021, 575.957857, 175431.118477), true, 4350.290494);
+            AirlessLandingPlan plan = AirlessLandingPlanner.Plan(planSnapshot);
+            Assert.True(plan.State == AirlessLandingPlanState.Candidate, plan.Reason);
+
+            const double ignitionUT = 24108864.742297;
+            var gateSnapshot = new LandingGuidanceV2Snapshot(218, ignitionUT, planSnapshot.Body,
+                new Vector3d(235831.355059, -3693.537018, 38271.602123),
+                new Vector3d(-83.446804, 7.927263, 515.322565),
+                36.077968, 810.440638, 27.717748, 0,
+                0.165, -130.626389, false,
+                // This is deliberately the plan epoch/vector, not a new
+                // body-fixed value relabelled with ignition UT.
+                planSnapshot.TargetReferenceUT, planSnapshot.TargetReferencePosition, true, 4350.290494);
+
+            Assert.True(AirlessLandingPlanner.TryValidateCommittedStrategicBurn(gateSnapshot, plan,
+                out AirlessLandingPlan validated, out string reason), reason);
+            Assert.Equal(planSnapshot.TargetReferenceUT, gateSnapshot.TargetReferenceUT, 6);
+            Assert.Equal(plan.StrategicBurnUT, validated.StrategicBurnUT, 6);
+        }
+
         private static LandingGuidanceV2Snapshot RecordedMunSnapshot()
         {
             const double ut = 24108762.642232;
