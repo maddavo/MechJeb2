@@ -260,6 +260,29 @@ namespace MuMech
         public void Reset() => _readySinceUT = double.NaN;
     }
 
+    /// <summary>
+    /// A finite burn requires agreement between the attitude controller and
+    /// the vessel's physical thrust-vector observation. Neither signal alone
+    /// is sufficient authority for warp or throttle.
+    /// </summary>
+    public static class AirlessBurnAlignmentGate
+    {
+        public static bool IsReady(double controllerErrorDegrees, double thrustVectorErrorDegrees)
+        {
+            return Finite(controllerErrorDegrees) && Finite(thrustVectorErrorDegrees) &&
+                controllerErrorDegrees <= AirlessLandingPhaseManager.AttitudeReadyDegrees &&
+                thrustVectorErrorDegrees <= AirlessLandingPhaseManager.AttitudeReadyDegrees;
+        }
+
+        public static double CombinedError(double controllerErrorDegrees, double thrustVectorErrorDegrees)
+        {
+            if (!Finite(controllerErrorDegrees) || !Finite(thrustVectorErrorDegrees)) return double.PositiveInfinity;
+            return Math.Max(controllerErrorDegrees, thrustVectorErrorDegrees);
+        }
+
+        private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    }
+
     public enum AirlessLandingPhaseManagerPhase
     {
         Idle, PreparePlaneAlignmentWarp, WarpToPlaneAlignment, AlignPlaneAlignment, PlaneAlignmentBurn, AwaitStrategicReplan,
