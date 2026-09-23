@@ -53,7 +53,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         public void FiniteBurnStopsThrottleOnMeasuredDeliveryAndNeverReopensIt()
         {
             var progress = new FiniteBurnProgress(3.0);
-            // Reproduces the observed 27.9 m/s² correction-burn condition.
+            // Reproduces the observed 27.9 m/sÂ² correction-burn condition.
             // Measured engine delivery reaches the planned value in six 20 ms
             // frames; 155 seconds of subsequent coast cannot make it burn again.
             for (int i = 0; i != 6; ++i) progress.Integrate(0.02, 27.9);
@@ -77,21 +77,21 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         public void TerminalWarpRequiresTwoSecondsOfContinuousBrakingAttitude()
         {
             var gate = new AirlessTerminalWarpGate();
-            Assert.False(gate.ObserveAttitude(100, 1.0));
-            Assert.False(gate.ObserveAttitude(101.99, 1.0));
-            Assert.True(gate.ObserveAttitude(102.0, 1.0));
-            Assert.False(gate.ObserveAttitude(102.01, 2.01));
-            Assert.False(gate.ObserveAttitude(103.0, 1.0));
-            Assert.True(gate.ObserveAttitude(105.0, 1.0));
+            Assert.False(gate.ObserveAttitude(100, 0.9));
+            Assert.False(gate.ObserveAttitude(101.99, 0.9));
+            Assert.True(gate.ObserveAttitude(102.0, 0.9));
+            Assert.False(gate.ObserveAttitude(102.01, 1.01));
+            Assert.False(gate.ObserveAttitude(103.0, 0.9));
+            Assert.True(gate.ObserveAttitude(105.0, 0.9));
         }
 
         [Fact]
         public void FiniteBurnRequiresMeasuredThrustVectorAsWellAsControllerAlignment()
         {
-            Assert.True(AirlessBurnAlignmentGate.IsReady(1.9, 1.9));
-            Assert.False(AirlessBurnAlignmentGate.IsReady(1.9, 2.1));
-            Assert.False(AirlessBurnAlignmentGate.IsReady(2.1, 1.9));
-            Assert.Equal(2.1, AirlessBurnAlignmentGate.CombinedError(1.9, 2.1), 6);
+            Assert.True(AirlessBurnAlignmentGate.IsReady(0.9, 0.9));
+            Assert.False(AirlessBurnAlignmentGate.IsReady(0.9, 1.1));
+            Assert.False(AirlessBurnAlignmentGate.IsReady(1.1, 0.9));
+            Assert.Equal(1.1, AirlessBurnAlignmentGate.CombinedError(0.9, 1.1), 6);
             Assert.True(double.IsPositiveInfinity(AirlessBurnAlignmentGate.CombinedError(double.NaN, 0.1)));
         }
 
@@ -103,6 +103,56 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void ControllerHarnessExecutesStagedWarpFreshValidationAndMeasuredBurn()
+        {
+            AirlessLandingPlan plan = Candidate(100, 1200, 1500, 30);
+            var result = new AirlessLandingControllerHarness().Execute(plan, 100, 0.65, 27.9);
+            Assert.True(result.InitialWarpRequested);
+            Assert.True(result.FinalWarpRequested);
+            Assert.True(result.FreshValidationRequired);
+            Assert.True(result.FiniteBurnStarted);
+            Assert.True(result.FiniteBurnCompleted);
+            Assert.Equal(AirlessLandingPhaseManagerPhase.Coast, result.FinalPhase);
+            Assert.InRange(result.DeliveredDeltaV, 29.9, 30.6);
+            Assert.Contains(AirlessLandingPhaseDirective.RequestAttitude, result.Directives);
+            Assert.Contains(AirlessLandingPhaseDirective.RequestFiniteBurnThrottle, result.Directives);
+            Assert.True(result.WorkUnits < 2000);
+        }
+
+        [Fact]
+        public void ControllerHarnessFailsClosedWhenFreshIgnitionValidationRejects()
+        {
+            AirlessLandingPlan plan = Candidate(100, 1200, 1500, 30);
+            var result = new AirlessLandingControllerHarness().Execute(plan, 100, 0.65, 27.9,
+                freshValidationIsValid: false);
+            Assert.True(result.InitialWarpRequested);
+            Assert.True(result.FinalWarpRequested);
+            Assert.True(result.FreshValidationRequired);
+            Assert.False(result.FiniteBurnStarted);
+            Assert.False(result.FiniteBurnCompleted);
+            Assert.Equal(AirlessLandingPhaseManagerPhase.Rejected, result.FinalPhase);
+            Assert.Equal(AirlessLandingPhaseDirective.Reject, result.LastDirective);
+            Assert.Contains("fresh ignition snapshot", result.LastReason);
+            Assert.DoesNotContain(AirlessLandingPhaseDirective.RequestFiniteBurnThrottle, result.Directives);
+        }
+
+        [Fact]
+        public void OneDegreeAuthorityGateDeniesFinalWarpUntilPhysicalAttitudeIsReady()
+        {
+            var manager = new AirlessLandingPhaseManager();
+            AirlessLandingPlan plan = Candidate(100, 1200, 1500, 30);
+            manager.Start(plan, 0.65);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestInitialWarp,
+                manager.Tick(100, true, 90, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude,
+                manager.Tick(600, true, 90, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude,
+                manager.Tick(601, true, 1.01, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.WarpAuthorized,
+                manager.Tick(602, true, 1.0, double.NaN).Directive);
+        }
+
+        [Fact]
         public void FiniteBurnDropsThrottleWhenAttitudeLeavesTheAuthorityGate()
         {
             var manager = ReadyForStrategicWarp(1000, 30, 0);
@@ -110,7 +160,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             manager.Tick(1000, true, 0.1, double.NaN);
             manager.AcceptStrategicValidation(101, 1000, true);
             Assert.Equal(AirlessLandingPhaseDirective.BeginFiniteBurn, manager.Tick(1000, true, 0.1, 30).Directive);
-            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude, manager.Tick(1000.1, true, 2.01, 20).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude, manager.Tick(1000.1, true, 1.01, 20).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.RequestFiniteBurnThrottle, manager.Tick(1000.2, true, 0.1, 20).Directive);
         }
 

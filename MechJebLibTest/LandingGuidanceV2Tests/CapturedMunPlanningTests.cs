@@ -122,6 +122,32 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void RecordedMunPlanCompletesTheStagedAuthoritySequenceInTheOfflineController()
+        {
+            LandingGuidanceV2Snapshot snapshot = RecordedMunSnapshot();
+            AirlessLandingPlan plan = AirlessLandingPlanner.Plan(snapshot);
+            Assert.Equal(AirlessLandingPlanState.Candidate, plan.State);
+
+            // The controller harness does not solve new guidance. It executes
+            // the phase authority plan against the captured, feasible Mun
+            // burn: staged warp, fresh ignition validation, then measured
+            // engine delta-v completion.
+            double finiteBurnLead = plan.StrategicDeorbitDeltaVMagnitude / snapshot.MaximumAcceleration * 0.5;
+            var result = new AirlessLandingControllerHarness().Execute(plan, snapshot.UT,
+                finiteBurnLead, snapshot.MaximumAcceleration);
+
+            Assert.True(result.FreshValidationRequired);
+            Assert.True(result.FiniteBurnStarted);
+            Assert.True(result.FiniteBurnCompleted);
+            Assert.Equal(AirlessLandingPhaseManagerPhase.Coast, result.FinalPhase);
+            Assert.InRange(result.DeliveredDeltaV, plan.StrategicDeorbitDeltaVMagnitude - 0.01,
+                plan.StrategicDeorbitDeltaVMagnitude + snapshot.MaximumAcceleration * 0.021);
+            Assert.Contains(AirlessLandingPhaseDirective.RequestAttitude, result.Directives);
+            Assert.Contains(AirlessLandingPhaseDirective.BeginFiniteBurn, result.Directives);
+            Assert.Contains(AirlessLandingPhaseDirective.FiniteBurnComplete, result.Directives);
+        }
+
+        [Fact]
         public void EarlierRecordedMunSnapshotAlsoProducesAFeasiblePlan()
         {
             const double ut = 24108738.842233;
