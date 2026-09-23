@@ -188,6 +188,7 @@ namespace MuMech
     public enum AirlessLandingPlanState
     {
         NotApplicable,
+        Planning,
         Rejected,
         Candidate
     }
