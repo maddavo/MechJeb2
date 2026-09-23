@@ -279,6 +279,40 @@ namespace MuMech
         }
     }
 
+    public enum AirlessCoastSafetyAction { Continue, Replan, EmergencyBrake }
+
+    /// <summary>
+    /// Keeps a committed airless descent from silently coasting on an invalid
+    /// or out-of-corridor endpoint. The emergency lead is derived from the
+    /// current vehicle acceleration and the plan's terminal braking lower
+    /// bound, rather than a body-specific time constant.
+    /// </summary>
+    public static class AirlessCoastSafetyGate
+    {
+        public static AirlessCoastSafetyAction Decide(LandingGuidanceV2Snapshot snapshot,
+            LandingGuidanceV2Estimate estimate, double corridorLimit, double terminalBrakingDeltaV,
+            bool terminalIgnitionAvailable)
+        {
+            if (snapshot == null || estimate == null || !estimate.HasImpact ||
+                double.IsNaN(corridorLimit) || double.IsInfinity(corridorLimit) ||
+                double.IsNaN(estimate.TargetError) || double.IsInfinity(estimate.TargetError))
+                return AirlessCoastSafetyAction.Replan;
+
+            double acceleration = snapshot.MaximumAcceleration;
+            double timeToImpact = estimate.ImpactUT - snapshot.UT;
+            double emergencyLead = acceleration > 0 && terminalBrakingDeltaV > 0
+                ? terminalBrakingDeltaV / acceleration + 2.0
+                : double.PositiveInfinity;
+            if (!terminalIgnitionAvailable && timeToImpact <= emergencyLead)
+                return AirlessCoastSafetyAction.EmergencyBrake;
+            return estimate.TargetError <= corridorLimit
+                ? AirlessCoastSafetyAction.Continue
+                : timeToImpact <= emergencyLead
+                    ? AirlessCoastSafetyAction.EmergencyBrake
+                    : AirlessCoastSafetyAction.Replan;
+        }
+    }
+
     /// <summary>
     /// Authorizes a terminal coast warp only after terminal-braking attitude
     /// has remained inside the authority gate at 1x for a sustained interval.

@@ -535,14 +535,32 @@ namespace MuMech
                     break;
                 case V2FlightPhase.Coast:
                     Core.Thrust.ThrustOff();
-                    if (double.IsNaN(Core.Hoverslam.IgnitionUT) || double.IsInfinity(Core.Hoverslam.IgnitionUT))
+                    // A coasting airless descent remains a controlled phase.
+                    // Check a current immutable endpoint at the normal bounded
+                    // refresh cadence; do not run a synchronous estimator on
+                    // every physics tick while waiting for hoverslam.
+                    RefreshPreflight(false);
+                    bool terminalIgnitionAvailable = !double.IsNaN(Core.Hoverslam.IgnitionUT) &&
+                        !double.IsInfinity(Core.Hoverslam.IgnitionUT);
+                    LandingGuidanceV2Snapshot coastSnapshot = Preflight?.Snapshot;
+                    double terminalBrakingDeltaV = Preflight?.BrakingDeltaVLowerBound ?? double.NaN;
+                    AirlessCoastSafetyAction coastSafety = AirlessCoastSafetyGate.Decide(coastSnapshot,
+                        Preflight?.Estimate, _activePlan?.CorridorLimit ?? double.NaN, terminalBrakingDeltaV,
+                        terminalIgnitionAvailable);
+                    if (coastSafety == AirlessCoastSafetyAction.Replan)
                     {
-                        // Keep V2 authority while the terminal solution is
-                        // refreshed. A transient hoverslam gap after a finite
-                        // burn must not release an impact trajectory.
+                        BeginAirlessRecoveryReplan("V2 coast endpoint left the current target corridor; acquiring a fresh complete airless plan.");
+                        break;
+                    }
+                    if (coastSafety == AirlessCoastSafetyAction.EmergencyBrake)
+                    {
+                        EnterAirlessTerminalContingency("the terminal ignition solution was unavailable or the target corridor was lost inside the calculated braking lead.");
+                        break;
+                    }
+                    if (!terminalIgnitionAvailable)
+                    {
                         Core.Attitude.attitudeTo(-VesselState.SurfaceVelocity, AttitudeReference.INERTIAL_COT, this);
-                        ControllerStatus = "V2 retained coast control while refreshing its terminal-braking solution.";
-                        RefreshPreflight(false, true);
+                        ControllerStatus = "V2 is holding controlled coast while the current terminal-braking solution is rebuilt.";
                         break;
                     }
                     Core.Attitude.attitudeTo(Core.Hoverslam.IgnitionAttitude, AttitudeReference.INERTIAL_COT, this);
@@ -761,11 +779,11 @@ namespace MuMech
             Core.Thrust.Users.Add(this);
             Core.Attitude.Users.Add(this);
             _lastAdjustedVelocity = new Vector3d(double.NaN, double.NaN, double.NaN);
-            // Coast preserves the normal hoverslam ignition gate. Starting
-            // full braking immediately from high altitude would trade a
-            // rejected trajectory for a worse one.
-            TransitionTo(V2FlightPhase.Coast,
-                "V2 retained controlled terminal descent after an airless contingency: " + reason);
+            // The current impact is inside the vehicle-derived braking lead.
+            // Continue with controlled braking and the existing local rebase /
+            // divert path instead of releasing an impact trajectory.
+            TransitionTo(V2FlightPhase.BrakingApproach,
+                "V2 entered controlled terminal braking after an airless contingency: " + reason);
         }
 
         private void TickTerminalDivert()

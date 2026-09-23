@@ -53,7 +53,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         public void FiniteBurnStopsThrottleOnMeasuredDeliveryAndNeverReopensIt()
         {
             var progress = new FiniteBurnProgress(3.0);
-            // Reproduces the observed 27.9 m/sÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â² correction-burn condition.
+            // Reproduces the observed 27.9 m/sÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â² correction-burn condition.
             // Measured engine delivery reaches the planned value in six 20 ms
             // frames; 155 seconds of subsequent coast cannot make it burn again.
             for (int i = 0; i != 6; ++i) progress.Integrate(0.02, 27.9);
@@ -71,6 +71,27 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.Equal(FiniteBurnProgress.FineControlThrottleCap,
                 FiniteBurnProgress.LimitThrottleForFineControl(0.50, 0.75f));
             Assert.Equal(0.01f, FiniteBurnProgress.LimitThrottleForFineControl(0.01, 0.01f));
+        }
+
+        [Fact]
+        public void CoastSafetyReplansAStaleOrOutOfCorridorEndpointBeforeTheBrakingLead()
+        {
+            LandingGuidanceV2Snapshot snapshot = Snapshot(100, 1000, 20);
+            LandingGuidanceV2Estimate outside = Impact(100, 1200, 900);
+            Assert.Equal(AirlessCoastSafetyAction.Replan,
+                AirlessCoastSafetyGate.Decide(snapshot, outside, 400, 200, false));
+            Assert.Equal(AirlessCoastSafetyAction.Replan,
+                AirlessCoastSafetyGate.Decide(snapshot, null, 400, 200, true));
+        }
+
+        [Fact]
+        public void CoastSafetyEntersControlledBrakingInsideTheVehicleDerivedLead()
+        {
+            LandingGuidanceV2Snapshot snapshot = Snapshot(100, 100, 20);
+            LandingGuidanceV2Estimate outside = Impact(100, 110, 900);
+            // 200 m/s / 20 m/s^2 plus two seconds is a 12 second lead.
+            Assert.Equal(AirlessCoastSafetyAction.EmergencyBrake,
+                AirlessCoastSafetyGate.Decide(snapshot, outside, 400, 200, false));
         }
 
         [Fact]
@@ -258,6 +279,21 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.Equal(AirlessLandingPhaseDirective.Reject, decision.Directive);
             Assert.Contains("margin", decision.Reason);
         }
+
+        private static LandingGuidanceV2Snapshot Snapshot(long version, double ut, double maximumAcceleration)
+        {
+            var body = (CelestialBody)FormatterServices.GetUninitializedObject(typeof(CelestialBody));
+            body.Radius = 200000;
+            body.gravParameter = 6.5138398e10;
+            body.rotationPeriod = 138984.38;
+            return new LandingGuidanceV2Snapshot(version, ut, body, Vector3d.right * 250000,
+                Vector3d.forward * 500, 10, 1000, maximumAcceleration, 0,
+                0, 0, false, ut, Vector3d.right * 200000, true, 0);
+        }
+
+        private static LandingGuidanceV2Estimate Impact(long version, double impactUT, double targetError) =>
+            new LandingGuidanceV2Estimate(version, LandingGuidanceV2EstimateOutcome.Impact, impactUT,
+                Vector3d.right * 200000, Vector3d.zero, targetError, "test");
 
         private static AirlessLandingPhaseManager ReadyForStrategicWarp(double strategicUT, double strategicDv, double lead)
         {
