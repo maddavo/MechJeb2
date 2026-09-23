@@ -542,8 +542,8 @@ namespace MuMech
                         // instant rails warp is requested. The post-trim
                         // estimate is not valid authority for a later warp.
                         RefreshPreflight(false, true);
-                        if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact || _activePlan == null ||
-                            Preflight.Estimate.TargetError > _activePlan.CorridorLimit)
+                        if (_activePlan == null || !AirlessTerminalWarpGate.EndpointIsCurrentAndWithinCorridor(
+                            Preflight?.Estimate, _activePlan.CorridorLimit))
                         {
                             _terminalWarpGate.Reset();
                             BeginAirlessRecoveryReplan("V2 denied terminal auto-warp because the fresh impact endpoint left the target corridor.");
