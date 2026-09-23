@@ -1,6 +1,7 @@
 extern alias JetBrainsAnnotations;
 using System;
 using System.Collections;
+using Stopwatch = System.Diagnostics.Stopwatch;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -21,6 +22,7 @@ namespace MuMech
         private const double PlanRefreshInterval = 30.0;
         private double _nextRefreshUT;
         private double _nextPlanRefreshUT;
+        private double _lastAirlessPlanningMilliseconds = double.NaN;
         private long _snapshotVersion;
         private long _v1PredictionVersion;
         private ReentrySimulation.Result _lastV1Prediction;
@@ -44,7 +46,10 @@ namespace MuMech
         private Vector3d _phaseBurnStartVelocity;
         private double _phaseBurnPlannedDeltaV;
         private string _phaseBurnName;
-        private bool _strategicBurnGateValidated;
+        // Pure phase gate shared with the controller-validation harness. It
+        // decides when authority may be requested; this module performs the
+        // resulting KSP commands.
+        private readonly AirlessLandingPhaseManager _airlessPhaseManager = new AirlessLandingPhaseManager();
         private string _lastV2Phase;
         private double _activeTargetLatitude;
         private double _activeTargetLongitude;
@@ -158,6 +163,7 @@ namespace MuMech
                 return true;
             }
             _activePlan = Preflight.AirlessPlan;
+            if (!StartAirlessPhaseManager()) return false;
             Core.Thrust.Users.Add(this); Core.Attitude.Users.Add(this);
             TransitionTo(V2FlightPhase.WarpToStrategic, "V2 plan accepted; moving to the strategic-deorbit burn gate.");
             return true;
@@ -170,6 +176,19 @@ namespace MuMech
         public void AbortAirlessLanding()
         {
             ReleaseV2Control(); TransitionTo(V2FlightPhase.Idle, "V2 landing aborted.");
+        }
+
+        private bool StartAirlessPhaseManager()
+        {
+            LandingGuidanceV2Snapshot snapshot = CaptureSnapshot();
+            double maximumAcceleration = snapshot?.MaximumAcceleration ?? 0;
+            double lead = maximumAcceleration > 0
+                ? _activePlan.StrategicDeorbitDeltaVMagnitude / maximumAcceleration * 0.5 + 0.10
+                : 0;
+            AirlessLandingPhaseDecision decision = _airlessPhaseManager.Start(_activePlan, lead);
+            if (decision.Directive != AirlessLandingPhaseDirective.Reject) return true;
+            RejectController(decision.Reason);
+            return false;
         }
 
         private bool RejectController(string reason)
@@ -230,6 +249,7 @@ namespace MuMech
                     else if (Preflight?.AirlessPlan?.State == AirlessLandingPlanState.Candidate)
                     {
                         _activePlan = Preflight.AirlessPlan;
+                        if (!StartAirlessPhaseManager()) break;
                         Core.Thrust.Users.Add(this);
                         Core.Attitude.Users.Add(this);
                         TransitionTo(V2FlightPhase.WarpToStrategic,
@@ -242,22 +262,22 @@ namespace MuMech
                     break;
                 case V2FlightPhase.WarpToStrategic:
                     Core.Thrust.ThrustOff();
-                    double nextBurnUT = _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5
-                        ? _activePlan.PlaneAlignmentBurnUT
-                        : _activePlan.StrategicBurnUT;
-                    if (VesselState.Time < nextBurnUT - 20.0 && V2AutoWarp)
+                    AirlessLandingPhaseDecision warpDecision = _airlessPhaseManager.Tick(VesselState.Time, V2AutoWarp,
+                        Core.Attitude.attitudeError, double.NaN);
+                    if (warpDecision.Directive == AirlessLandingPhaseDirective.Reject)
                     {
-                        Core.Warp.WarpToUT(nextBurnUT - 20.0);
+                        RejectController(warpDecision.Reason);
                         break;
                     }
-                    // The warp scheduler owns the early exit. Alignment begins
-                    // at 1x, but the finite vector remains scheduled for its
-                    // actual plan UT. Applying it at the early settle gate
-                    // changes the target corridor and must never be treated as
-                    // a valid strategic burn.
+                    if (warpDecision.Directive == AirlessLandingPhaseDirective.RequestWarp)
+                    {
+                        Core.Warp.WarpToUT(warpDecision.WarpUT);
+                        break;
+                    }
+                    // The scheduler has exited rails. The phase manager marks
+                    // this boundary so a new ignition snapshot is mandatory.
                     Core.Warp.MinimumWarp(true);
-                    bool needsPlaneAlignment = _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5;
-                    _strategicBurnGateValidated = false;
+                    bool needsPlaneAlignment = _airlessPhaseManager.Phase == AirlessLandingPhaseManagerPhase.AlignPlaneAlignment;
                     _burnTargetVelocity = VesselState.OrbitalVelocity +
                         (needsPlaneAlignment ? _activePlan.PlaneAlignmentDeltaV : _activePlan.StrategicDeorbitDeltaV);
                     TransitionTo(needsPlaneAlignment ? V2FlightPhase.AlignPlane : V2FlightPhase.AlignStrategicBurn,
@@ -267,9 +287,14 @@ namespace MuMech
                 case V2FlightPhase.AlignPlane:
                     Core.Thrust.ThrustOff();
                     Core.Attitude.attitudeTo(_activePlan.PlaneAlignmentDeltaV, AttitudeReference.INERTIAL_COT, this);
-                    if (VesselState.Time < _activePlan.PlaneAlignmentBurnUT - 0.1)
+                    AirlessLandingPhaseDecision planeAlignDecision = _airlessPhaseManager.Tick(VesselState.Time, false,
+                        Core.Attitude.attitudeError, double.NaN);
+                    if (planeAlignDecision.Directive == AirlessLandingPhaseDirective.Reject)
+                    {
+                        RejectController(planeAlignDecision.Reason);
                         break;
-                    if (Core.Attitude.attitudeError < 2.0)
+                    }
+                    if (planeAlignDecision.Directive == AirlessLandingPhaseDirective.BeginFiniteBurn)
                     {
                         BeginFiniteBurn("plane_alignment", _activePlan.PlaneAlignmentDeltaVMagnitude);
                         TransitionTo(V2FlightPhase.PlaneAlignment, "Executing the finite V2 plane-alignment burn.");
@@ -277,44 +302,65 @@ namespace MuMech
                     break;
                 case V2FlightPhase.PlaneAlignment:
                     Core.Attitude.attitudeTo(_activePlan.PlaneAlignmentDeltaV, AttitudeReference.INERTIAL_COT, this);
-                    if (Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _activePlan.PlaneAlignmentDeltaV.normalized) <= 0.5)
+                    double remainingPlaneDv = Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity,
+                        _activePlan.PlaneAlignmentDeltaV.normalized);
+                    AirlessLandingPhaseDecision planeBurnDecision = _airlessPhaseManager.Tick(VesselState.Time, false,
+                        Core.Attitude.attitudeError, remainingPlaneDv);
+                    if (planeBurnDecision.Directive == AirlessLandingPhaseDirective.RequestFiniteBurnThrottle)
                     {
-                        Core.Thrust.ThrustOff();
-                        RefreshPreflight(true);
-                        if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate)
-                        {
-                            RejectController("V2 plan failed fresh validation after plane alignment.");
-                            break;
-                        }
-                        _activePlan = Preflight.AirlessPlan;
-                        TransitionTo(V2FlightPhase.WarpToStrategic, "Plane alignment complete; V2 is revalidating the strategic-deorbit gate.");
+                        Core.Thrust.ThrustForDv(remainingPlaneDv, 0.5);
+                        break;
                     }
-                    else Core.Thrust.ThrustForDv(Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _activePlan.PlaneAlignmentDeltaV.normalized), 0.5);
+                    if (planeBurnDecision.Directive != AirlessLandingPhaseDirective.FiniteBurnComplete)
+                    {
+                        RejectController(planeBurnDecision.Reason ?? "V2 plane-alignment phase did not retain finite-burn authority.");
+                        break;
+                    }
+                    Core.Thrust.ThrustOff();
+                    RefreshPreflight(true);
+                    if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate)
+                    {
+                        RejectController("V2 plan failed fresh validation after plane alignment.");
+                        break;
+                    }
+                    _activePlan = Preflight.AirlessPlan;
+                    AirlessLandingPhaseDecision replanDecision = _airlessPhaseManager.AdoptStrategicReplan(_activePlan);
+                    if (replanDecision.Directive == AirlessLandingPhaseDirective.Reject)
+                    {
+                        RejectController(replanDecision.Reason);
+                        break;
+                    }
+                    TransitionTo(V2FlightPhase.WarpToStrategic, "Plane alignment complete; V2 is revalidating the strategic-deorbit gate.");
                     break;
                 case V2FlightPhase.AlignStrategicBurn:
                     Core.Thrust.ThrustOff();
                     Core.Attitude.attitudeTo(_activePlan.StrategicDeorbitDeltaV, AttitudeReference.INERTIAL_COT, this);
-                    // The committed vector is valid at its scheduled ignition
-                    // epoch. Do not validate a fractional physics step early:
-                    // that has already been shown to move a narrow corridor
-                    // outside tolerance before any throttle is commanded.
-                    if (VesselState.Time < _activePlan.StrategicBurnUT)
-                        break;
-                    if (!_strategicBurnGateValidated)
+                    AirlessLandingPhaseDecision strategicAlignDecision = _airlessPhaseManager.Tick(VesselState.Time, false,
+                        Core.Attitude.attitudeError, double.NaN);
+                    if (strategicAlignDecision.Directive == AirlessLandingPhaseDirective.RequireFreshStrategicValidation)
                     {
                         LandingGuidanceV2Snapshot burnSnapshot = CaptureSnapshot();
-                        if (!AirlessLandingPlanner.TryValidateCommittedStrategicBurn(burnSnapshot, _activePlan,
-                            out AirlessLandingPlan validatedPlan, out string validationReason))
+                        bool valid = AirlessLandingPlanner.TryValidateCommittedStrategicBurn(burnSnapshot, _activePlan,
+                            out AirlessLandingPlan validatedPlan, out string validationReason);
+                        AirlessLandingPhaseDecision validationDecision = _airlessPhaseManager.AcceptStrategicValidation(
+                            burnSnapshot.Version, burnSnapshot.UT, valid, validationReason);
+                        if (validationDecision.Directive == AirlessLandingPhaseDirective.Reject)
                         {
-                            RejectController("V2 plan failed fresh validation at the strategic ignition gate: " + validationReason);
+                            RejectController("V2 plan failed fresh validation at the strategic ignition gate: " + validationDecision.Reason);
                             break;
                         }
                         _activePlan = validatedPlan;
                         SetValidatedAirlessPreflight(burnSnapshot, validatedPlan);
                         _burnTargetVelocity = VesselState.OrbitalVelocity + _activePlan.StrategicDeorbitDeltaV;
-                        _strategicBurnGateValidated = true;
+                        strategicAlignDecision = _airlessPhaseManager.Tick(VesselState.Time, false,
+                            Core.Attitude.attitudeError, double.NaN);
                     }
-                    if (Core.Attitude.attitudeError < 2.0)
+                    if (strategicAlignDecision.Directive == AirlessLandingPhaseDirective.Reject)
+                    {
+                        RejectController(strategicAlignDecision.Reason);
+                        break;
+                    }
+                    if (strategicAlignDecision.Directive == AirlessLandingPhaseDirective.BeginFiniteBurn)
                     {
                         BeginFiniteBurn("strategic_deorbit", _activePlan.StrategicDeorbitDeltaVMagnitude);
                         TransitionTo(V2FlightPhase.StrategicBurn, "Executing V2 strategic deorbit burn.");
@@ -323,28 +369,36 @@ namespace MuMech
                 case V2FlightPhase.StrategicBurn:
                     Core.Attitude.attitudeTo(_activePlan.StrategicDeorbitDeltaV, AttitudeReference.INERTIAL_COT, this);
                     double remainingDv = Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _activePlan.StrategicDeorbitDeltaV.normalized);
-                    if (remainingDv <= 0.5)
+                    AirlessLandingPhaseDecision strategicBurnDecision = _airlessPhaseManager.Tick(VesselState.Time, false,
+                        Core.Attitude.attitudeError, remainingDv);
+                    if (strategicBurnDecision.Directive == AirlessLandingPhaseDirective.RequestFiniteBurnThrottle)
                     {
-                        Core.Thrust.ThrustOff();
-                        RefreshPreflight(false, true);
-                        if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact)
-                        {
-                            RejectController("V2 strategic burn did not produce a fresh valid impact trajectory.");
-                            break;
-                        }
-                        LandingGuidanceV2Snapshot trimSnapshot = CaptureSnapshot();
-                        if (Preflight.Estimate.TargetError > _activePlan.CorridorLimit &&
-                            AirlessLandingPlanner.TryPlanBoundedTrim(trimSnapshot, _activePlan.TrimBudget, out _trimDeltaV, out LandingGuidanceV2Estimate trimEstimate))
-                        {
-                            _burnTargetVelocity = VesselState.OrbitalVelocity + _trimDeltaV;
-                            TransitionTo(V2FlightPhase.AlignTrim, "A bounded V2 trim improved the fresh target estimate.");
-                        }
-                        else if (Preflight.Estimate.TargetError <= _activePlan.CorridorLimit)
-                            TransitionTo(V2FlightPhase.Coast, "Strategic deorbit complete; coasting to V2 braking approach.");
-                        else
-                            RejectController("V2 target error is outside the corridor and no bounded trim is feasible.");
+                        Core.Thrust.ThrustForDv(remainingDv, 0.5);
+                        break;
                     }
-                    else Core.Thrust.ThrustForDv(remainingDv, 0.5);
+                    if (strategicBurnDecision.Directive != AirlessLandingPhaseDirective.FiniteBurnComplete)
+                    {
+                        RejectController(strategicBurnDecision.Reason ?? "V2 strategic phase did not retain finite-burn authority.");
+                        break;
+                    }
+                    Core.Thrust.ThrustOff();
+                    RefreshPreflight(false, true);
+                    if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact)
+                    {
+                        RejectController("V2 strategic burn did not produce a fresh valid impact trajectory.");
+                        break;
+                    }
+                    LandingGuidanceV2Snapshot trimSnapshot = CaptureSnapshot();
+                    if (Preflight.Estimate.TargetError > _activePlan.CorridorLimit &&
+                        AirlessLandingPlanner.TryPlanBoundedTrim(trimSnapshot, _activePlan.TrimBudget, out _trimDeltaV, out LandingGuidanceV2Estimate trimEstimate))
+                    {
+                        _burnTargetVelocity = VesselState.OrbitalVelocity + _trimDeltaV;
+                        TransitionTo(V2FlightPhase.AlignTrim, "A bounded V2 trim improved the fresh target estimate.");
+                    }
+                    else if (Preflight.Estimate.TargetError <= _activePlan.CorridorLimit)
+                        TransitionTo(V2FlightPhase.Coast, "Strategic deorbit complete; coasting to V2 braking approach.");
+                    else
+                        RejectController("V2 target error is outside the corridor and no bounded trim is feasible.");
                     break;
                 case V2FlightPhase.AlignTrim:
                     Core.Thrust.ThrustOff();
@@ -794,7 +848,10 @@ namespace MuMech
             if (!retainCommittedAirlessPlan &&
                 (forcePlan || Preflight?.AirlessPlan == null || VesselState.Time >= _nextPlanRefreshUT))
             {
+                Stopwatch planningTimer = Stopwatch.StartNew();
                 airlessPlan = AirlessLandingPlanner.Plan(snapshot);
+                planningTimer.Stop();
+                _lastAirlessPlanningMilliseconds = planningTimer.Elapsed.TotalMilliseconds;
                 _nextPlanRefreshUT = VesselState.Time + PlanRefreshInterval;
             }
             else
@@ -1101,9 +1158,9 @@ namespace MuMech
                     JsonNumber(_phaseBurnPlannedDeltaV), JsonNumber(_phaseBurnStartVelocity.sqrMagnitude > 0
                         ? (VesselState.OrbitalVelocity - _phaseBurnStartVelocity).magnitude : double.NaN));
                 baseFields += string.Format(CultureInfo.InvariantCulture,
-                    ",\"airlessPlanSnapshotVersion\":{0},\"activeAirlessPlanSnapshotVersion\":{1},\"atmosphericPlanSnapshotVersion\":{2}",
+                    ",\"airlessPlanSnapshotVersion\":{0},\"activeAirlessPlanSnapshotVersion\":{1},\"atmosphericPlanSnapshotVersion\":{2},\"airlessPlanningDurationMilliseconds\":{3},\"phaseManagerWorkUnits\":{4}",
                     airlessPlan?.SnapshotVersion ?? -1, _activePlan?.SnapshotVersion ?? -1,
-                    atmosphericPlan?.SnapshotVersion ?? -1);
+                    atmosphericPlan?.SnapshotVersion ?? -1, JsonNumber(_lastAirlessPlanningMilliseconds), _airlessPhaseManager.LastWorkUnits);
 
                 var lines = new System.Collections.Generic.List<string>();
                 if (_lastV1Phase != phase)
