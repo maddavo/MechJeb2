@@ -44,6 +44,20 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void LateFiniteBurnGateFailsClosedBeforeAnyThrottleDirective()
+        {
+            var manager = new AirlessLandingPhaseManager();
+            manager.Start(Candidate(100, 1000, 1200, 30), 0.65);
+            manager.Tick(979.35, true, 90, double.NaN);
+            Assert.Equal(AirlessLandingPhaseDirective.RequireFreshStrategicValidation,
+                manager.Tick(999.35, false, 0.1, double.NaN).Directive);
+            AirlessLandingPhaseDecision late = manager.AcceptStrategicValidation(101, 1000.26, true);
+            Assert.Equal(AirlessLandingPhaseDirective.Reject, late.Directive);
+            Assert.Contains("midpoint", late.Reason);
+            Assert.Equal(AirlessLandingPhaseManagerPhase.Rejected, manager.Phase);
+        }
+
+        [Fact]
         public void FreshStrategicValidationThenFiniteBurnProgressesToCoast()
         {
             var manager = new AirlessLandingPhaseManager();
