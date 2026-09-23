@@ -279,6 +279,102 @@ namespace MuMech
         }
     }
 
+    /// <summary>
+    /// KSP-independent terminal command policy shared by the V2 flight module
+    /// and the deterministic controller validation.  Given the current local
+    /// state it produces a thrust direction and acceleration request which
+    /// removes horizontal target error while preserving a velocity-null
+    /// touchdown profile.  It deliberately owns no vessel authority.
+    /// </summary>
+    public sealed class AirlessTerminalGuidanceCommand
+    {
+        public readonly bool Valid;
+        public readonly bool TouchdownReady;
+        public readonly double DesiredAcceleration;
+        public readonly double RequestedThrottle;
+        public readonly Vector3d ThrustDirection;
+        public readonly Vector3d DesiredVelocity;
+        public readonly Vector3d VelocityError;
+        public readonly string RejectionReason;
+
+        public AirlessTerminalGuidanceCommand(bool valid, bool touchdownReady,
+            double desiredAcceleration, double requestedThrottle, Vector3d thrustDirection,
+            Vector3d desiredVelocity, Vector3d velocityError, string rejectionReason)
+        {
+            Valid = valid;
+            TouchdownReady = touchdownReady;
+            DesiredAcceleration = desiredAcceleration;
+            RequestedThrottle = requestedThrottle;
+            ThrustDirection = thrustDirection;
+            DesiredVelocity = desiredVelocity;
+            VelocityError = velocityError;
+            RejectionReason = rejectionReason;
+        }
+    }
+
+    public static class AirlessTerminalGuidance
+    {
+        public const double TouchdownHorizontalTolerance = 5.0;
+        public const double TouchdownAltitude = 0.5;
+        public const double TouchdownSpeed = 0.5;
+
+        public static AirlessTerminalGuidanceCommand Calculate(Vector3d positionError,
+            Vector3d surfaceVelocity, Vector3d up, double altitude, double gravity,
+            double minimumAcceleration, double maximumAcceleration, double finalDescentSpeed)
+        {
+            if (up.sqrMagnitude < 1e-12 || !Finite(altitude) || !Finite(gravity) ||
+                !Finite(maximumAcceleration) || maximumAcceleration <= gravity)
+                return Invalid("V2 terminal guidance requires thrust acceleration greater than local gravity.");
+
+            Vector3d localUp = up.normalized;
+            double height = Math.Max(0.05, altitude);
+            Vector3d horizontalError = Vector3d.Exclude(localUp, positionError);
+            double verticalSpeedDown = -Vector3d.Dot(surfaceVelocity, localUp);
+            double timeToGround = Math.Max(3.0, height / Math.Max(0.5, verticalSpeedDown));
+            Vector3d desiredHorizontalVelocity = horizontalError.sqrMagnitude < 1.0
+                ? Vector3d.zero
+                // Terminal divert must be able to retire a material residual
+                // before touchdown. The former 12 m/s cap left a 600 m
+                // target miss essentially untouched during a low-Mun descent.
+                // This remains bounded and is scaled from the current time to
+                // ground rather than a body-specific correction impulse.
+                : horizontalError.normalized * Math.Min(30.0, horizontalError.magnitude / timeToGround);
+            Vector3d desiredVelocity = desiredHorizontalVelocity - Math.Max(0.1, finalDescentSpeed) * localUp;
+            Vector3d velocityError = surfaceVelocity - desiredVelocity;
+
+            // The commanded acceleration is sized from the velocity that must
+            // be removed before the remaining altitude is exhausted. Gravity
+            // is included explicitly so the vector represents engine thrust,
+            // not just a steering correction.
+            double closingSpeed = Math.Max(0, Vector3d.Dot(velocityError, -localUp));
+            double verticalDemand = gravity + closingSpeed * closingSpeed / (2.0 * height);
+            // The desired horizontal velocity is derived from remaining range
+            // and time to terrain.  Damp the measured error on a one-second
+            // response while reserving enough engine authority for vertical
+            // braking.
+            Vector3d horizontalVelocityError = Vector3d.Exclude(localUp, velocityError);
+            Vector3d horizontalCorrection = -horizontalVelocityError;
+            double horizontalDemand = Math.Min(Math.Max(0, maximumAcceleration - verticalDemand), horizontalCorrection.magnitude);
+            Vector3d thrustVector = horizontalDemand <= 1e-12
+                ? localUp * verticalDemand
+                : horizontalCorrection.normalized * horizontalDemand + localUp * verticalDemand;
+            if (thrustVector.sqrMagnitude < 1e-12) thrustVector = localUp;
+            double desiredAcceleration = Math.Min(maximumAcceleration, Math.Max(minimumAcceleration, thrustVector.magnitude));
+            double throttle = maximumAcceleration <= minimumAcceleration
+                ? 1.0
+                : Math.Max(0, Math.Min(1, (desiredAcceleration - minimumAcceleration) /
+                    (maximumAcceleration - minimumAcceleration)));
+            bool touchdownReady = altitude <= TouchdownAltitude && horizontalError.magnitude <= TouchdownHorizontalTolerance &&
+                surfaceVelocity.magnitude <= TouchdownSpeed;
+            return new AirlessTerminalGuidanceCommand(true, touchdownReady, desiredAcceleration, throttle,
+                thrustVector.normalized, desiredVelocity, velocityError, null);
+        }
+
+        private static AirlessTerminalGuidanceCommand Invalid(string reason) =>
+            new AirlessTerminalGuidanceCommand(false, false, 0, 0, Vector3d.zero, Vector3d.zero, Vector3d.zero, reason);
+        private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    }
+
     public enum AirlessCoastSafetyAction { Continue, Replan, EmergencyBrake }
 
     /// <summary>

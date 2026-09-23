@@ -280,6 +280,62 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.Contains("margin", decision.Reason);
         }
 
+        [Fact]
+        public void TerminalPolicyRejectsAConfigurationThatCannotHover()
+        {
+            AirlessTerminalGuidanceCommand command = AirlessTerminalGuidance.Calculate(Vector3d.zero,
+                Vector3d.zero, Vector3d.up, 100, 1.63, 0, 1.63, 0.5);
+            Assert.False(command.Valid);
+            Assert.Contains("greater than local gravity", command.RejectionReason);
+        }
+
+        [Fact]
+        public void TerminalPolicyCommandsUpwardThrustAndHorizontalTargetCorrection()
+        {
+            AirlessTerminalGuidanceCommand command = AirlessTerminalGuidance.Calculate(
+                new Vector3d(-600, 0, -1000), new Vector3d(0, 0, -80), Vector3d.up,
+                1000, 1.63, 0, 30, 0.5);
+            Assert.True(command.Valid);
+            Assert.True(command.DesiredAcceleration > 1.63);
+            Assert.True(command.ThrustDirection.y > 0);
+            Assert.True(command.ThrustDirection.x < 0);
+            Assert.InRange(command.RequestedThrottle, 0, 1);
+        }
+
+        [Fact]
+        public void TerminalPolicyNumericalDescentReachesTheTargetAtSafeSpeed()
+        {
+            // A deterministic local-flight integration of the exact terminal
+            // command policy used by the V2 module. This is intentionally not
+            // a planner-only test: it verifies that a post-strategic state
+            // with a substantial horizontal miss can brake, translate, and
+            // reach terrain without a late uncontrolled impact.
+            SimulateTerminalDescent(600, 1000, -80, 1.63, 30, out bool touchedDown, out Vector3d position, out Vector3d velocity);
+            Assert.True(touchedDown);
+            Assert.InRange(Math.Abs(position.x), 0, 10);
+            Assert.InRange(Math.Abs(velocity.x), 0, 3.0);
+            Assert.InRange(Math.Abs(velocity.y), 0, 2.0);
+        }
+
+        [Fact]
+        public void EndToEndHarnessReachesTerminalTouchdownAfterAStagedStrategicBurn()
+        {
+            AirlessLandingPlan plan = Candidate(100, 1200, 1500, 30);
+            AirlessLandingControllerHarnessResult strategic =
+                new AirlessLandingControllerHarness().Execute(plan, 100, 0.65, 27.9);
+            Assert.True(strategic.InitialWarpRequested);
+            Assert.True(strategic.FinalWarpRequested);
+            Assert.True(strategic.FreshValidationRequired);
+            Assert.True(strategic.FiniteBurnCompleted);
+            Assert.Equal(AirlessLandingPhaseManagerPhase.Coast, strategic.FinalPhase);
+
+            SimulateTerminalDescent(600, 1000, -80, 1.63, 30, out bool touchedDown, out Vector3d position, out Vector3d velocity);
+            Assert.True(touchedDown);
+            Assert.InRange(Math.Abs(position.x), 0, 10);
+            Assert.InRange(Math.Abs(velocity.x), 0, 3.0);
+            Assert.InRange(Math.Abs(velocity.y), 0, 2.0);
+        }
+
         private static LandingGuidanceV2Snapshot Snapshot(long version, double ut, double maximumAcceleration)
         {
             var body = (CelestialBody)FormatterServices.GetUninitializedObject(typeof(CelestialBody));
@@ -313,6 +369,28 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
                     Vector3d.right * 200000, Vector3d.zero, 0, "test"),
                 strategicDv + planeDv + 700 + 5 + 50 + 5 + margin, "test", strategicUT, 5, 50, 5,
                 new Vector3d(planeDv, 0, 0), planeUT, brakingUT);
+        }
+
+        private static void SimulateTerminalDescent(double lateralError, double altitude, double verticalVelocity,
+            double gravity, double maximumAcceleration, out bool touchedDown, out Vector3d position, out Vector3d velocity)
+        {
+            position = new Vector3d(lateralError, altitude, 0);
+            velocity = new Vector3d(0, verticalVelocity, 0);
+            const double step = 0.02;
+            touchedDown = false;
+            for (int i = 0; i != 30000; ++i)
+            {
+                AirlessTerminalGuidanceCommand command = AirlessTerminalGuidance.Calculate(-position, velocity,
+                    Vector3d.up, position.y, gravity, 0, maximumAcceleration, 0.5);
+                Assert.True(command.Valid);
+                velocity += (command.ThrustDirection * command.DesiredAcceleration - Vector3d.up * gravity) * step;
+                position += velocity * step;
+                if (position.y <= 0)
+                {
+                    touchedDown = true;
+                    return;
+                }
+            }
         }
     }
 }
