@@ -72,6 +72,18 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void TerminalWarpRequiresTwoSecondsOfContinuousBrakingAttitude()
+        {
+            var gate = new AirlessTerminalWarpGate();
+            Assert.False(gate.ObserveAttitude(100, 1.0));
+            Assert.False(gate.ObserveAttitude(101.99, 1.0));
+            Assert.True(gate.ObserveAttitude(102.0, 1.0));
+            Assert.False(gate.ObserveAttitude(102.01, 2.01));
+            Assert.False(gate.ObserveAttitude(103.0, 1.0));
+            Assert.True(gate.ObserveAttitude(105.0, 1.0));
+        }
+
+        [Fact]
         public void FiniteBurnDropsThrottleWhenAttitudeLeavesTheAuthorityGate()
         {
             var manager = ReadyForStrategicWarp(1000, 30, 0);
