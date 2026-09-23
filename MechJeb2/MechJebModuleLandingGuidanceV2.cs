@@ -41,6 +41,7 @@ namespace MuMech
         private bool _atmosphericCandidateSimulationRunning;
         private double _nextAtmosphericCandidateSimulationUT;
         private long _atmosphericCandidateGeneration;
+        private bool _atmosphericInitialWarpIssued;
         private bool _atmosphericWarpIssued;
         private string _lastV1Phase;
         private bool? _lastV1Burning;
@@ -576,13 +577,25 @@ namespace MuMech
                         TransitionTo(V2FlightPhase.Preflight, "V2 atmospheric burn candidate expired; obtaining a fresh simulation.");
                         break;
                     }
-                    if (VesselState.Time < _atmosphericCandidatePlan.StrategicEntryBurnUT - 20.0 && V2AutoWarp)
+                    if (V2AutoWarp && VesselState.Time < _atmosphericCandidatePlan.StrategicEntryBurnUT - AirlessLandingPhaseManager.InitialWarpLeadSeconds)
                     {
-                        Core.Warp.WarpToUT(_atmosphericCandidatePlan.StrategicEntryBurnUT - 20.0);
-                        _atmosphericWarpIssued = true;
+                        Core.Warp.WarpToUT(_atmosphericCandidatePlan.StrategicEntryBurnUT - AirlessLandingPhaseManager.InitialWarpLeadSeconds);
+                        _atmosphericInitialWarpIssued = true;
+                        ControllerStatus = "V2 is coarse-warping to the 10-minute atmospheric entry-burn alignment gate.";
                         break;
                     }
                     Core.Warp.MinimumWarp(true);
+                    if (_atmosphericInitialWarpIssued)
+                    {
+                        // Candidate dynamics may not cross even a coarse rails
+                        // boundary. Acquire a fresh snapshot and simulation at
+                        // the 1x alignment gate before commanding attitude.
+                        _atmosphericInitialWarpIssued = false;
+                        ReleaseV2Control();
+                        TransitionTo(V2FlightPhase.Preflight,
+                            "V2 exited coarse warp at the atmospheric alignment gate; acquiring a fresh candidate simulation.");
+                        break;
+                    }
                     if (_atmosphericWarpIssued)
                     {
                         // Candidate dynamics may not cross a warp boundary.
@@ -592,6 +605,19 @@ namespace MuMech
                         ReleaseV2Control();
                         TransitionTo(V2FlightPhase.Preflight,
                             "V2 exited warp at the atmospheric burn gate; acquiring a fresh candidate simulation.");
+                        break;
+                    }
+                    Core.Attitude.attitudeTo(_atmosphericCandidatePlan.StrategicEntryDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    _commandedV2AttitudeVector = _atmosphericCandidatePlan.StrategicEntryDeltaV;
+                    if (!BurnAlignmentReady(_atmosphericCandidatePlan.StrategicEntryDeltaV))
+                    {
+                        ControllerStatus = "V2 is holding at 1x until the atmospheric entry-burn attitude is aligned and settled.";
+                        break;
+                    }
+                    if (V2AutoWarp && VesselState.Time < _atmosphericCandidatePlan.StrategicEntryBurnUT - AirlessLandingPhaseManager.WarpSettleMargin)
+                    {
+                        Core.Warp.WarpToUT(_atmosphericCandidatePlan.StrategicEntryBurnUT - AirlessLandingPhaseManager.WarpSettleMargin);
+                        _atmosphericWarpIssued = true;
                         break;
                     }
                     RefreshPreflight(true);
@@ -605,7 +631,10 @@ namespace MuMech
                     }
                     _atmosphericCandidatePlan = Preflight.AtmosphericPlan;
                     if (_atmosphericCandidatePlan.StrategicEntryBurnUT > VesselState.Time + 25.0)
+                    {
+                        ControllerStatus = "V2 atmospheric entry candidate changed after warp; returning to its staged alignment gate.";
                         break;
+                    }
                     _burnTargetVelocity = VesselState.OrbitalVelocity + _atmosphericCandidatePlan.StrategicEntryDeltaV;
                     TransitionTo(V2FlightPhase.AlignAtmosphericEntryBurn, "Aligning for the validated V2 atmospheric entry burn.");
                     break;
@@ -928,6 +957,7 @@ namespace MuMech
             Core.Attitude.Users.Remove(this);
             Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Users.Remove(this);
             ClearAtmosphericCandidateResult();
+            _atmosphericInitialWarpIssued = false;
             _atmosphericWarpIssued = false;
             _finiteBurnTracking = false;
         }
