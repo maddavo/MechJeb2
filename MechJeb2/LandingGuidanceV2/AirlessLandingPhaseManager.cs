@@ -11,6 +11,10 @@ namespace MuMech
     public sealed class AirlessLandingPhaseManager
     {
         public const double WarpSettleMargin = 20.0;
+        // Mirror the proven node-executor sequence: leave coarse rails ten
+        // minutes before ignition, acquire and settle burn attitude at 1x,
+        // then permit the final warp to the short ignition margin.
+        public const double InitialWarpLeadSeconds = 600.0;
         public const double AttitudeReadyDegrees = 2.0;
         // Completion must be materially tighter than the landing corridor.
         // The thrust controller ramps down for the final portion; this is only
@@ -37,13 +41,11 @@ namespace MuMech
                 Phase = AirlessLandingPhaseManagerPhase.Rejected;
                 return Reject(reason);
             }
-            // Acquiring burn attitude is a prerequisite for warp.  Rails warp
-            // cannot be the mechanism that creates the time needed to turn a
-            // vessel, so establish the attitude at 1x first and retain the
-            // normal post-warp attitude/validation gate as a second check.
+            // Coarse warp ends 600 seconds before the finite event. Alignment
+            // then occurs at 1x before the final warp and again after it.
             Phase = plan.PlaneAlignmentDeltaVMagnitude > BurnCompleteDeltaV
-                ? AirlessLandingPhaseManagerPhase.PreparePlaneAlignmentWarp
-                : AirlessLandingPhaseManagerPhase.PrepareStrategicWarp;
+                ? AirlessLandingPhaseManagerPhase.InitialWarpToPlaneAlignment
+                : AirlessLandingPhaseManagerPhase.InitialWarpToStrategicBurn;
             return Decision(AirlessLandingPhaseDirective.None);
         }
 
@@ -53,6 +55,12 @@ namespace MuMech
             if (_plan == null) return Reject("V2 phase manager has no active airless plan.");
             switch (Phase)
             {
+                case AirlessLandingPhaseManagerPhase.InitialWarpToPlaneAlignment:
+                    return TickInitialWarp(ut, autoWarp, _plan.PlaneAlignmentBurnUT - PlaneBurnLeadSeconds,
+                        AirlessLandingPhaseManagerPhase.PreparePlaneAlignmentWarp);
+                case AirlessLandingPhaseManagerPhase.InitialWarpToStrategicBurn:
+                    return TickInitialWarp(ut, autoWarp, StrategicIgnitionUT,
+                        AirlessLandingPhaseManagerPhase.PrepareStrategicWarp);
                 case AirlessLandingPhaseManagerPhase.PreparePlaneAlignmentWarp:
                     if (attitudeErrorDegrees > AttitudeReadyDegrees)
                         return Decision(AirlessLandingPhaseDirective.RequestAttitude);
@@ -144,7 +152,7 @@ namespace MuMech
             _plan = plan;
             _requiresStrategicReplan = false;
             _strategicGateValidated = false;
-            Phase = AirlessLandingPhaseManagerPhase.PrepareStrategicWarp;
+            Phase = AirlessLandingPhaseManagerPhase.InitialWarpToStrategicBurn;
             return Decision(AirlessLandingPhaseDirective.None);
         }
 
@@ -160,6 +168,16 @@ namespace MuMech
             Phase = next;
             _strategicGateValidated = false;
             return Decision(AirlessLandingPhaseDirective.ExitWarpAndRequestAttitude);
+        }
+
+        private AirlessLandingPhaseDecision TickInitialWarp(double ut, bool autoWarp, double burnUT,
+            AirlessLandingPhaseManagerPhase next)
+        {
+            if (!Finite(burnUT) || burnUT <= 0) return Reject("V2 plan has no finite burn epoch.");
+            if (autoWarp && ut < burnUT - InitialWarpLeadSeconds)
+                return Decision(AirlessLandingPhaseDirective.RequestInitialWarp, burnUT - InitialWarpLeadSeconds);
+            Phase = next;
+            return Decision(AirlessLandingPhaseDirective.RequestAttitude);
         }
 
         private static bool IsExecutable(AirlessLandingPlan plan, out string reason)
@@ -267,12 +285,20 @@ namespace MuMech
     /// </summary>
     public static class AirlessBurnAlignmentGate
     {
+        public const double SettledAngularVelocityRadiansPerSecond = 0.001;
+
         public static bool IsReady(double controllerErrorDegrees, double thrustVectorErrorDegrees)
         {
             return Finite(controllerErrorDegrees) && Finite(thrustVectorErrorDegrees) &&
                 controllerErrorDegrees <= AirlessLandingPhaseManager.AttitudeReadyDegrees &&
                 thrustVectorErrorDegrees <= AirlessLandingPhaseManager.AttitudeReadyDegrees;
         }
+
+        public static bool IsReady(double controllerErrorDegrees, double thrustVectorErrorDegrees,
+            double angularVelocityRadiansPerSecond) =>
+            IsReady(controllerErrorDegrees, thrustVectorErrorDegrees) &&
+            Finite(angularVelocityRadiansPerSecond) &&
+            angularVelocityRadiansPerSecond <= SettledAngularVelocityRadiansPerSecond;
 
         public static double CombinedError(double controllerErrorDegrees, double thrustVectorErrorDegrees)
         {
@@ -285,13 +311,13 @@ namespace MuMech
 
     public enum AirlessLandingPhaseManagerPhase
     {
-        Idle, PreparePlaneAlignmentWarp, WarpToPlaneAlignment, AlignPlaneAlignment, PlaneAlignmentBurn, AwaitStrategicReplan,
-        PrepareStrategicWarp, WarpToStrategicBurn, AlignStrategicBurn, StrategicBurn, Coast, Rejected
+        Idle, InitialWarpToPlaneAlignment, PreparePlaneAlignmentWarp, WarpToPlaneAlignment, AlignPlaneAlignment, PlaneAlignmentBurn, AwaitStrategicReplan,
+        InitialWarpToStrategicBurn, PrepareStrategicWarp, WarpToStrategicBurn, AlignStrategicBurn, StrategicBurn, Coast, Rejected
     }
 
     public enum AirlessLandingPhaseDirective
     {
-        None, WarpAuthorized, RequestWarp, ExitWarpAndRequestAttitude, RequestAttitude, RequireFreshStrategicValidation,
+        None, RequestInitialWarp, WarpAuthorized, RequestWarp, ExitWarpAndRequestAttitude, RequestAttitude, RequireFreshStrategicValidation,
         BeginFiniteBurn, RequestFiniteBurnThrottle, FiniteBurnComplete, RequireStrategicReplan, Reject
     }
 

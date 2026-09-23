@@ -346,6 +346,8 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             // Warp is prohibited until the future burn attitude has already
             // converged at 1x. This recovery candidate is already too late
             // for rails, so the same gate advances directly to warp exit.
+            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude,
+                manager.Tick(ignitionUT, true, 0.1, double.NaN).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.WarpAuthorized,
                 manager.Tick(ignitionUT, true, 0.1, double.NaN).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.ExitWarpAndRequestAttitude,

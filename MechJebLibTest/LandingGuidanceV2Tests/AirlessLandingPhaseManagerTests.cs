@@ -13,12 +13,14 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         {
             var manager = new AirlessLandingPhaseManager();
             AirlessLandingPlan plan = Candidate(100, 1000, 1200, 30);
-            Assert.Equal(AirlessLandingPhaseManagerPhase.PrepareStrategicWarp, manager.Start(plan).Phase);
-            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude, manager.Tick(900, true, 120, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseManagerPhase.InitialWarpToStrategicBurn, manager.Start(plan).Phase);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestInitialWarp, manager.Tick(100, true, 120, double.NaN).Directive);
+            Assert.Equal(400, manager.Tick(100, true, 120, double.NaN).WarpUT, 6);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude, manager.Tick(400, true, 120, double.NaN).Directive);
             Assert.Equal(AirlessLandingPhaseManagerPhase.PrepareStrategicWarp, manager.Phase);
-            Assert.Equal(AirlessLandingPhaseDirective.WarpAuthorized, manager.Tick(901, true, 0.1, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.WarpAuthorized, manager.Tick(401, true, 0.1, double.NaN).Directive);
             Assert.Equal(AirlessLandingPhaseManagerPhase.WarpToStrategicBurn, manager.Phase);
-            AirlessLandingPhaseDecision warp = manager.Tick(901.01, true, 90, double.NaN);
+            AirlessLandingPhaseDecision warp = manager.Tick(401.01, true, 90, double.NaN);
             Assert.Equal(AirlessLandingPhaseDirective.RequestWarp, warp.Directive);
             Assert.Equal(980, warp.WarpUT, 6);
         }
@@ -94,6 +96,13 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void FiniteBurnRequiresTheAttitudeToBeSettled()
+        {
+            Assert.True(AirlessBurnAlignmentGate.IsReady(1.0, 1.0, 0.001));
+            Assert.False(AirlessBurnAlignmentGate.IsReady(1.0, 1.0, 0.00101));
+        }
+
+        [Fact]
         public void FiniteBurnDropsThrottleWhenAttitudeLeavesTheAuthorityGate()
         {
             var manager = ReadyForStrategicWarp(1000, 30, 0);
@@ -110,8 +119,9 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         {
             var manager = new AirlessLandingPhaseManager();
             AirlessLandingPlan planePlan = Candidate(100, 1000, 1200, 30, 8, 900);
-            Assert.Equal(AirlessLandingPhaseManagerPhase.PreparePlaneAlignmentWarp, manager.Start(planePlan).Phase);
-            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude, manager.Tick(850, true, 30, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseManagerPhase.InitialWarpToPlaneAlignment, manager.Start(planePlan).Phase);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestInitialWarp, manager.Tick(100, true, 30, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude, manager.Tick(300, true, 30, double.NaN).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.WarpAuthorized, manager.Tick(851, true, 0.1, double.NaN).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.ExitWarpAndRequestAttitude, manager.Tick(880, true, 90, double.NaN).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.BeginFiniteBurn, manager.Tick(900, true, 0.1, 8).Directive);
@@ -119,7 +129,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.Equal(AirlessLandingPhaseDirective.FiniteBurnComplete, manager.Tick(901, true, 0.1, 0.009).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.RequireStrategicReplan, manager.Tick(902, true, 0.1, 0).Directive);
             AirlessLandingPhaseDecision replan = manager.AdoptStrategicReplan(Candidate(102, 1100, 1300, 28));
-            Assert.Equal(AirlessLandingPhaseManagerPhase.PrepareStrategicWarp, replan.Phase);
+            Assert.Equal(AirlessLandingPhaseManagerPhase.InitialWarpToStrategicBurn, replan.Phase);
         }
 
         [Fact]
@@ -144,7 +154,8 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         {
             var manager = new AirlessLandingPhaseManager();
             manager.Start(Candidate(100, strategicUT, strategicUT + 200, strategicDv), lead);
-            Assert.Equal(AirlessLandingPhaseDirective.WarpAuthorized, manager.Tick(800, true, 0.1, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude, manager.Tick(800, true, 0.1, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.WarpAuthorized, manager.Tick(800.01, true, 0.1, double.NaN).Directive);
             return manager;
         }
 
