@@ -20,6 +20,12 @@ namespace MuMech
         private const int RefinementSamples = 360;
         private const double DesiredLongSideFraction = 0.50;
 
+        public static AirlessLandingPlan Planning(LandingGuidanceV2Snapshot snapshot) =>
+            new AirlessLandingPlan(snapshot?.Version ?? -1, AirlessLandingPlanState.Planning, Vector3d.zero,
+                double.NaN, double.NaN, double.NaN, double.NaN, null,
+                snapshot?.AvailableDeltaV ?? double.NaN,
+                "V2 is searching the immutable airless target plan on a background worker.");
+
         public static AirlessLandingPlan Plan(LandingGuidanceV2Snapshot snapshot)
         {
             if (snapshot == null || ReferenceEquals(snapshot.Body, null) || snapshot.IsLandedOrSplashed || snapshot.Body.atmosphere)

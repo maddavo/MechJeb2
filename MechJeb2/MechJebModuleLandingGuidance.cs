@@ -54,13 +54,13 @@ namespace MuMech
 
                 GUILayout.BeginHorizontal();
                 Core.Target.targetLatitude.DrawEditGUI(EditableAngle.Direction.NS);
-                if (GUILayout.Button("▲"))
+                if (GUILayout.Button("â–²"))
                 {
                     MoveByMeter(ref Core.Target.targetLatitude, 10, asl);
                 }
 
                 GUILayout.Label("10m");
-                if (GUILayout.Button("▼"))
+                if (GUILayout.Button("â–¼"))
                 {
                     MoveByMeter(ref Core.Target.targetLatitude, -10, asl);
                 }
@@ -68,13 +68,13 @@ namespace MuMech
                 GUILayout.EndHorizontal();
                 GUILayout.BeginHorizontal();
                 Core.Target.targetLongitude.DrawEditGUI(EditableAngle.Direction.EW);
-                if (GUILayout.Button("◄"))
+                if (GUILayout.Button("â—„"))
                 {
                     MoveByMeter(ref Core.Target.targetLongitude, -10, asl);
                 }
 
                 GUILayout.Label("10m");
-                if (GUILayout.Button("►"))
+                if (GUILayout.Button("â–º"))
                 {
                     MoveByMeter(ref Core.Target.targetLongitude, 10, asl);
                 }
@@ -189,7 +189,7 @@ namespace MuMech
                 return;
 
             GUILayout.Space(4);
-            GUILayout.Label("Landing Guidance V2 — landing plan");
+            GUILayout.Label("Landing Guidance V2 â€” landing plan");
             _v2.PreviewEnabled = GUILayout.Toggle(_v2.PreviewEnabled,
                 "Enable V2 estimator and preflight diagnostics");
 
@@ -244,13 +244,15 @@ namespace MuMech
                 GUILayout.Label("V2 snapshot check: " + assessment.State);
                 GUILayout.Label(assessment.Reason);
                 if (!double.IsNaN(assessment.LocalGravity))
-                    GUILayout.Label("Local gravity: " + assessment.LocalGravity.ToSI() + "m/s²");
+                    GUILayout.Label("Local gravity: " + assessment.LocalGravity.ToSI() + "m/sÂ²");
             }
 
             AirlessLandingPlan airlessPlan = preflight.AirlessPlan;
             if (airlessPlan != null)
             {
-                GUILayout.Label("LANDING PLAN: " + (airlessPlan.State == AirlessLandingPlanState.Candidate ? "FEASIBLE" : "NOT FEASIBLE"));
+                string planState = airlessPlan.State == AirlessLandingPlanState.Candidate ? "FEASIBLE" :
+                    airlessPlan.State == AirlessLandingPlanState.Planning ? "SEARCHING" : "NOT FEASIBLE";
+                GUILayout.Label("LANDING PLAN: " + planState);
                 GUILayout.Label(airlessPlan.Reason);
                 if (!double.IsNaN(airlessPlan.StrategicDeorbitDeltaVMagnitude))
                     GUILayout.Label("Strategic burn: " + airlessPlan.StrategicDeorbitDeltaVMagnitude.ToSI() + "m/s");

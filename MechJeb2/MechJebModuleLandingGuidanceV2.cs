@@ -28,6 +28,13 @@ namespace MuMech
         private ReentrySimulation.Result _lastV1Prediction;
         private ReentrySimulation.Result _lastAtmosphericPlanPrediction;
         private readonly Queue _readyAtmosphericCandidateResults = new Queue();
+        // Airless strategic planning is also worker-owned.  Its input is an
+        // immutable snapshot, so a long Lambert/plane search cannot block a
+        // Unity physics update or make auto-warp stutter.
+        private readonly Queue _readyAirlessPlanningResults = new Queue();
+        private AirlessLandingPlan _lastCompletedAirlessPlan;
+        private bool _airlessPlanningRunning;
+        private long _airlessPlanningGeneration;
         private ReentrySimulation.Result _atmosphericCandidateResult;
         private LandingGuidanceV2Snapshot _atmosphericCandidateSnapshot;
         private AtmosphericLandingPlan _atmosphericCandidatePlan;
@@ -140,6 +147,9 @@ namespace MuMech
             if (!HighLogic.LoadedSceneIsFlight || !Core.Target.PositionTargetExists)
                 return RejectController("Select a landing target before starting V2.");
             SetActiveTarget(Core.Target.targetLatitude, Core.Target.targetLongitude, false);
+            _airlessPlanningGeneration++;
+            _airlessPlanningRunning = false;
+            _lastCompletedAirlessPlan = null;
             _originalTargetLatitude = Core.Target.targetLatitude;
             _originalTargetLongitude = Core.Target.targetLongitude;
             _visualRebaseDone = false;
@@ -803,6 +813,7 @@ namespace MuMech
         public void RefreshPreflight(bool forcePlan = false, bool forceRefresh = false)
         {
             ConsumeAtmosphericCandidateResults();
+            ConsumeAirlessPlanningResults();
             if (!HighLogic.LoadedSceneIsFlight || (!Core.Target.PositionTargetExists && !(_hasActiveTarget && ControllerActive)) ||
                 Vessel == null || MainBody == null)
             {
@@ -848,15 +859,15 @@ namespace MuMech
             if (!retainCommittedAirlessPlan &&
                 (forcePlan || Preflight?.AirlessPlan == null || VesselState.Time >= _nextPlanRefreshUT))
             {
-                Stopwatch planningTimer = Stopwatch.StartNew();
-                airlessPlan = AirlessLandingPlanner.Plan(snapshot);
-                planningTimer.Stop();
-                _lastAirlessPlanningMilliseconds = planningTimer.Elapsed.TotalMilliseconds;
+                if (!_airlessPlanningRunning)
+                    StartAirlessPlanning(snapshot);
+                airlessPlan = _lastCompletedAirlessPlan ?? AirlessLandingPlanner.Planning(snapshot);
                 _nextPlanRefreshUT = VesselState.Time + PlanRefreshInterval;
             }
             else
             {
-                airlessPlan = retainCommittedAirlessPlan ? _activePlan : Preflight.AirlessPlan;
+                airlessPlan = retainCommittedAirlessPlan ? _activePlan :
+                    (_lastCompletedAirlessPlan ?? Preflight.AirlessPlan);
             }
             ReentrySimulation.Result atmosphericEstimate = _atmosphericCandidateResult;
             AtmosphericLandingPlan atmosphericPlan;
@@ -887,6 +898,65 @@ namespace MuMech
                 (forcePlan || _atmosphericCandidatePlan == null || VesselState.Time >= _nextAtmosphericCandidateSimulationUT))
                 StartAtmosphericCandidateSimulation(snapshot, atmosphericPlan);
             WriteCorrelatedTrace(Preflight);
+        }
+
+        private void StartAirlessPlanning(LandingGuidanceV2Snapshot snapshot)
+        {
+            _airlessPlanningRunning = true;
+            long generation = _airlessPlanningGeneration;
+            ThreadPool.QueueUserWorkItem(RunAirlessPlanning,
+                new AirlessPlanningJob(snapshot, generation));
+        }
+
+        private void RunAirlessPlanning(object value)
+        {
+            var job = (AirlessPlanningJob)value;
+            Stopwatch timer = Stopwatch.StartNew();
+            AirlessLandingPlan plan;
+            try { plan = AirlessLandingPlanner.Plan(job.Snapshot); }
+            catch (Exception ex)
+            {
+                plan = new AirlessLandingPlan(job.Snapshot.Version, AirlessLandingPlanState.Rejected,
+                    Vector3d.zero, double.NaN, double.NaN, double.NaN, double.NaN, null,
+                    job.Snapshot.AvailableDeltaV, "V2 airless planner worker failed: " + ex.GetType().Name);
+            }
+            timer.Stop();
+            lock (_readyAirlessPlanningResults)
+                _readyAirlessPlanningResults.Enqueue(new AirlessPlanningResult(job.Snapshot, plan, job.Generation,
+                    timer.Elapsed.TotalMilliseconds));
+        }
+
+        private void ConsumeAirlessPlanningResults()
+        {
+            lock (_readyAirlessPlanningResults)
+            {
+                while (_readyAirlessPlanningResults.Count > 0)
+                {
+                    var completed = (AirlessPlanningResult)_readyAirlessPlanningResults.Dequeue();
+                    if (completed.Generation != _airlessPlanningGeneration) continue;
+                    _airlessPlanningRunning = false;
+                    _lastCompletedAirlessPlan = completed.Plan;
+                    _lastAirlessPlanningMilliseconds = completed.DurationMilliseconds;
+                }
+            }
+        }
+
+        private sealed class AirlessPlanningJob
+        {
+            public readonly LandingGuidanceV2Snapshot Snapshot;
+            public readonly long Generation;
+            public AirlessPlanningJob(LandingGuidanceV2Snapshot snapshot, long generation)
+            { Snapshot = snapshot; Generation = generation; }
+        }
+
+        private sealed class AirlessPlanningResult
+        {
+            public readonly LandingGuidanceV2Snapshot Snapshot;
+            public readonly AirlessLandingPlan Plan;
+            public readonly long Generation;
+            public readonly double DurationMilliseconds;
+            public AirlessPlanningResult(LandingGuidanceV2Snapshot snapshot, AirlessLandingPlan plan, long generation, double durationMilliseconds)
+            { Snapshot = snapshot; Plan = plan; Generation = generation; DurationMilliseconds = durationMilliseconds; }
         }
 
         // This is deliberately a V2-owned simulation job.  The legacy landing
