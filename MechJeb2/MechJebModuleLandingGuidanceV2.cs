@@ -296,6 +296,8 @@ namespace MuMech
                     break;
                 case V2FlightPhase.WarpToStrategic:
                     Core.Thrust.ThrustOff();
+                    bool leavingInitialWarp = _airlessPhaseManager.Phase == AirlessLandingPhaseManagerPhase.InitialWarpToPlaneAlignment ||
+                        _airlessPhaseManager.Phase == AirlessLandingPhaseManagerPhase.InitialWarpToStrategicBurn;
                     // A burn attitude is acquired before V2 is permitted to
                     // enter rails.  The phase manager returns no warp command
                     // until this observation is inside its authority gate.
@@ -322,8 +324,19 @@ namespace MuMech
                         Core.Warp.WarpToUT(warpDecision.WarpUT);
                         break;
                     }
+                    if (warpDecision.Directive == AirlessLandingPhaseDirective.RequestInitialWarp)
+                    {
+                        Core.Warp.WarpToUT(warpDecision.WarpUT);
+                        ControllerStatus = "V2 is coarse-warping to the 10-minute pre-burn alignment gate.";
+                        break;
+                    }
                     if (warpDecision.Directive == AirlessLandingPhaseDirective.RequestAttitude)
                     {
+                        if (leavingInitialWarp)
+                        {
+                            Core.Warp.MinimumWarp(true);
+                            RefreshPreflight(false, true);
+                        }
                         ControllerStatus = "V2 is holding at 1x until the next finite burn attitude is confirmed before warp.";
                         break;
                     }
@@ -473,7 +486,7 @@ namespace MuMech
                     Core.Thrust.ThrustOff();
                     Core.Attitude.attitudeTo(_trimDeltaV, AttitudeReference.INERTIAL_COT, this);
                     _commandedV2AttitudeVector = _trimDeltaV;
-                    if (AirlessBurnAlignmentGate.IsReady(Core.Attitude.attitudeError, ThrustVectorAlignmentError(_trimDeltaV)))
+                    if (BurnAlignmentReady(_trimDeltaV))
                     {
                         BeginFiniteBurn("bounded_trim", _trimDeltaV.magnitude);
                         TransitionTo(V2FlightPhase.BoundedTrim, "Executing one bounded V2 trim burn.");
@@ -482,7 +495,7 @@ namespace MuMech
                 case V2FlightPhase.BoundedTrim:
                     Core.Attitude.attitudeTo(_trimDeltaV, AttitudeReference.INERTIAL_COT, this);
                     _commandedV2AttitudeVector = _trimDeltaV;
-                    if (!AirlessBurnAlignmentGate.IsReady(Core.Attitude.attitudeError, ThrustVectorAlignmentError(_trimDeltaV)))
+                    if (!BurnAlignmentReady(_trimDeltaV))
                     {
                         Core.Thrust.ThrustOff();
                         TransitionTo(V2FlightPhase.AlignTrim,
@@ -600,8 +613,7 @@ namespace MuMech
                     Core.Thrust.ThrustOff();
                     Core.Attitude.attitudeTo(_atmosphericCandidatePlan.StrategicEntryDeltaV, AttitudeReference.INERTIAL_COT, this);
                     _commandedV2AttitudeVector = _atmosphericCandidatePlan.StrategicEntryDeltaV;
-                    if (AirlessBurnAlignmentGate.IsReady(Core.Attitude.attitudeError,
-                        ThrustVectorAlignmentError(_atmosphericCandidatePlan.StrategicEntryDeltaV)))
+                    if (BurnAlignmentReady(_atmosphericCandidatePlan.StrategicEntryDeltaV))
                     {
                         BeginFiniteBurn("atmospheric_strategic_entry", _atmosphericCandidatePlan.StrategicEntryDeltaV.magnitude);
                         TransitionTo(V2FlightPhase.AtmosphericEntryBurn, "Executing the finite V2 atmospheric entry burn.");
@@ -611,8 +623,7 @@ namespace MuMech
                     Core.Attitude.attitudeTo(_atmosphericCandidatePlan.StrategicEntryDeltaV, AttitudeReference.INERTIAL_COT, this);
                     _commandedV2AttitudeVector = _atmosphericCandidatePlan.StrategicEntryDeltaV;
                     double remainingEntryDv = RemainingFiniteBurnDeltaV;
-                    if (!AirlessBurnAlignmentGate.IsReady(Core.Attitude.attitudeError,
-                        ThrustVectorAlignmentError(_atmosphericCandidatePlan.StrategicEntryDeltaV)))
+                    if (!BurnAlignmentReady(_atmosphericCandidatePlan.StrategicEntryDeltaV))
                     {
                         Core.Thrust.ThrustOff();
                         ControllerStatus = "V2 paused the atmospheric entry burn until measured thrust-vector alignment is restored.";
@@ -959,9 +970,14 @@ namespace MuMech
             return Vector3d.Angle(VesselState.ThrustForward, commandedVector);
         }
 
-        private double BurnAlignmentError(Vector3d commandedVector) =>
-            AirlessBurnAlignmentGate.CombinedError(Core.Attitude?.attitudeError ?? double.PositiveInfinity,
-                ThrustVectorAlignmentError(commandedVector));
+        private bool BurnAlignmentReady(Vector3d commandedVector) =>
+            AirlessBurnAlignmentGate.IsReady(Core.Attitude?.attitudeError ?? double.PositiveInfinity,
+                ThrustVectorAlignmentError(commandedVector), Vessel?.angularVelocity.magnitude ?? double.PositiveInfinity);
+
+        private double BurnAlignmentError(Vector3d commandedVector) => BurnAlignmentReady(commandedVector)
+            ? AirlessBurnAlignmentGate.CombinedError(Core.Attitude?.attitudeError ?? double.PositiveInfinity,
+                ThrustVectorAlignmentError(commandedVector))
+            : double.PositiveInfinity;
 
         private void BeginFiniteBurn(string name, double plannedDeltaV)
         {
@@ -1430,11 +1446,11 @@ namespace MuMech
                     JsonNumber(_phaseBurnPlannedDeltaV), JsonNumber(_finiteBurnProgress?.DeliveredDeltaV ?? double.NaN));
                 double thrustVectorError = ThrustVectorAlignmentError(_commandedV2AttitudeVector);
                 baseFields += string.Format(CultureInfo.InvariantCulture,
-                    ",\"v2CommandedAttitudeVector\":[{0},{1},{2}],\"v2MeasuredThrustForward\":[{3},{4},{5}],\"v2ThrustVectorAlignmentErrorDegrees\":{6},\"v2BurnAlignmentReady\":{7}",
+                    ",\"v2CommandedAttitudeVector\":[{0},{1},{2}],\"v2MeasuredThrustForward\":[{3},{4},{5}],\"v2ThrustVectorAlignmentErrorDegrees\":{6},\"v2AngularVelocityRadiansPerSecond\":{7},\"v2BurnAlignmentReady\":{8}",
                     JsonNumber(_commandedV2AttitudeVector.x), JsonNumber(_commandedV2AttitudeVector.y), JsonNumber(_commandedV2AttitudeVector.z),
                     JsonNumber(VesselState.ThrustForward.x), JsonNumber(VesselState.ThrustForward.y), JsonNumber(VesselState.ThrustForward.z),
-                    JsonNumber(thrustVectorError),
-                    AirlessBurnAlignmentGate.IsReady(Core.Attitude?.attitudeError ?? double.PositiveInfinity, thrustVectorError) ? "true" : "false");
+                    JsonNumber(thrustVectorError), JsonNumber(Vessel?.angularVelocity.magnitude ?? double.NaN),
+                    BurnAlignmentReady(_commandedV2AttitudeVector) ? "true" : "false");
                 baseFields += string.Format(CultureInfo.InvariantCulture,
                     ",\"airlessPlanSnapshotVersion\":{0},\"activeAirlessPlanSnapshotVersion\":{1},\"atmosphericPlanSnapshotVersion\":{2},\"airlessPlanningDurationMilliseconds\":{3},\"phaseManagerWorkUnits\":{4}",
                     airlessPlan?.SnapshotVersion ?? -1, _activePlan?.SnapshotVersion ?? -1,
