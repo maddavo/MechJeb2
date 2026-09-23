@@ -336,6 +336,21 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.InRange(Math.Abs(velocity.y), 0, 2.0);
         }
 
+        [Theory]
+        [InlineData(0.49, 10.0, 300.0, 800.0, -45.0)]
+        [InlineData(1.63, 30.0, 600.0, 1000.0, -80.0)]
+        [InlineData(7.85, 45.0, 500.0, 1200.0, -90.0)]
+        public void TerminalPolicyNumericalDescentHandlesGenericAirlessGravityAndThrust(double gravity,
+            double maximumAcceleration, double lateralError, double altitude, double verticalVelocity)
+        {
+            SimulateTerminalDescent(lateralError, altitude, verticalVelocity, gravity, maximumAcceleration,
+                out bool touchedDown, out Vector3d position, out Vector3d velocity);
+            Assert.True(touchedDown);
+            Assert.InRange(Math.Abs(position.x), 0, 15);
+            Assert.InRange(Math.Abs(velocity.x), 0, 3.0);
+            Assert.InRange(Math.Abs(velocity.y), 0, 2.0);
+        }
+
         private static LandingGuidanceV2Snapshot Snapshot(long version, double ut, double maximumAcceleration)
         {
             var body = (CelestialBody)FormatterServices.GetUninitializedObject(typeof(CelestialBody));
