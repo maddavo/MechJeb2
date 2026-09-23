@@ -84,6 +84,16 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void FiniteBurnRequiresMeasuredThrustVectorAsWellAsControllerAlignment()
+        {
+            Assert.True(AirlessBurnAlignmentGate.IsReady(1.9, 1.9));
+            Assert.False(AirlessBurnAlignmentGate.IsReady(1.9, 2.1));
+            Assert.False(AirlessBurnAlignmentGate.IsReady(2.1, 1.9));
+            Assert.Equal(2.1, AirlessBurnAlignmentGate.CombinedError(1.9, 2.1), 6);
+            Assert.True(double.IsPositiveInfinity(AirlessBurnAlignmentGate.CombinedError(double.NaN, 0.1)));
+        }
+
+        [Fact]
         public void FiniteBurnDropsThrottleWhenAttitudeLeavesTheAuthorityGate()
         {
             var manager = ReadyForStrategicWarp(1000, 30, 0);
