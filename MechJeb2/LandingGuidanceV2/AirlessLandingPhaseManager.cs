@@ -13,9 +13,9 @@ namespace MuMech
         public const double WarpSettleMargin = 20.0;
         public const double AttitudeReadyDegrees = 2.0;
         // Completion must be materially tighter than the landing corridor.
-        // The thrust controller ramps down for the final portion, while this
-        // tolerance only absorbs a final physics-frame sample.
-        public const double BurnCompleteDeltaV = 0.10;
+        // The thrust controller ramps down for the final portion; this is only
+        // the residual which permits releasing finite-burn authority.
+        public const double BurnCompleteDeltaV = 0.01;
 
         private AirlessLandingPlan _plan;
         private bool _strategicGateValidated;
