@@ -63,6 +63,14 @@ namespace MuMech
         private double _originalTargetLatitude;
         private double _originalTargetLongitude;
         private bool _hasActiveTarget;
+        // The target's body-fixed coordinates are immutable through a plan.
+        // This inertial reference and epoch are captured only when the user
+        // starts V2 or V2 explicitly rebases/diverts locally. Fresh vessel
+        // snapshots must retain them so a burn-gate validation evaluates the
+        // same rotating target that authorized the original plan.
+        private double _targetReferenceUT = double.NaN;
+        private Vector3d _targetReferencePosition;
+        private bool _hasTargetReference;
         private bool _visualRebaseDone;
         private LandingSiteAssessment _siteAssessment;
         private string _pendingTargetEvent;
@@ -737,6 +745,12 @@ namespace MuMech
             _activeTargetLatitude = latitude;
             _activeTargetLongitude = longitude;
             _hasActiveTarget = true;
+            if (MainBody != null && VesselState != null)
+            {
+                _targetReferenceUT = VesselState.Time;
+                _targetReferencePosition = MainBody.GetWorldSurfacePosition(latitude, longitude, 0) - MainBody.position;
+                _hasTargetReference = true;
+            }
             if (traceEvent) _pendingTargetEvent = _visualRebaseDone ? "visual_rebase_or_divert" : "target_initialized";
         }
 
@@ -1091,8 +1105,13 @@ namespace MuMech
         {
             Core.StageStats.RequestUpdate();
             double availableDeltaV = Core.StageStats.VacStats.Sum(s => s.DeltaV);
-            Vector3d targetReferencePosition = MainBody.GetWorldSurfacePosition(V2ActiveTargetLatitude,
-                V2ActiveTargetLongitude, 0) - MainBody.position;
+            if (!_hasTargetReference)
+            {
+                _targetReferenceUT = VesselState.Time;
+                _targetReferencePosition = MainBody.GetWorldSurfacePosition(V2ActiveTargetLatitude,
+                    V2ActiveTargetLongitude, 0) - MainBody.position;
+                _hasTargetReference = true;
+            }
             double targetTerrainAltitude;
             try { targetTerrainAltitude = Math.Max(0, MainBody.TerrainAltitude(V2ActiveTargetLatitude, V2ActiveTargetLongitude, true)); }
             catch (Exception) { targetTerrainAltitude = double.NaN; }
@@ -1101,7 +1120,7 @@ namespace MuMech
                 VesselState.OrbitalPosition, VesselState.OrbitalVelocity, VesselState.Mass, availableDeltaV,
                 VesselState.LimitedMaxThrustAcceleration, VesselState.MinThrustAcceleration,
                 V2ActiveTargetLatitude, V2ActiveTargetLongitude,
-                Vessel.LandedOrSplashed, VesselState.Time, targetReferencePosition, true, targetTerrainAltitude);
+                Vessel.LandedOrSplashed, _targetReferenceUT, _targetReferencePosition, _hasTargetReference, targetTerrainAltitude);
         }
 
         private void WriteCorrelatedTrace(LandingGuidanceV2Preflight preflight)
