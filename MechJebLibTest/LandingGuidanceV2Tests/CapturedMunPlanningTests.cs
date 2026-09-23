@@ -289,6 +289,34 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.Equal(plan.StrategicBurnUT, validated.StrategicBurnUT, 6);
         }
 
+        [Fact]
+        public void RecordedPostStrategicResidualUsesProtectedRecoveryTrim()
+        {
+            // Trace record 207 from the unsafe 2026-09-23 V2 run. The finite
+            // strategic burn had completed, left a valid impact 3.4 km from
+            // target, and still had 781 m/s available. This state must remain
+            // under V2 terminal authority rather than releasing the vessel.
+            var postStrategic = new LandingGuidanceV2Snapshot(207, 24108858.121950, CreateMun(),
+                new Vector3d(236476.931661, -3764.218582, 34012.301134),
+                new Vector3d(-73.017664, -1.625097, 488.587856),
+                35.715261, 781.342521, 27.999233, 0, 0.165, -130.626389, false,
+                24108734.322233, new Vector3d(-95401.528904, 575.957857, 175778.885408), true, 4350.290494);
+            AirlessLandingPlan committed = AirlessLandingPlanner.Plan(RecordedMunSnapshot());
+            Assert.True(committed.State == AirlessLandingPlanState.Candidate, committed.Reason);
+            LandingGuidanceV2Estimate before = AirlessImpactEstimator.Estimate(postStrategic);
+            Assert.True(before.HasImpact);
+            Assert.True(before.TargetError > committed.CorridorLimit);
+
+            // This snapshot is deliberately conservative enough that the
+            // reserve calculation cannot prove a terminal allocation. The
+            // required result is controlled contingency, never a rejected
+            // controller which releases the vessel onto the impact trajectory.
+            AirlessPostBurnDecision decision = AirlessLandingPlanner.DecidePostBurn(postStrategic, committed, true);
+            Assert.Equal(AirlessPostBurnAction.ControlledTerminalContingency, decision.Action);
+            Assert.True(decision.Estimate.HasImpact);
+            Assert.Contains("retained controlled terminal authority", decision.Reason);
+        }
+
         private static LandingGuidanceV2Snapshot RecordedMunSnapshot()
         {
             const double ut = 24108762.642232;

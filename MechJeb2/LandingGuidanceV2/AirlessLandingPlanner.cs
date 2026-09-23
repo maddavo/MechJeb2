@@ -7,6 +7,25 @@ using UnityEngine;
 
 namespace MuMech
 {
+    public enum AirlessPostBurnAction { Coast, RecoveryTrim, ControlledTerminalContingency }
+
+    /// <summary>
+    /// A deterministic post-burn decision. Once a finite airless deorbit burn
+    /// has begun, no result in this decision authorizes an uncontrolled exit.
+    /// </summary>
+    public sealed class AirlessPostBurnDecision
+    {
+        public readonly AirlessPostBurnAction Action;
+        public readonly Vector3d Correction;
+        public readonly LandingGuidanceV2Estimate Estimate;
+        public readonly double RecoveryBudget;
+        public readonly string Reason;
+
+        public AirlessPostBurnDecision(AirlessPostBurnAction action, Vector3d correction,
+            LandingGuidanceV2Estimate estimate, double recoveryBudget, string reason)
+        { Action = action; Correction = correction; Estimate = estimate; RecoveryBudget = recoveryBudget; Reason = reason; }
+    }
+
     /// <summary>
     /// Searches a future burn epoch and the complete strategic burn vector for
     /// a target-relative, long-side impact corridor on an airless body.
@@ -180,6 +199,35 @@ namespace MuMech
             return true;
         }
 
+        public static AirlessPostBurnDecision DecidePostBurn(LandingGuidanceV2Snapshot snapshot,
+            AirlessLandingPlan committedPlan, bool allowRecoveryTrim)
+        {
+            LandingGuidanceV2Estimate estimate = snapshot == null ? null : AirlessImpactEstimator.Estimate(snapshot);
+            if (estimate == null || !estimate.HasImpact)
+                return new AirlessPostBurnDecision(AirlessPostBurnAction.ControlledTerminalContingency,
+                    Vector3d.zero, estimate, 0,
+                    "V2 lost the predicted impact after its finite burn and retained controlled terminal authority.");
+            if (estimate.TargetError <= committedPlan.CorridorLimit)
+                return new AirlessPostBurnDecision(AirlessPostBurnAction.Coast, Vector3d.zero, estimate, 0,
+                    "Strategic deorbit is inside the accepted target corridor; coasting to V2 braking approach.");
+            if (allowRecoveryTrim && TryPlanRecoveryTrim(snapshot, committedPlan, out Vector3d correction,
+                    out LandingGuidanceV2Estimate recovered, out double recoveryBudget))
+                return new AirlessPostBurnDecision(AirlessPostBurnAction.RecoveryTrim, correction, recovered,
+                    recoveryBudget, "V2 found a reserve-protected recovery trim after the strategic burn.");
+            if (CanContinueToTerminal(snapshot, committedPlan, out string continuationReason))
+                return new AirlessPostBurnDecision(AirlessPostBurnAction.Coast, Vector3d.zero, estimate, 0,
+                    continuationReason);
+            return new AirlessPostBurnDecision(AirlessPostBurnAction.ControlledTerminalContingency,
+                Vector3d.zero, estimate, 0,
+                "V2 could not prove the residual correction budget and retained controlled terminal authority.");
+        }
+
+        /// <summary>
+        /// Searches a bounded post-deorbit correction in the full local orbital
+        /// frame.  A long-range error cannot be corrected reliably by a single
+        /// along-track nudge: radial, normal, and combined directions change
+        /// the next surface crossing in different ways.
+        /// </summary>
         public static bool TryPlanBoundedTrim(LandingGuidanceV2Snapshot snapshot, double trimBudget,
             out Vector3d correction, out LandingGuidanceV2Estimate improvedEstimate)
         {
@@ -188,20 +236,35 @@ namespace MuMech
             if (snapshot == null || trimBudget <= 0) return false;
             LandingGuidanceV2Estimate current = AirlessImpactEstimator.Estimate(snapshot);
             if (!current.HasImpact) return false;
-            Vector3d direction = Vector3d.Exclude(snapshot.Position.normalized,
-                TargetAt(snapshot, current.ImpactUT) - snapshot.Position);
-            if (direction.sqrMagnitude < 1e-9) return false;
-            direction.Normalize();
+
+            Vector3d radial = snapshot.Position.normalized;
+            Vector3d prograde = Vector3d.Exclude(radial, snapshot.Velocity);
+            if (prograde.sqrMagnitude < 1e-9) return false;
+            prograde.Normalize();
+            Vector3d normal = Vector3d.Cross(radial, prograde);
+            if (normal.sqrMagnitude < 1e-9) return false;
+            normal.Normalize();
+
             double bestError = current.TargetError;
-            for (int i = 1; i <= 8; ++i)
+            // The full signed cube supplies the six axes, twelve planar
+            // diagonals, and eight three-axis directions.  It is small enough
+            // for a physics tick and deterministic for trace replay.
+            for (int radialSign = -1; radialSign <= 1; ++radialSign)
+            for (int progradeSign = -1; progradeSign <= 1; ++progradeSign)
+            for (int normalSign = -1; normalSign <= 1; ++normalSign)
             {
-                double magnitude = trimBudget * i / 8.0;
-                for (int sign = -1; sign <= 1; sign += 2)
+                if (radialSign == 0 && progradeSign == 0 && normalSign == 0) continue;
+                Vector3d direction = radialSign * radial + progradeSign * prograde + normalSign * normal;
+                direction.Normalize();
+                for (int i = 1; i <= 32; ++i)
                 {
-                    Vector3d candidateBurn = sign * magnitude * direction;
+                    double magnitude = trimBudget * i / 32.0;
+                    Vector3d candidateBurn = magnitude * direction;
                     var candidateSnapshot = new LandingGuidanceV2Snapshot(snapshot.Version, snapshot.UT, snapshot.Body,
                         snapshot.Position, snapshot.Velocity + candidateBurn, snapshot.Mass, snapshot.AvailableDeltaV,
-                        snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude, snapshot.TargetLongitude, false, snapshot.TargetReferenceUT, snapshot.TargetReferencePosition, snapshot.HasTargetReferencePosition, snapshot.TargetTerrainAltitude);
+                        snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude, snapshot.TargetLongitude, false,
+                        snapshot.TargetReferenceUT, snapshot.TargetReferencePosition, snapshot.HasTargetReferencePosition,
+                        snapshot.TargetTerrainAltitude);
                     LandingGuidanceV2Estimate candidate = AirlessImpactEstimator.Estimate(candidateSnapshot);
                     if (!candidate.HasImpact || candidate.TargetError >= bestError) continue;
                     correction = candidateBurn;
@@ -210,6 +273,73 @@ namespace MuMech
                 }
             }
             return improvedEstimate != null;
+        }
+
+        /// <summary>
+        /// Returns a recovery trim that can use only delta-v left after the
+        /// current terminal braking, local-divert reserve, and contingency have
+        /// been protected.  This is used after an executed finite strategic
+        /// burn, when a rail/finite-burn mismatch leaves a larger residual than
+        /// the original two metre-per-second trim allocation.
+        /// </summary>
+        public static bool TryPlanRecoveryTrim(LandingGuidanceV2Snapshot snapshot, AirlessLandingPlan committedPlan,
+            out Vector3d correction, out LandingGuidanceV2Estimate improvedEstimate, out double recoveryBudget)
+        {
+            correction = Vector3d.zero;
+            improvedEstimate = null;
+            recoveryBudget = 0;
+            if (snapshot == null || committedPlan == null) return false;
+            LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(snapshot);
+            if (!estimate.HasImpact) return false;
+
+            double radius = estimate.ImpactPosition.magnitude;
+            double gravity = radius > 0 ? snapshot.Body.gravParameter / (radius * radius) : double.NaN;
+            double impactSpeed = SurfaceRelativeImpactVelocity(snapshot, estimate).magnitude;
+            AirlessLandingBudget terminalBudget = AirlessLandingBudget.For(0, impactSpeed, snapshot.MaximumAcceleration,
+                gravity, estimate.TargetError, committedPlan.CorridorLimit, snapshot.MinimumAcceleration);
+            if (double.IsInfinity(terminalBudget.Total) || double.IsNaN(terminalBudget.Total)) return false;
+
+            // Retain the whole protected terminal allocation.  The cap avoids
+            // turning a recovery trim into a second strategic burn.
+            double protectedTerminal = terminalBudget.Terminal + terminalBudget.Reserve + terminalBudget.Contingency;
+            recoveryBudget = Math.Max(0, Math.Min(35.0, snapshot.AvailableDeltaV - protectedTerminal));
+            if (recoveryBudget < Math.Max(0.25, committedPlan.TrimBudget)) return false;
+            return TryPlanBoundedTrim(snapshot, recoveryBudget, out correction, out improvedEstimate);
+        }
+
+        /// <summary>
+        /// Checks whether an off-corridor but valid post-burn impact may remain
+        /// under V2 terminal control.  It deliberately protects braking,
+        /// divert, and contingency allocations; it never authorizes a release
+        /// of guidance merely because the strategic corridor was missed.
+        /// </summary>
+        public static bool CanContinueToTerminal(LandingGuidanceV2Snapshot snapshot, AirlessLandingPlan committedPlan,
+            out string reason)
+        {
+            reason = null;
+            if (snapshot == null || committedPlan == null)
+            {
+                reason = "V2 has no committed airless plan for terminal continuation.";
+                return false;
+            }
+            LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(snapshot);
+            if (!estimate.HasImpact)
+            {
+                reason = "V2 has no valid post-burn impact trajectory for terminal continuation.";
+                return false;
+            }
+            double radius = estimate.ImpactPosition.magnitude;
+            double gravity = radius > 0 ? snapshot.Body.gravParameter / (radius * radius) : double.NaN;
+            AirlessLandingBudget terminalBudget = AirlessLandingBudget.For(0,
+                SurfaceRelativeImpactVelocity(snapshot, estimate).magnitude, snapshot.MaximumAcceleration, gravity,
+                estimate.TargetError, committedPlan.CorridorLimit, snapshot.MinimumAcceleration);
+            if (!terminalBudget.Fits(snapshot.AvailableDeltaV))
+            {
+                reason = "V2 cannot protect the current terminal braking and divert reserve.";
+                return false;
+            }
+            reason = "V2 retained terminal braking, divert, and contingency reserve after the strategic correction.";
+            return true;
         }
 
         private static void Consider(Candidate candidate, double availableDeltaV, ref Candidate best, ref double bestScore)

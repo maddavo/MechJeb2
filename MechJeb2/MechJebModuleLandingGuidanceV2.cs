@@ -72,6 +72,11 @@ namespace MuMech
         private Vector3d _targetReferencePosition;
         private bool _hasTargetReference;
         private bool _visualRebaseDone;
+        // Set as soon as V2 commits a finite airless deorbit burn. From this
+        // point V2 must retain controlled flight through a terminal outcome;
+        // it may not release an impact trajectory because a correction gate
+        // failed.
+        private bool _airlessDescentCommitted;
         private LandingSiteAssessment _siteAssessment;
         private string _pendingTargetEvent;
         private const double VisualAssessmentAltitude = 750.0;
@@ -161,6 +166,7 @@ namespace MuMech
             _originalTargetLatitude = Core.Target.targetLatitude;
             _originalTargetLongitude = Core.Target.targetLongitude;
             _visualRebaseDone = false;
+            _airlessDescentCommitted = false;
             _siteAssessment = null;
             if (MainBody.atmosphere)
             {
@@ -214,6 +220,11 @@ namespace MuMech
             // A rejected start has not acquired V2 authority and must not
             // change a player's manual warp. An active V2 run releases its
             // own warp, thrust and attitude authority together.
+            if (ControllerActive && _airlessDescentCommitted && Vessel != null && !Vessel.LandedOrSplashed)
+            {
+                EnterAirlessTerminalContingency(reason);
+                return false;
+            }
             if (ControllerActive) ReleaseV2Control();
             else ClearAtmosphericCandidateResult();
             TransitionTo(V2FlightPhase.Rejected, reason);
@@ -381,6 +392,7 @@ namespace MuMech
                     if (strategicAlignDecision.Directive == AirlessLandingPhaseDirective.BeginFiniteBurn)
                     {
                         BeginFiniteBurn("strategic_deorbit", _activePlan.StrategicDeorbitDeltaVMagnitude);
+                        _airlessDescentCommitted = true;
                         TransitionTo(V2FlightPhase.StrategicBurn, "Executing V2 strategic deorbit burn.");
                     }
                     break;
@@ -401,22 +413,19 @@ namespace MuMech
                     }
                     Core.Thrust.ThrustOff();
                     RefreshPreflight(false, true);
-                    if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact)
-                    {
-                        RejectController("V2 strategic burn did not produce a fresh valid impact trajectory.");
-                        break;
-                    }
                     LandingGuidanceV2Snapshot trimSnapshot = CaptureSnapshot();
-                    if (Preflight.Estimate.TargetError > _activePlan.CorridorLimit &&
-                        AirlessLandingPlanner.TryPlanBoundedTrim(trimSnapshot, _activePlan.TrimBudget, out _trimDeltaV, out LandingGuidanceV2Estimate trimEstimate))
+                    AirlessPostBurnDecision postBurn = AirlessLandingPlanner.DecidePostBurn(trimSnapshot, _activePlan, true);
+                    if (postBurn.Action == AirlessPostBurnAction.RecoveryTrim)
                     {
+                        _trimDeltaV = postBurn.Correction;
                         _burnTargetVelocity = VesselState.OrbitalVelocity + _trimDeltaV;
-                        TransitionTo(V2FlightPhase.AlignTrim, "A bounded V2 trim improved the fresh target estimate.");
+                        TransitionTo(V2FlightPhase.AlignTrim,
+                            postBurn.Reason + " Budget " + postBurn.RecoveryBudget.ToString("F1", CultureInfo.InvariantCulture) + " m/s.");
                     }
-                    else if (Preflight.Estimate.TargetError <= _activePlan.CorridorLimit)
-                        TransitionTo(V2FlightPhase.Coast, "Strategic deorbit complete; coasting to V2 braking approach.");
+                    else if (postBurn.Action == AirlessPostBurnAction.Coast)
+                        TransitionTo(V2FlightPhase.Coast, postBurn.Reason);
                     else
-                        RejectController("V2 target error is outside the corridor and no bounded trim is feasible.");
+                        EnterAirlessTerminalContingency(postBurn.Reason);
                     break;
                 case V2FlightPhase.AlignTrim:
                     Core.Thrust.ThrustOff();
@@ -433,15 +442,12 @@ namespace MuMech
                     {
                         Core.Thrust.ThrustOff();
                         RefreshPreflight();
-                        if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact)
-                        {
-                            RejectController("V2 trim did not retain a valid impact trajectory.");
-                            break;
-                        }
-                        if (Preflight.Estimate.TargetError > _activePlan.CorridorLimit)
-                            RejectController("V2 trim did not bring the target estimate inside the accepted corridor.");
+                        LandingGuidanceV2Snapshot postTrimSnapshot = CaptureSnapshot();
+                        AirlessPostBurnDecision postTrim = AirlessLandingPlanner.DecidePostBurn(postTrimSnapshot, _activePlan, false);
+                        if (postTrim.Action == AirlessPostBurnAction.Coast)
+                            TransitionTo(V2FlightPhase.Coast, "Bounded V2 trim complete. " + postTrim.Reason);
                         else
-                            TransitionTo(V2FlightPhase.Coast, "Bounded V2 trim complete; coasting to braking approach.");
+                            EnterAirlessTerminalContingency(postTrim.Reason);
                     }
                     else Core.Thrust.ThrustForDv(Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _trimDeltaV.normalized), 0.5);
                     break;
@@ -449,7 +455,12 @@ namespace MuMech
                     Core.Thrust.ThrustOff();
                     if (double.IsNaN(Core.Hoverslam.IgnitionUT) || double.IsInfinity(Core.Hoverslam.IgnitionUT))
                     {
-                        RejectController("V2 terminal-braking simulation has no ignition solution.");
+                        // Keep V2 authority while the terminal solution is
+                        // refreshed. A transient hoverslam gap after a finite
+                        // burn must not release an impact trajectory.
+                        Core.Attitude.attitudeTo(-VesselState.SurfaceVelocity, AttitudeReference.INERTIAL_COT, this);
+                        ControllerStatus = "V2 retained coast control while refreshing its terminal-braking solution.";
+                        RefreshPreflight(false, true);
                         break;
                     }
                     Core.Attitude.attitudeTo(Core.Hoverslam.IgnitionAttitude, AttitudeReference.INERTIAL_COT, this);
@@ -585,6 +596,19 @@ namespace MuMech
             }
         }
 
+        private void EnterAirlessTerminalContingency(string reason)
+        {
+            Core.Warp.MinimumWarp(true);
+            Core.Thrust.Users.Add(this);
+            Core.Attitude.Users.Add(this);
+            _lastAdjustedVelocity = new Vector3d(double.NaN, double.NaN, double.NaN);
+            // Coast preserves the normal hoverslam ignition gate. Starting
+            // full braking immediately from high altitude would trade a
+            // rejected trajectory for a worse one.
+            TransitionTo(V2FlightPhase.Coast,
+                "V2 retained controlled terminal descent after an airless contingency: " + reason);
+        }
+
         private void TickTerminalDivert()
         {
             Vector3d velocityError = TerminalVelocityError();
@@ -633,22 +657,25 @@ namespace MuMech
                 RejectController("V2 local visual assessment has no valid impact estimate.");
                 return;
             }
-            if (Preflight.Estimate.TargetError > VisualRebaseAccuracyLimit)
-            {
-                RejectController("V2 approach is outside the visual-rebase accuracy gate.");
-                return;
-            }
+            // The terminal assessment is the controlled recovery point after a
+            // valid strategic impact. If a residual remains outside the normal
+            // visual-rebase accuracy gate, rebase to the current predicted
+            // surface point and keep V2 braking/landing authority. The trace
+            // records this explicitly; an airborne vessel is never released
+            // onto an impact trajectory for a planning-corridor failure.
+            bool contingencyRebase = Preflight.Estimate.TargetError > VisualRebaseAccuracyLimit;
             MainBody.GetLatLngAltAtUT(Preflight.Estimate.ImpactUT, Preflight.Estimate.ImpactPosition, out double latitude, out double longitude, out _);
             SetActiveTarget(latitude, longitude, true);
             _visualRebaseDone = true;
-            _pendingTargetEvent = "visual_rebase";
+            _pendingTargetEvent = contingencyRebase ? "terminal_contingency_rebase" : "visual_rebase";
             _siteAssessment = AssessLocalSite(latitude, longitude);
-            if (!_siteAssessment.Accepted)
-            {
-                RejectController("V2 local site assessment rejected the rebased target: " + _siteAssessment.Detail);
-                return;
-            }
-            TransitionTo(V2FlightPhase.TerminalDivert, "V2 visual rebase complete; terminal-divert guidance is tracking the assessed local target.");
+            // Terrain assessment informs the trace and target choice. At this
+            // late powered gate it must not abandon an already committed
+            // descent; terminal-divert remains responsible for a controlled
+            // velocity-null touchdown.
+            TransitionTo(V2FlightPhase.TerminalDivert, contingencyRebase
+                ? "V2 terminal contingency rebase complete; terminal-divert guidance retained the predicted safe touchdown."
+                : "V2 visual rebase complete; terminal-divert guidance is tracking the assessed local target.");
         }
 
         private Vector3d TerminalVelocityError()
