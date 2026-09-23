@@ -163,11 +163,10 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             var coast = new AirlessConicTrajectory(snapshot.Body.gravParameter, snapshot.UT,
                 snapshot.Position, snapshot.Velocity);
             Assert.True(coast.TryStateAt(planned.StrategicBurnUT, out Vector3d gatePosition, out Vector3d gateVelocity));
-            Vector3d targetAtGate = RotateTarget(snapshot, planned.StrategicBurnUT);
             var gateSnapshot = new LandingGuidanceV2Snapshot(snapshot.Version + 1, planned.StrategicBurnUT,
                 snapshot.Body, gatePosition, gateVelocity, snapshot.Mass, snapshot.AvailableDeltaV,
                 snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude,
-                snapshot.TargetLongitude, false, planned.StrategicBurnUT, targetAtGate, true, 4350.290494);
+                snapshot.TargetLongitude, false, snapshot.TargetReferenceUT, snapshot.TargetReferencePosition, true, 4350.290494);
 
             Assert.True(AirlessLandingPlanner.TryValidateCommittedStrategicBurn(gateSnapshot, planned,
                 out AirlessLandingPlan validated, out string reason), reason);
@@ -195,11 +194,10 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             var coast = new AirlessConicTrajectory(snapshot.Body.gravParameter, snapshot.UT,
                 snapshot.Position, snapshot.Velocity);
             Assert.True(coast.TryStateAt(plan.StrategicBurnUT, out Vector3d gatePosition, out Vector3d gateVelocity));
-            Vector3d targetAtGate = RotateTarget(snapshot, plan.StrategicBurnUT);
             var gate = new LandingGuidanceV2Snapshot(718, plan.StrategicBurnUT, snapshot.Body,
                 gatePosition, gateVelocity, snapshot.Mass, snapshot.AvailableDeltaV,
                 snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude,
-                snapshot.TargetLongitude, false, plan.StrategicBurnUT, targetAtGate, true, snapshot.TargetTerrainAltitude);
+                snapshot.TargetLongitude, false, snapshot.TargetReferenceUT, snapshot.TargetReferencePosition, true, snapshot.TargetTerrainAltitude);
 
             Assert.True(AirlessLandingPlanner.TryValidateCommittedStrategicBurn(gate, plan,
                 out AirlessLandingPlan validated, out string reason), reason);
@@ -228,7 +226,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             var exactGate = new LandingGuidanceV2Snapshot(200, plan.StrategicBurnUT, snapshot.Body,
                 position, velocity, snapshot.Mass, snapshot.AvailableDeltaV,
                 snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude,
-                snapshot.TargetLongitude, false, plan.StrategicBurnUT, RotateTarget(snapshot, plan.StrategicBurnUT),
+                snapshot.TargetLongitude, false, snapshot.TargetReferenceUT, snapshot.TargetReferencePosition,
                 true, snapshot.TargetTerrainAltitude);
             Assert.True(AirlessLandingPlanner.TryValidateCommittedStrategicBurn(exactGate, plan,
                 out _, out string exactReason), exactReason);
@@ -237,13 +235,29 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             var earlyGate = new LandingGuidanceV2Snapshot(199, plan.StrategicBurnUT - 0.52, snapshot.Body,
                 position, velocity, snapshot.Mass, snapshot.AvailableDeltaV,
                 snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude,
-                snapshot.TargetLongitude, false, plan.StrategicBurnUT - 0.52,
-                RotateTarget(snapshot, plan.StrategicBurnUT - 0.52), true, snapshot.TargetTerrainAltitude);
+                snapshot.TargetLongitude, false, snapshot.TargetReferenceUT,
+                snapshot.TargetReferencePosition, true, snapshot.TargetTerrainAltitude);
             // The fresh snapshot is taken at finite-burn ignition.  Validation
             // propagates it to the planned impulse midpoint, avoiding the old
             // false rejection caused by treating ignition as an early impulse.
             Assert.True(AirlessLandingPlanner.TryValidateCommittedStrategicBurn(earlyGate, plan,
                 out _, out string ignitionReason), ignitionReason);
+        }
+
+        [Fact]
+        public void IgnitionGateRejectsAChangedTargetReferenceEpoch()
+        {
+            LandingGuidanceV2Snapshot snapshot = RecordedMunSnapshot();
+            AirlessLandingPlan plan = AirlessLandingPlanner.Plan(snapshot);
+            Assert.True(plan.State == AirlessLandingPlanState.Candidate, plan.Reason);
+            var coast = new AirlessConicTrajectory(snapshot.Body.gravParameter, snapshot.UT, snapshot.Position, snapshot.Velocity);
+            Assert.True(coast.TryStateAt(plan.StrategicBurnUT, out Vector3d position, out Vector3d velocity));
+            var corrupted = new LandingGuidanceV2Snapshot(snapshot.Version + 1, plan.StrategicBurnUT, snapshot.Body,
+                position, velocity, snapshot.Mass, snapshot.AvailableDeltaV, snapshot.MaximumAcceleration,
+                snapshot.MinimumAcceleration, snapshot.TargetLatitude, snapshot.TargetLongitude, false,
+                snapshot.TargetReferenceUT + 1.0, snapshot.TargetReferencePosition, true, snapshot.TargetTerrainAltitude);
+            Assert.False(AirlessLandingPlanner.TryValidateCommittedStrategicBurn(corrupted, plan, out _, out string reason));
+            Assert.Contains("immutable target reference", reason);
         }
 
         [Fact]
