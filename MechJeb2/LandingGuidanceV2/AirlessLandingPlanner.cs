@@ -199,6 +199,55 @@ namespace MuMech
             return true;
         }
 
+        /// <summary>
+        /// Performs the cheap, deterministic safety validation required after
+        /// rails warp and before the separately planned plane-alignment burn.
+        /// A full strategic plan is intentionally rebuilt after this burn; at
+        /// this gate V2 verifies that the committed burn epoch, target lineage,
+        /// coast state, and complete budget are still usable.
+        /// </summary>
+        public static bool TryValidateCommittedPlaneAlignmentBurn(LandingGuidanceV2Snapshot snapshot,
+            AirlessLandingPlan committedPlan, out string reason)
+        {
+            reason = null;
+            if (snapshot == null || committedPlan == null ||
+                committedPlan.State != AirlessLandingPlanState.Candidate ||
+                committedPlan.PlaneAlignmentDeltaVMagnitude <= AirlessLandingPhaseManager.BurnCompleteDeltaV)
+            {
+                reason = "V2 has no committed plane-alignment burn to validate at the burn gate.";
+                return false;
+            }
+            if (!committedPlan.HasTargetReferencePosition || !snapshot.HasTargetReferencePosition ||
+                Math.Abs(committedPlan.TargetReferenceUT - snapshot.TargetReferenceUT) > 0.001 ||
+                (committedPlan.TargetReferencePosition - snapshot.TargetReferencePosition).sqrMagnitude > 1e-4 ||
+                Math.Abs(committedPlan.TargetTerrainAltitude - snapshot.TargetTerrainAltitude) > 0.001)
+            {
+                reason = "V2 plane-alignment ignition snapshot does not retain the immutable target reference and terrain epoch.";
+                return false;
+            }
+            if (snapshot.UT > committedPlan.PlaneAlignmentBurnUT + 0.25)
+            {
+                reason = "V2 reached the plane-alignment validation gate after the committed burn midpoint.";
+                return false;
+            }
+            if (snapshot.AvailableDeltaV + 1e-6 < committedPlan.TotalLowerBound)
+            {
+                reason = "V2 plane-alignment ignition snapshot no longer preserves the complete terminal reserve and contingency budget.";
+                return false;
+            }
+            if (snapshot.UT < committedPlan.PlaneAlignmentBurnUT)
+            {
+                var coast = new AirlessConicTrajectory(snapshot.Body.gravParameter, snapshot.UT,
+                    snapshot.Position, snapshot.Velocity);
+                if (!coast.IsBound || !coast.TryStateAt(committedPlan.PlaneAlignmentBurnUT, out _, out _))
+                {
+                    reason = "V2 could not propagate the fresh plane-alignment snapshot to the committed burn midpoint.";
+                    return false;
+                }
+            }
+            return true;
+        }
+
         public static AirlessPostBurnDecision DecidePostBurn(LandingGuidanceV2Snapshot snapshot,
             AirlessLandingPlan committedPlan, bool allowRecoveryTrim)
         {

@@ -362,6 +362,23 @@ namespace MuMech
                     _commandedV2AttitudeVector = _activePlan.PlaneAlignmentDeltaV;
                     AirlessLandingPhaseDecision planeAlignDecision = _airlessPhaseManager.Tick(VesselState.Time, false,
                         BurnAlignmentError(_activePlan.PlaneAlignmentDeltaV), double.NaN);
+                    if (planeAlignDecision.Directive == AirlessLandingPhaseDirective.RequireFreshPlaneValidation)
+                    {
+                        LandingGuidanceV2Snapshot planeSnapshot = CaptureSnapshot();
+                        bool valid = AirlessLandingPlanner.TryValidateCommittedPlaneAlignmentBurn(planeSnapshot,
+                            _activePlan, out string validationReason);
+                        planeAlignDecision = _airlessPhaseManager.AcceptPlaneAlignmentValidation(
+                            planeSnapshot.Version, planeSnapshot.UT, valid, validationReason);
+                        if (planeAlignDecision.Directive == AirlessLandingPhaseDirective.Reject)
+                        {
+                            RejectController("V2 plan failed fresh validation at the plane-alignment ignition gate: " +
+                                planeAlignDecision.Reason);
+                            break;
+                        }
+                        SetValidatedAirlessPreflight(planeSnapshot, _activePlan);
+                        planeAlignDecision = _airlessPhaseManager.Tick(VesselState.Time, false,
+                            BurnAlignmentError(_activePlan.PlaneAlignmentDeltaV), double.NaN);
+                    }
                     if (planeAlignDecision.Directive == AirlessLandingPhaseDirective.Reject)
                     {
                         RejectController(planeAlignDecision.Reason);

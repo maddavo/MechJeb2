@@ -53,7 +53,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         public void FiniteBurnStopsThrottleOnMeasuredDeliveryAndNeverReopensIt()
         {
             var progress = new FiniteBurnProgress(3.0);
-            // Reproduces the observed 27.9 m/sÃƒâ€šÃ‚Â² correction-burn condition.
+            // Reproduces the observed 27.9 m/sÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â² correction-burn condition.
             // Measured engine delivery reaches the planned value in six 20 ms
             // frames; 155 seconds of subsequent coast cannot make it burn again.
             for (int i = 0; i != 6; ++i) progress.Integrate(0.02, 27.9);
@@ -117,6 +117,27 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.Contains(AirlessLandingPhaseDirective.RequestAttitude, result.Directives);
             Assert.Contains(AirlessLandingPhaseDirective.RequestFiniteBurnThrottle, result.Directives);
             Assert.True(result.WorkUnits < 2000);
+        }
+
+        [Fact]
+        public void ControllerHarnessExecutesPlaneAlignmentFreshReplanAndStrategicBurn()
+        {
+            AirlessLandingPlan planePlan = Candidate(100, 1400, 1700, 30, 8, 900);
+            AirlessLandingPlan strategicReplan = Candidate(101, 1400, 1700, 28);
+            var result = new AirlessLandingControllerHarness().Execute(planePlan, 100, 0.65, 27.9,
+                strategicReplan: strategicReplan);
+            Assert.True(result.InitialWarpRequested);
+            Assert.True(result.FinalWarpRequested);
+            Assert.True(result.FreshPlaneValidationRequired);
+            Assert.True(result.PlaneBurnStarted);
+            Assert.True(result.PlaneBurnCompleted);
+            Assert.True(result.FreshValidationRequired);
+            Assert.True(result.FiniteBurnStarted);
+            Assert.True(result.FiniteBurnCompleted);
+            Assert.Equal(AirlessLandingPhaseManagerPhase.Coast, result.FinalPhase);
+            Assert.InRange(result.PlaneDeliveredDeltaV, 7.99, 8.6);
+            Assert.InRange(result.DeliveredDeltaV, 27.99, 28.6);
+            Assert.Contains(AirlessLandingPhaseDirective.RequireStrategicReplan, result.Directives);
         }
 
         [Fact]
@@ -189,12 +210,35 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude, manager.Tick(300, true, 30, double.NaN).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.WarpAuthorized, manager.Tick(851, true, 0.1, double.NaN).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.ExitWarpAndRequestAttitude, manager.Tick(880, true, 90, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.RequireFreshPlaneValidation, manager.Tick(900, true, 0.1, 8).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude, manager.AcceptPlaneAlignmentValidation(101, 900, true).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.BeginFiniteBurn, manager.Tick(900, true, 0.1, 8).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.RequestFiniteBurnThrottle, manager.Tick(900.99, true, 0.1, 0.011).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.FiniteBurnComplete, manager.Tick(901, true, 0.1, 0.009).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.RequireStrategicReplan, manager.Tick(902, true, 0.1, 0).Directive);
             AirlessLandingPhaseDecision replan = manager.AdoptStrategicReplan(Candidate(102, 1100, 1300, 28));
             Assert.Equal(AirlessLandingPhaseManagerPhase.InitialWarpToStrategicBurn, replan.Phase);
+        }
+
+        [Fact]
+        public void PlaneAlignmentRejectsAStaleOrInvalidPostWarpSnapshotBeforeThrottle()
+        {
+            var manager = new AirlessLandingPhaseManager();
+            AirlessLandingPlan plan = Candidate(100, 1200, 1500, 30, 8, 900);
+            manager.Start(plan, 0);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude,
+                manager.Tick(900, false, 0.1, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.WarpAuthorized,
+                manager.Tick(900, false, 0.1, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.ExitWarpAndRequestAttitude,
+                manager.Tick(900, false, 0.1, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.RequireFreshPlaneValidation,
+                manager.Tick(900, false, 0.1, double.NaN).Directive);
+            AirlessLandingPhaseDecision rejected = manager.AcceptPlaneAlignmentValidation(101, 900, false,
+                "Plane vector is stale after warp.");
+            Assert.Equal(AirlessLandingPhaseDirective.Reject, rejected.Directive);
+            Assert.Contains("stale", rejected.Reason);
+            Assert.Equal(AirlessLandingPhaseManagerPhase.Rejected, manager.Phase);
         }
 
         [Fact]
