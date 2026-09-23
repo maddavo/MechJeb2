@@ -294,7 +294,11 @@ namespace MuMech
                 case V2FlightPhase.AlignStrategicBurn:
                     Core.Thrust.ThrustOff();
                     Core.Attitude.attitudeTo(_activePlan.StrategicDeorbitDeltaV, AttitudeReference.INERTIAL_COT, this);
-                    if (VesselState.Time < _activePlan.StrategicBurnUT - 0.1)
+                    // The committed vector is valid at its scheduled ignition
+                    // epoch. Do not validate a fractional physics step early:
+                    // that has already been shown to move a narrow corridor
+                    // outside tolerance before any throttle is commanded.
+                    if (VesselState.Time < _activePlan.StrategicBurnUT)
                         break;
                     if (!_strategicBurnGateValidated)
                     {

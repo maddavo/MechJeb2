@@ -209,6 +209,40 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.True(validated.LowerBoundMargin >= 0);
         }
 
+        [Fact]
+        public void LatestRecordedWarpPlanRejectsEarlyGateAndPassesExactIgnition()
+        {
+            const double ut = 24108735.542233;
+            var snapshot = new LandingGuidanceV2Snapshot(18, ut, CreateMun(),
+                new Vector3d(79042.051085, -4557.968156, -225438.468683),
+                new Vector3d(492.736437, 5.364971, 172.580466),
+                36.077968, 810.440682, 27.717754, 0,
+                0.165, -130.626389, false, ut,
+                new Vector3d(115731.229739, 575.957857, 163113.306433), true, 4350.290494);
+            AirlessLandingPlan plan = AirlessLandingPlanner.Plan(snapshot);
+            Assert.True(plan.State == AirlessLandingPlanState.Candidate, plan.Reason);
+
+            var coast = new AirlessConicTrajectory(snapshot.Body.gravParameter, snapshot.UT,
+                snapshot.Position, snapshot.Velocity);
+            Assert.True(coast.TryStateAt(plan.StrategicBurnUT, out Vector3d position, out Vector3d velocity));
+            var exactGate = new LandingGuidanceV2Snapshot(200, plan.StrategicBurnUT, snapshot.Body,
+                position, velocity, snapshot.Mass, snapshot.AvailableDeltaV,
+                snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude,
+                snapshot.TargetLongitude, false, plan.StrategicBurnUT, RotateTarget(snapshot, plan.StrategicBurnUT),
+                true, snapshot.TargetTerrainAltitude);
+            Assert.True(AirlessLandingPlanner.TryValidateCommittedStrategicBurn(exactGate, plan,
+                out _, out string exactReason), exactReason);
+
+            Assert.True(coast.TryStateAt(plan.StrategicBurnUT - 0.52, out position, out velocity));
+            var earlyGate = new LandingGuidanceV2Snapshot(199, plan.StrategicBurnUT - 0.52, snapshot.Body,
+                position, velocity, snapshot.Mass, snapshot.AvailableDeltaV,
+                snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude,
+                snapshot.TargetLongitude, false, plan.StrategicBurnUT - 0.52,
+                RotateTarget(snapshot, plan.StrategicBurnUT - 0.52), true, snapshot.TargetTerrainAltitude);
+            Assert.False(AirlessLandingPlanner.TryValidateCommittedStrategicBurn(earlyGate, plan,
+                out _, out _));
+        }
+
         private static LandingGuidanceV2Snapshot RecordedMunSnapshot()
         {
             const double ut = 24108762.642232;
