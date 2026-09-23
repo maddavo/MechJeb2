@@ -53,7 +53,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         public void FiniteBurnStopsThrottleOnMeasuredDeliveryAndNeverReopensIt()
         {
             var progress = new FiniteBurnProgress(3.0);
-            // Reproduces the observed 27.9 m/sÂ² correction-burn condition.
+            // Reproduces the observed 27.9 m/sÃƒâ€šÃ‚Â² correction-burn condition.
             // Measured engine delivery reaches the planned value in six 20 ms
             // frames; 155 seconds of subsequent coast cannot make it burn again.
             for (int i = 0; i != 6; ++i) progress.Integrate(0.02, 27.9);
@@ -117,6 +117,21 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.Contains(AirlessLandingPhaseDirective.RequestAttitude, result.Directives);
             Assert.Contains(AirlessLandingPhaseDirective.RequestFiniteBurnThrottle, result.Directives);
             Assert.True(result.WorkUnits < 2000);
+        }
+
+        [Fact]
+        public void ControllerHarnessDeniesBothWarpsUntilMeasuredThrustVectorIsSettled()
+        {
+            AirlessLandingPlan plan = Candidate(100, 1200, 1500, 30);
+            var result = new AirlessLandingControllerHarness().Execute(plan, 100, 0.65, 27.9,
+                thrustVectorErrorDegrees: 1.01, angularVelocityRadiansPerSecond: 0.0005);
+            Assert.True(result.InitialWarpRequested);
+            Assert.False(result.FinalWarpRequested);
+            Assert.False(result.FreshValidationRequired);
+            Assert.False(result.FiniteBurnStarted);
+            Assert.False(result.FiniteBurnCompleted);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude, result.LastDirective);
+            Assert.DoesNotContain(AirlessLandingPhaseDirective.RequestFiniteBurnThrottle, result.Directives);
         }
 
         [Fact]
