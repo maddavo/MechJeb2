@@ -324,7 +324,8 @@ namespace MuMech
     {
         public AirlessLandingControllerHarnessResult Execute(AirlessLandingPlan plan, double startUT,
             double finiteBurnLeadSeconds, double maximumAcceleration, double physicsStepSeconds = 0.02,
-            bool freshValidationIsValid = true)
+            bool freshValidationIsValid = true, double controllerErrorDegrees = 0,
+            double thrustVectorErrorDegrees = 0, double angularVelocityRadiansPerSecond = 0)
         {
             var result = new AirlessLandingControllerHarnessResult();
             var manager = new AirlessLandingPhaseManager();
@@ -332,13 +333,22 @@ namespace MuMech
             if (result.LastDirective == AirlessLandingPhaseDirective.Reject) return result;
 
             double ignitionUT = plan.StrategicBurnUT - finiteBurnLeadSeconds;
+            // The flight module gives the phase manager infinity until both
+            // the controller and the measured thrust vector are inside the
+            // one-degree, settled authority gate. Model that same contract
+            // here; an attitude-controller indication alone cannot authorize
+            // a warp in this harness.
+            double alignmentError = AirlessBurnAlignmentGate.IsReady(controllerErrorDegrees,
+                thrustVectorErrorDegrees, angularVelocityRadiansPerSecond)
+                ? AirlessBurnAlignmentGate.CombinedError(controllerErrorDegrees, thrustVectorErrorDegrees)
+                : double.PositiveInfinity;
             double ut = startUT;
-            result.Add(manager.Tick(ut, true, 0, double.NaN));
+            result.Add(manager.Tick(ut, true, alignmentError, double.NaN));
             if (result.LastDirective == AirlessLandingPhaseDirective.RequestInitialWarp)
             {
                 result.InitialWarpRequested = true;
                 ut = result.LastWarpUT;
-                result.Add(manager.Tick(ut, true, 0, double.NaN));
+                result.Add(manager.Tick(ut, true, alignmentError, double.NaN));
             }
             // The first physical tick at the alignment gate may only request
             // attitude. The next tick observes settled alignment and grants
@@ -346,21 +356,21 @@ namespace MuMech
             if (result.LastDirective == AirlessLandingPhaseDirective.RequestAttitude)
             {
                 ut += physicsStepSeconds;
-                result.Add(manager.Tick(ut, true, 0, double.NaN));
+                result.Add(manager.Tick(ut, true, alignmentError, double.NaN));
             }
             if (result.LastDirective != AirlessLandingPhaseDirective.WarpAuthorized) return result;
 
-            result.Add(manager.Tick(ut, true, 0, double.NaN));
+            result.Add(manager.Tick(ut, true, alignmentError, double.NaN));
             if (result.LastDirective == AirlessLandingPhaseDirective.RequestWarp)
             {
                 result.FinalWarpRequested = true;
                 ut = result.LastWarpUT;
-                result.Add(manager.Tick(ut, true, 0, double.NaN));
+                result.Add(manager.Tick(ut, true, alignmentError, double.NaN));
             }
             if (result.LastDirective != AirlessLandingPhaseDirective.ExitWarpAndRequestAttitude) return result;
 
             ut = ignitionUT;
-            result.Add(manager.Tick(ut, false, 0, double.NaN));
+            result.Add(manager.Tick(ut, false, alignmentError, double.NaN));
             if (result.LastDirective != AirlessLandingPhaseDirective.RequireFreshStrategicValidation) return result;
             result.FreshValidationRequired = true;
             result.Add(manager.AcceptStrategicValidation(plan.SnapshotVersion + 1, ut, freshValidationIsValid,
