@@ -250,19 +250,33 @@ namespace MuMech
                         break;
                     }
                     Core.Warp.MinimumWarp(true);
-                    RefreshPreflight(true);
-                    if (Preflight?.AirlessPlan == null || Preflight.AirlessPlan.State != AirlessLandingPlanState.Candidate)
+                    LandingGuidanceV2Snapshot burnGateSnapshot = CaptureSnapshot();
+                    bool needsPlaneAlignment = _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5;
+                    if (needsPlaneAlignment)
                     {
-                        RejectController("V2 plan failed fresh validation at the strategic-burn gate.");
+                        // This is the separately counted plane-alignment gate.
+                        // It has no surface-intersection yet; target/corridor
+                        // validation occurs after the alignment burn has made a
+                        // new strategic state. Do not confuse it with the
+                        // strategic-vector validation below.
+                        if (_activePlan.PlaneAlignmentDeltaVMagnitude + _activePlan.StrategicDeorbitDeltaVMagnitude >
+                            burnGateSnapshot.AvailableDeltaV)
+                        {
+                            RejectController("V2 plane-alignment gate no longer preserves the available delta-V budget.");
+                            break;
+                        }
+                    }
+                    else if (!AirlessLandingPlanner.TryValidateCommittedStrategicBurn(burnGateSnapshot, _activePlan,
+                        out AirlessLandingPlan validatedPlan, out string validationReason))
+                    {
+                        RejectController("V2 plan failed fresh validation at the strategic-burn gate: " + validationReason);
                         break;
                     }
-                    _activePlan = Preflight.AirlessPlan;
-                    nextBurnUT = _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5
-                        ? _activePlan.PlaneAlignmentBurnUT
-                        : _activePlan.StrategicBurnUT;
-                    if (nextBurnUT > VesselState.Time + 25.0)
-                        break;
-                    bool needsPlaneAlignment = _activePlan.PlaneAlignmentDeltaVMagnitude > 0.5;
+                    else
+                    {
+                        _activePlan = validatedPlan;
+                        SetValidatedAirlessPreflight(burnGateSnapshot, validatedPlan);
+                    }
                     // Each finite-burn phase owns its own target velocity. In
                     // particular, a plan with no plane change must start the
                     // strategic burn from its strategic vector, never inherit
@@ -717,6 +731,18 @@ namespace MuMech
                 if (Preflight != null) WriteCorrelatedTrace(Preflight);
                 else RefreshPreflight(true);
             }
+        }
+
+        private void SetValidatedAirlessPreflight(LandingGuidanceV2Snapshot snapshot, AirlessLandingPlan plan)
+        {
+            LandingGuidanceV2Estimate estimate = plan.CandidateEstimate;
+            LandingGuidanceV2EstimatorValidation validation =
+                AirlessImpactEstimator.ValidateDeterminism(snapshot, estimate);
+            double brakingLowerBound = estimate != null && estimate.HasImpact ? estimate.ImpactVelocity.magnitude : double.NaN;
+            LandingGuidanceV2PreflightAssessment assessment =
+                LandingGuidanceV2PreflightEvaluator.Evaluate(snapshot, estimate, brakingLowerBound);
+            Preflight = new LandingGuidanceV2Preflight(snapshot, estimate, validation, assessment, plan,
+                brakingLowerBound, Preflight?.AtmosphericPlan);
         }
 
         public void RefreshPreflight(bool forcePlan = false)
