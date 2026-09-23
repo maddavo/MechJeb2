@@ -340,6 +340,11 @@ namespace MuMech
                         Core.Thrust.ThrustForDv(remainingPlaneDv, 0.5);
                         break;
                     }
+                    if (planeBurnDecision.Directive == AirlessLandingPhaseDirective.RequestAttitude)
+                    {
+                        Core.Thrust.ThrustOff();
+                        break;
+                    }
                     if (planeBurnDecision.Directive != AirlessLandingPhaseDirective.FiniteBurnComplete)
                     {
                         RejectController(planeBurnDecision.Reason ?? "V2 plane-alignment phase did not retain finite-burn authority.");
@@ -406,6 +411,11 @@ namespace MuMech
                         Core.Thrust.ThrustForDv(remainingDv, 0.5);
                         break;
                     }
+                    if (strategicBurnDecision.Directive == AirlessLandingPhaseDirective.RequestAttitude)
+                    {
+                        Core.Thrust.ThrustOff();
+                        break;
+                    }
                     if (strategicBurnDecision.Directive != AirlessLandingPhaseDirective.FiniteBurnComplete)
                     {
                         RejectController(strategicBurnDecision.Reason ?? "V2 strategic phase did not retain finite-burn authority.");
@@ -425,7 +435,7 @@ namespace MuMech
                     else if (postBurn.Action == AirlessPostBurnAction.Coast)
                         TransitionTo(V2FlightPhase.Coast, postBurn.Reason);
                     else
-                        EnterAirlessTerminalContingency(postBurn.Reason);
+                        BeginAirlessRecoveryReplan(postBurn.Reason);
                     break;
                 case V2FlightPhase.AlignTrim:
                     Core.Thrust.ThrustOff();
@@ -438,6 +448,13 @@ namespace MuMech
                     break;
                 case V2FlightPhase.BoundedTrim:
                     Core.Attitude.attitudeTo(_trimDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    if (Core.Attitude.attitudeError >= 2.0)
+                    {
+                        Core.Thrust.ThrustOff();
+                        TransitionTo(V2FlightPhase.AlignTrim,
+                            "V2 paused the bounded trim because attitude authority left the finite-burn gate.");
+                        break;
+                    }
                     if (Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _trimDeltaV.normalized) <= 0.25)
                     {
                         Core.Thrust.ThrustOff();
@@ -447,7 +464,7 @@ namespace MuMech
                         if (postTrim.Action == AirlessPostBurnAction.Coast)
                             TransitionTo(V2FlightPhase.Coast, "Bounded V2 trim complete. " + postTrim.Reason);
                         else
-                            EnterAirlessTerminalContingency(postTrim.Reason);
+                            BeginAirlessRecoveryReplan(postTrim.Reason);
                     }
                     else Core.Thrust.ThrustForDv(Vector3d.Dot(_burnTargetVelocity - VesselState.OrbitalVelocity, _trimDeltaV.normalized), 0.5);
                     break;
@@ -464,6 +481,12 @@ namespace MuMech
                         break;
                     }
                     Core.Attitude.attitudeTo(Core.Hoverslam.IgnitionAttitude, AttitudeReference.INERTIAL_COT, this);
+                    if (Core.Attitude.attitudeError >= 2.0)
+                    {
+                        Core.Thrust.ThrustOff();
+                        ControllerStatus = "V2 is holding 1x until it has terminal-braking attitude authority.";
+                        break;
+                    }
                     if (V2AutoWarp && VesselState.Time < Core.Hoverslam.IgnitionUT - 10.0)
                         Core.Warp.WarpToUT(Core.Hoverslam.IgnitionUT - 10.0);
                     else if (Core.Hoverslam.IgnitionCountdown <= Time.fixedDeltaTime)
@@ -576,6 +599,12 @@ namespace MuMech
                     }
                     Vector3d adjustedVelocity = TerminalVelocityError();
                     Core.Attitude.attitudeTo(-adjustedVelocity, AttitudeReference.INERTIAL_COT, this);
+                    if (Core.Attitude.attitudeError >= 2.0)
+                    {
+                        Core.Thrust.ThrustOff();
+                        ControllerStatus = "V2 is holding braking throttle until terminal attitude is within the finite-burn gate.";
+                        break;
+                    }
                     Core.Thrust.TargetThrottle = 1.0f;
                     if (!double.IsNaN(_lastAdjustedVelocity.x) && Vector3d.Angle(_lastAdjustedVelocity, adjustedVelocity) > 10.0)
                     {
@@ -594,6 +623,20 @@ namespace MuMech
                     TickVelocityNull();
                     break;
             }
+        }
+
+        private void BeginAirlessRecoveryReplan(string reason)
+        {
+            Core.Thrust.ThrustOff();
+            Core.Warp.MinimumWarp(true);
+            // Discard any candidate made before the executed burn. The next
+            // Preflight tick owns an immutable post-burn snapshot and waits for
+            // its worker result before it can request a second finite burn.
+            _airlessPlanningGeneration++;
+            _airlessPlanningRunning = false;
+            _lastCompletedAirlessPlan = null;
+            RefreshPreflight(true, true);
+            TransitionTo(V2FlightPhase.Preflight, reason);
         }
 
         private void EnterAirlessTerminalContingency(string reason)
