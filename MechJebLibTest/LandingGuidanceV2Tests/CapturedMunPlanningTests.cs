@@ -315,6 +315,45 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void RecordedPostStrategicRecoveryPlanPassesFreshFiniteBurnGate()
+        {
+            var postStrategic = new LandingGuidanceV2Snapshot(206, 24108857.921943, CreateMun(),
+                new Vector3d(-50579.221954, -3760.922914, -233496.709043),
+                new Vector3d(483.843193, -1.407125, -102.351519),
+                35.722613, 782.080494, 27.993481, 0, 0.165, -130.626389, false,
+                24108734.642233, new Vector3d(198001.793865, 575.957857, 28194.997763), true, 4350.290494);
+            AirlessLandingPlan recovery = AirlessLandingPlanner.Plan(postStrategic);
+            Assert.True(recovery.CommandAuthorized, recovery.Reason);
+
+            double lead = recovery.StrategicDeorbitDeltaVMagnitude / postStrategic.MaximumAcceleration * 0.5 + 0.10;
+            double ignitionUT = recovery.StrategicBurnUT - lead;
+            Assert.True(ignitionUT >= postStrategic.UT, "ignition=" + ignitionUT + " start=" + postStrategic.UT);
+            var coast = new AirlessConicTrajectory(postStrategic.Body.gravParameter, postStrategic.UT,
+                postStrategic.Position, postStrategic.Velocity);
+            Assert.True(coast.TryStateAt(ignitionUT, out Vector3d ignitionPosition, out Vector3d ignitionVelocity));
+            var ignition = new LandingGuidanceV2Snapshot(207, ignitionUT, postStrategic.Body,
+                ignitionPosition, ignitionVelocity, postStrategic.Mass, postStrategic.AvailableDeltaV,
+                postStrategic.MaximumAcceleration, postStrategic.MinimumAcceleration, postStrategic.TargetLatitude,
+                postStrategic.TargetLongitude, false, postStrategic.TargetReferenceUT,
+                postStrategic.TargetReferencePosition, postStrategic.HasTargetReferencePosition,
+                postStrategic.TargetTerrainAltitude);
+            Assert.True(AirlessLandingPlanner.TryValidateCommittedStrategicBurn(ignition, recovery,
+                out AirlessLandingPlan validated, out string reason), reason);
+            Assert.True(validated.CandidateEstimate.TargetError <= validated.CorridorLimit);
+
+            var manager = new AirlessLandingPhaseManager();
+            manager.Start(validated, lead);
+            Assert.Equal(AirlessLandingPhaseDirective.ExitWarpAndRequestAttitude,
+                manager.Tick(ignitionUT, true, 90, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.RequireFreshStrategicValidation,
+                manager.Tick(ignitionUT, false, 0.1, double.NaN).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude,
+                manager.AcceptStrategicValidation(208, ignitionUT, true).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.BeginFiniteBurn,
+                manager.Tick(ignitionUT, false, 0.1, validated.StrategicDeorbitDeltaVMagnitude).Directive);
+        }
+
+        [Fact]
         public void RecordedPostStrategicResidualUsesProtectedRecoveryTrim()
         {
             // Trace record 207 from the unsafe 2026-09-23 V2 run. The finite
