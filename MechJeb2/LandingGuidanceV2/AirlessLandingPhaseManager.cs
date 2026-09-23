@@ -15,7 +15,7 @@ namespace MuMech
         // minutes before ignition, acquire and settle burn attitude at 1x,
         // then permit the final warp to the short ignition margin.
         public const double InitialWarpLeadSeconds = 600.0;
-        public const double AttitudeReadyDegrees = 2.0;
+        public const double AttitudeReadyDegrees = 1.0;
         // Completion must be materially tighter than the landing corridor.
         // The thrust controller ramps down for the final portion; this is only
         // the residual which permits releasing finite-burn authority.
@@ -312,6 +312,110 @@ namespace MuMech
         }
 
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    }
+
+    /// <summary>
+    /// Deterministic, KSP-free execution harness for the airless strategic
+    /// sequence. It drives the same phase manager used in flight and records
+    /// every authority directive, including staged warp, fresh validation, and
+    /// measured finite-burn completion.
+    /// </summary>
+    public sealed class AirlessLandingControllerHarness
+    {
+        public AirlessLandingControllerHarnessResult Execute(AirlessLandingPlan plan, double startUT,
+            double finiteBurnLeadSeconds, double maximumAcceleration, double physicsStepSeconds = 0.02,
+            bool freshValidationIsValid = true)
+        {
+            var result = new AirlessLandingControllerHarnessResult();
+            var manager = new AirlessLandingPhaseManager();
+            result.Add(manager.Start(plan, finiteBurnLeadSeconds));
+            if (result.LastDirective == AirlessLandingPhaseDirective.Reject) return result;
+
+            double ignitionUT = plan.StrategicBurnUT - finiteBurnLeadSeconds;
+            double ut = startUT;
+            result.Add(manager.Tick(ut, true, 0, double.NaN));
+            if (result.LastDirective == AirlessLandingPhaseDirective.RequestInitialWarp)
+            {
+                result.InitialWarpRequested = true;
+                ut = result.LastWarpUT;
+                result.Add(manager.Tick(ut, true, 0, double.NaN));
+            }
+            // The first physical tick at the alignment gate may only request
+            // attitude. The next tick observes settled alignment and grants
+            // final-warp authority.
+            if (result.LastDirective == AirlessLandingPhaseDirective.RequestAttitude)
+            {
+                ut += physicsStepSeconds;
+                result.Add(manager.Tick(ut, true, 0, double.NaN));
+            }
+            if (result.LastDirective != AirlessLandingPhaseDirective.WarpAuthorized) return result;
+
+            result.Add(manager.Tick(ut, true, 0, double.NaN));
+            if (result.LastDirective == AirlessLandingPhaseDirective.RequestWarp)
+            {
+                result.FinalWarpRequested = true;
+                ut = result.LastWarpUT;
+                result.Add(manager.Tick(ut, true, 0, double.NaN));
+            }
+            if (result.LastDirective != AirlessLandingPhaseDirective.ExitWarpAndRequestAttitude) return result;
+
+            ut = ignitionUT;
+            result.Add(manager.Tick(ut, false, 0, double.NaN));
+            if (result.LastDirective != AirlessLandingPhaseDirective.RequireFreshStrategicValidation) return result;
+            result.FreshValidationRequired = true;
+            result.Add(manager.AcceptStrategicValidation(plan.SnapshotVersion + 1, ut, freshValidationIsValid,
+                freshValidationIsValid ? null : "Harness deliberately rejected the fresh ignition snapshot."));
+            if (result.LastDirective == AirlessLandingPhaseDirective.Reject) return result;
+            result.Add(manager.Tick(ut, false, 0, plan.StrategicDeorbitDeltaVMagnitude));
+            if (result.LastDirective != AirlessLandingPhaseDirective.BeginFiniteBurn) return result;
+            result.FiniteBurnStarted = true;
+
+            var progress = new FiniteBurnProgress(plan.StrategicDeorbitDeltaVMagnitude);
+            double step = Math.Max(0.001, physicsStepSeconds);
+            double acceleration = Math.Max(0.001, maximumAcceleration);
+            while (!progress.IsComplete() && result.WorkUnits < 100000)
+            {
+                progress.Integrate(step, acceleration);
+                ut += step;
+                result.Add(manager.Tick(ut, false, 0, progress.RemainingDeltaV));
+                if (result.LastDirective == AirlessLandingPhaseDirective.FiniteBurnComplete)
+                {
+                    result.FiniteBurnCompleted = true;
+                    break;
+                }
+                if (result.LastDirective != AirlessLandingPhaseDirective.RequestFiniteBurnThrottle) break;
+            }
+            result.DeliveredDeltaV = progress.DeliveredDeltaV;
+            result.FinalPhase = manager.Phase;
+            return result;
+        }
+    }
+
+    public sealed class AirlessLandingControllerHarnessResult
+    {
+        public readonly System.Collections.Generic.List<AirlessLandingPhaseDirective> Directives =
+            new System.Collections.Generic.List<AirlessLandingPhaseDirective>();
+        public bool InitialWarpRequested;
+        public bool FinalWarpRequested;
+        public bool FreshValidationRequired;
+        public bool FiniteBurnStarted;
+        public bool FiniteBurnCompleted;
+        public double DeliveredDeltaV;
+        public double LastWarpUT = double.NaN;
+        public int WorkUnits;
+        public AirlessLandingPhaseManagerPhase FinalPhase;
+        public string LastReason;
+        public AirlessLandingPhaseDirective LastDirective => Directives.Count == 0
+            ? AirlessLandingPhaseDirective.None : Directives[Directives.Count - 1];
+
+        public void Add(AirlessLandingPhaseDecision decision)
+        {
+            Directives.Add(decision.Directive);
+            LastWarpUT = decision.WarpUT;
+            LastReason = decision.Reason;
+            WorkUnits += decision.WorkUnits;
+            FinalPhase = decision.Phase;
+        }
     }
 
     public enum AirlessLandingPhaseManagerPhase
