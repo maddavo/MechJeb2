@@ -731,11 +731,13 @@ namespace MuMech
                         break;
                     }
                     Vector3d adjustedVelocity = TerminalVelocityError();
-                    Core.Attitude.attitudeTo(-adjustedVelocity, AttitudeReference.INERTIAL_COT, this);
-                    if (Core.Attitude.attitudeError >= 2.0)
+                    Vector3d brakingDirection = -adjustedVelocity;
+                    Core.Attitude.attitudeTo(brakingDirection, AttitudeReference.INERTIAL_COT, this);
+                    _commandedV2AttitudeVector = brakingDirection;
+                    if (!BurnAlignmentReady(brakingDirection))
                     {
                         Core.Thrust.ThrustOff();
-                        ControllerStatus = "V2 is holding braking throttle until terminal attitude is within the finite-burn gate.";
+                        ControllerStatus = "V2 is holding braking throttle until the measured thrust vector is aligned and settled.";
                         break;
                     }
                     Core.Thrust.TargetThrottle = 1.0f;
@@ -798,10 +800,17 @@ namespace MuMech
                 TransitionTo(V2FlightPhase.VelocityNull, "V2 velocity-null guidance is protecting touchdown speed and clearance.");
                 return;
             }
-            if (Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up) >= -1.0)
-                Core.Attitude.attitudeTo(Vector3d.up, AttitudeReference.SURFACE_NORTH, this);
-            else
-                Core.Attitude.attitudeTo(-velocityError, AttitudeReference.INERTIAL_COT, this);
+            Vector3d divertDirection = Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up) >= -1.0
+                ? VesselState.Up : -velocityError;
+            Core.Attitude.attitudeTo(divertDirection, AttitudeReference.INERTIAL_COT, this);
+            _commandedV2AttitudeVector = divertDirection;
+            if (!BurnAlignmentReady(divertDirection))
+            {
+                Core.Thrust.ThrustOff();
+                _terminalPwm.Reset();
+                ControllerStatus = "V2 terminal divert is holding throttle until the measured thrust vector is aligned and settled.";
+                return;
+            }
             double altitude = Math.Max(0.1, VesselState.AltitudeBottom);
             double acceleration = Vessel.graviticAcceleration.magnitude + 0.5 * (VesselState.SurfaceVelocity.sqrMagnitude - 0.25) / altitude;
             _terminalPwm.MinOnTime = 0.50;
@@ -812,7 +821,16 @@ namespace MuMech
         private void TickVelocityNull()
         {
             Core.Warp.MinimumWarp(true);
-            Core.Attitude.attitudeTo(Vector3d.up, AttitudeReference.SURFACE_NORTH, this);
+            Vector3d nullDirection = VesselState.Up;
+            Core.Attitude.attitudeTo(nullDirection, AttitudeReference.INERTIAL_COT, this);
+            _commandedV2AttitudeVector = nullDirection;
+            if (!BurnAlignmentReady(nullDirection))
+            {
+                Core.Thrust.ThrustOff();
+                _terminalPwm.Reset();
+                ControllerStatus = "V2 velocity-null is holding throttle until the measured thrust vector is aligned and settled.";
+                return;
+            }
             double altitude = Math.Max(0.1, VesselState.AltitudeBottom);
             double verticalSpeed = Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up);
             double desiredAcceleration = Vessel.graviticAcceleration.magnitude + Math.Max(0, (verticalSpeed * verticalSpeed - 0.25) / (2.0 * altitude));
@@ -826,7 +844,15 @@ namespace MuMech
         {
             Core.Warp.MinimumWarp(true);
             Vector3d brakingError = TerminalVelocityError();
-            Core.Attitude.attitudeTo(-brakingError, AttitudeReference.INERTIAL_COT, this);
+            Vector3d visualBrakingDirection = -brakingError;
+            Core.Attitude.attitudeTo(visualBrakingDirection, AttitudeReference.INERTIAL_COT, this);
+            _commandedV2AttitudeVector = visualBrakingDirection;
+            if (!BurnAlignmentReady(visualBrakingDirection))
+            {
+                Core.Thrust.ThrustOff();
+                ControllerStatus = "V2 visual assessment is holding throttle until the measured thrust vector is aligned and settled.";
+                return;
+            }
             Core.Thrust.TargetThrottle = 1.0f;
             RefreshPreflight(false);
             if (Preflight?.Estimate == null || !Preflight.Estimate.HasImpact)
