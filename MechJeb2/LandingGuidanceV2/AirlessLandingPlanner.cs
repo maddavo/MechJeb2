@@ -100,6 +100,49 @@ namespace MuMech
             }
         }
 
+        /// <summary>
+        /// Revalidates the strategic vector which was accepted before warp at
+        /// the fresh burn-gate snapshot.  The phase manager must not replace a
+        /// committed finite burn with a newly searched, later burn every time
+        /// it exits warp: that creates an endless moving ignition gate.
+        /// </summary>
+        public static bool TryValidateCommittedStrategicBurn(LandingGuidanceV2Snapshot snapshot,
+            AirlessLandingPlan committedPlan, out AirlessLandingPlan validatedPlan, out string reason)
+        {
+            validatedPlan = null;
+            reason = null;
+            if (snapshot == null || committedPlan == null ||
+                committedPlan.State != AirlessLandingPlanState.Candidate)
+            {
+                reason = "V2 has no committed strategic plan to validate at the burn gate.";
+                return false;
+            }
+            if (committedPlan.PlaneAlignmentDeltaVMagnitude > 0.5)
+            {
+                reason = "V2 cannot validate a combined plane-alignment and strategic vector at one burn gate.";
+                return false;
+            }
+
+            Candidate candidate = EvaluateVector(snapshot, snapshot.UT, snapshot.Position, snapshot.Velocity,
+                committedPlan.StrategicDeorbitDeltaV);
+            if (!candidate.Valid || !candidate.WithinCorridor)
+            {
+                reason = "The committed V2 strategic vector no longer reaches the required long-side target corridor.";
+                return false;
+            }
+
+            AirlessLandingBudget budget = CandidateBudget(candidate);
+            if (!budget.Fits(snapshot.AvailableDeltaV))
+            {
+                reason = "The committed V2 strategic vector no longer preserves the terminal reserve and contingency budget.";
+                return false;
+            }
+
+            validatedPlan = CandidatePlan(snapshot, candidate, budget,
+                "Committed strategic vector passed fresh burn-gate impact, corridor, and budget validation.");
+            return true;
+        }
+
         public static bool TryPlanBoundedTrim(LandingGuidanceV2Snapshot snapshot, double trimBudget,
             out Vector3d correction, out LandingGuidanceV2Estimate improvedEstimate)
         {
@@ -413,6 +456,14 @@ namespace MuMech
         private static Vector3d SurfaceRelativeImpactVelocity(LandingGuidanceV2Snapshot snapshot,
             LandingGuidanceV2Estimate estimate) =>
             estimate.ImpactVelocity - Vector3d.Cross(snapshot.Body.angularVelocity, estimate.ImpactPosition);
+
+        private static AirlessLandingPlan CandidatePlan(LandingGuidanceV2Snapshot snapshot, Candidate candidate,
+            AirlessLandingBudget budget, string reason) =>
+            new AirlessLandingPlan(snapshot.Version, AirlessLandingPlanState.Candidate, candidate.Burn,
+                budget.Terminal, candidate.Downrange, candidate.CrossRange, candidate.Corridor, candidate.Estimate,
+                snapshot.AvailableDeltaV, reason, candidate.BurnUT, budget.Trim, budget.Reserve, budget.Contingency,
+                candidate.PlaneAlignmentBurn, candidate.PlaneAlignmentBurnUT,
+                candidate.Estimate.ImpactUT - budget.BrakingTime);
 
         private static AirlessLandingPlan Reject(LandingGuidanceV2Snapshot snapshot, string reason) =>
             Reject(snapshot, Vector3d.zero, null, double.NaN, double.NaN, double.NaN, reason);

@@ -153,6 +153,32 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
                 " corridor=" + plan.CorridorLimit + " dv=" + plan.StrategicDeorbitDeltaVMagnitude);
         }
 
+        [Fact]
+        public void CommittedMunStrategicVectorRemainsValidAtItsFreshBurnGate()
+        {
+            LandingGuidanceV2Snapshot snapshot = RecordedMunSnapshot();
+            AirlessLandingPlan planned = AirlessLandingPlanner.Plan(snapshot);
+            Assert.True(planned.State == AirlessLandingPlanState.Candidate, planned.Reason);
+
+            var coast = new AirlessConicTrajectory(snapshot.Body.gravParameter, snapshot.UT,
+                snapshot.Position, snapshot.Velocity);
+            Assert.True(coast.TryStateAt(planned.StrategicBurnUT, out Vector3d gatePosition, out Vector3d gateVelocity));
+            Vector3d targetAtGate = RotateTarget(snapshot, planned.StrategicBurnUT);
+            var gateSnapshot = new LandingGuidanceV2Snapshot(snapshot.Version + 1, planned.StrategicBurnUT,
+                snapshot.Body, gatePosition, gateVelocity, snapshot.Mass, snapshot.AvailableDeltaV,
+                snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude,
+                snapshot.TargetLongitude, false, planned.StrategicBurnUT, targetAtGate, true);
+
+            Assert.True(AirlessLandingPlanner.TryValidateCommittedStrategicBurn(gateSnapshot, planned,
+                out AirlessLandingPlan validated, out string reason), reason);
+            Assert.True(validated.State == AirlessLandingPlanState.Candidate);
+            Assert.Equal(gateSnapshot.UT, validated.StrategicBurnUT, 6);
+            Assert.True(validated.CandidateEstimate.HasImpact);
+            Assert.True(validated.SignedDownrange >= 0 && validated.SignedDownrange <= validated.CorridorLimit);
+            Assert.True(validated.CrossRange <= validated.CorridorLimit);
+            Assert.True(validated.LowerBoundMargin >= 0);
+        }
+
         private static LandingGuidanceV2Snapshot RecordedMunSnapshot()
         {
             const double ut = 24108762.642232;
