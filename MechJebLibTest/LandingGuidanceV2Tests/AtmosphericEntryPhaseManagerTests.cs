@@ -60,6 +60,39 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void ControllerHarnessExecutesAtmosphericWarpBurnAndPostBurnEntryValidation()
+        {
+            AtmosphericLandingPlan plan = Candidate(100, 1000, 30);
+            AtmosphericLandingPlan postBurn = Candidate(102, 1001, 0);
+            AtmosphericEntryControllerHarnessResult result = new AtmosphericEntryControllerHarness().Execute(
+                plan, 100, 0.65, 27.9, postBurn);
+
+            Assert.True(result.InitialWarpRequested);
+            Assert.True(result.FinalWarpRequested);
+            Assert.True(result.FreshBurnValidationRequired);
+            Assert.True(result.FiniteBurnStarted);
+            Assert.True(result.NonzeroThrottleCommanded);
+            Assert.True(result.FiniteBurnCompleted);
+            Assert.True(result.PostBurnValidationRequired);
+            Assert.Equal(AtmosphericEntryPhase.Entry, result.FinalPhase);
+            Assert.InRange(System.Math.Abs(result.DeliveredDeltaV - 30), 0,
+                AtmosphericEntryPhaseManager.BurnCompleteDeltaV + 0.001);
+            Assert.True(result.WorkUnits < 10000);
+        }
+
+        [Fact]
+        public void ControllerHarnessFailsClosedWhenFreshAtmosphericIgnitionValidationRejects()
+        {
+            AtmosphericEntryControllerHarnessResult result = new AtmosphericEntryControllerHarness().Execute(
+                Candidate(100, 1000, 30), 100, 0.65, 27.9, Candidate(102, 1001, 0),
+                freshValidationIsValid: false);
+
+            Assert.Equal(AtmosphericEntryPhase.Rejected, result.FinalPhase);
+            Assert.Contains("deliberately rejected", result.LastReason);
+            Assert.False(result.FiniteBurnStarted);
+        }
+
+        [Fact]
         public void AtmosphericBurnCannotStartWithoutAFreshPostWarpValidation()
         {
             var manager = new AtmosphericEntryPhaseManager(0.65);

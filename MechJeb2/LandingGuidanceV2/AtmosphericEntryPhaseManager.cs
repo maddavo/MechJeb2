@@ -187,6 +187,126 @@ namespace MuMech
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
     }
 
+    /// <summary>
+    /// KSP-free execution of the exact atmospheric burn authority machine.
+    /// It is deliberately command-oriented: every warp, attitude gate, fresh
+    /// validation and finite throttle command is recorded for regression tests.
+    /// </summary>
+    public sealed class AtmosphericEntryControllerHarness
+    {
+        public AtmosphericEntryControllerHarnessResult Execute(AtmosphericLandingPlan plan, double startUT,
+            double finiteBurnLeadSeconds, double maximumAcceleration, AtmosphericLandingPlan postBurnPlan,
+            double physicsStepSeconds = 0.02, bool freshValidationIsValid = true,
+            double attitudeErrorDegrees = 0)
+        {
+            var result = new AtmosphericEntryControllerHarnessResult();
+            var manager = new AtmosphericEntryPhaseManager(finiteBurnLeadSeconds);
+            result.Add(manager.Start(plan));
+            if (result.LastDirective == AtmosphericEntryDirective.Reject) return result;
+            if (manager.Phase == AtmosphericEntryPhase.Entry)
+            {
+                result.FinalPhase = manager.Phase;
+                return result;
+            }
+
+            double ut = startUT;
+            double step = Math.Max(0.001, physicsStepSeconds);
+            double acceleration = Math.Max(0.001, maximumAcceleration);
+            result.Add(manager.Tick(ut, true, attitudeErrorDegrees, double.NaN));
+            if (result.LastDirective == AtmosphericEntryDirective.RequestInitialWarp)
+            {
+                result.InitialWarpRequested = true;
+                ut = result.LastWarpUT;
+                result.Add(manager.Tick(ut, true, attitudeErrorDegrees, double.NaN));
+            }
+            if (result.LastDirective == AtmosphericEntryDirective.RequestAttitude)
+            {
+                ut += step;
+                result.Add(manager.Tick(ut, true, attitudeErrorDegrees, double.NaN));
+            }
+            if (result.LastDirective != AtmosphericEntryDirective.WarpAuthorized) return result;
+            result.Add(manager.Tick(ut, true, attitudeErrorDegrees, double.NaN));
+            if (result.LastDirective == AtmosphericEntryDirective.RequestWarp)
+            {
+                result.FinalWarpRequested = true;
+                ut = result.LastWarpUT;
+                result.Add(manager.Tick(ut, true, attitudeErrorDegrees, double.NaN));
+            }
+            if (result.LastDirective != AtmosphericEntryDirective.ExitWarpAndRequestAttitude) return result;
+
+            ut = manager.IgnitionUT;
+            result.Add(manager.Tick(ut, false, attitudeErrorDegrees, double.NaN));
+            if (result.LastDirective != AtmosphericEntryDirective.RequireFreshBurnValidation) return result;
+            result.FreshBurnValidationRequired = true;
+            AtmosphericLandingPlan freshPlan = new AtmosphericLandingPlan(plan.SnapshotVersion + 1,
+                freshValidationIsValid ? AtmosphericLandingPlanState.Candidate : AtmosphericLandingPlanState.Rejected,
+                plan.PredictedTargetError, plan.EntryCorridorRadius, plan.EndpointUncertainty, plan.TerminalReserve,
+                plan.LandingMargin, freshValidationIsValid ? plan.Reason : "Harness deliberately rejected the fresh ignition plan.",
+                plan.StrategicEntryDeltaV, plan.StrategicEntryBurnUT, plan.EntryUT, plan.EntryTargetError);
+            result.Add(manager.AcceptFreshBurnValidation(freshPlan, ut));
+            if (result.LastDirective == AtmosphericEntryDirective.Reject) return result;
+            result.Add(manager.Tick(ut, false, attitudeErrorDegrees, plan.StrategicEntryDeltaV.magnitude));
+            if (result.LastDirective != AtmosphericEntryDirective.BeginFiniteBurn) return result;
+            result.FiniteBurnStarted = true;
+
+            var progress = new FiniteBurnProgress(plan.StrategicEntryDeltaV.magnitude);
+            while (!progress.IsComplete() && result.WorkUnits < 100000)
+            {
+                double requestedThrottle = Math.Max(0.01, Math.Min(1.0,
+                    progress.RemainingDeltaV / (0.5 * acceleration)));
+                AirlessFineThrustCommand command = AirlessFineThrustControl.Calculate(progress.RemainingDeltaV,
+                    requestedThrottle, 0, acceleration);
+                result.NonzeroThrottleCommanded |= command.RequestedThrottle > 0 && command.ExpectedAcceleration > 0;
+                progress.Integrate(step, command.ExpectedAcceleration);
+                ut += step;
+                result.Add(manager.Tick(ut, false, attitudeErrorDegrees, progress.RemainingDeltaV));
+                if (result.LastDirective == AtmosphericEntryDirective.FiniteBurnComplete)
+                {
+                    result.FiniteBurnCompleted = true;
+                    break;
+                }
+                if (result.LastDirective != AtmosphericEntryDirective.RequestFiniteBurnThrottle) return result;
+            }
+            result.DeliveredDeltaV = progress.DeliveredDeltaV;
+            if (!result.FiniteBurnCompleted) return result;
+            result.Add(manager.Tick(ut, false, attitudeErrorDegrees, progress.RemainingDeltaV));
+            if (result.LastDirective != AtmosphericEntryDirective.RequirePostBurnValidation) return result;
+            result.PostBurnValidationRequired = true;
+            result.Add(manager.AcceptPostBurnValidation(postBurnPlan));
+            result.FinalPhase = manager.Phase;
+            return result;
+        }
+    }
+
+    public sealed class AtmosphericEntryControllerHarnessResult
+    {
+        public readonly System.Collections.Generic.List<AtmosphericEntryDirective> Directives =
+            new System.Collections.Generic.List<AtmosphericEntryDirective>();
+        public bool InitialWarpRequested;
+        public bool FinalWarpRequested;
+        public bool FreshBurnValidationRequired;
+        public bool FiniteBurnStarted;
+        public bool NonzeroThrottleCommanded;
+        public bool FiniteBurnCompleted;
+        public bool PostBurnValidationRequired;
+        public double DeliveredDeltaV;
+        public double LastWarpUT = double.NaN;
+        public int WorkUnits;
+        public AtmosphericEntryPhase FinalPhase;
+        public string LastReason;
+        public AtmosphericEntryDirective LastDirective => Directives.Count == 0
+            ? AtmosphericEntryDirective.None : Directives[Directives.Count - 1];
+
+        public void Add(AtmosphericEntryPhaseDecision decision)
+        {
+            Directives.Add(decision.Directive);
+            LastWarpUT = decision.WarpUT;
+            LastReason = decision.Reason;
+            WorkUnits += decision.WorkUnits;
+            FinalPhase = decision.Phase;
+        }
+    }
+
     public enum AtmosphericEntryPhase
     {
         Idle, InitialWarpToBurn, PrepareWarp, WarpToBurn, AlignBurn, Burn, AwaitPostBurnValidation, Entry, Rejected
