@@ -93,6 +93,13 @@ namespace MuMech
         // remapping is active.  They are restored before every control exit.
         private readonly Dictionary<ModuleEngines, float> _thrustLimitsBeforeV2FineControl =
             new Dictionary<ModuleEngines, float>();
+        // Trace the physical fine-thrust mapping separately from MechJeb's
+        // main-throttle safety cap.  A diagnostic record can then show that a
+        // low commanded throttle was deliberately remapped through engine
+        // thrustPercentage, rather than being an unexplained loss of thrust.
+        private double _v2FineEngineRelativeLimit = 1;
+        private double _v2FineEngineExpectedAcceleration = double.NaN;
+        private int _v2FineEngineCount;
 
         public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, AlignTrim, BoundedTrim, Coast, WarpToAtmosphericEntry, AlignAtmosphericEntryBurn, AtmosphericEntryBurn, AtmosphericEntry, BrakingApproach, VisualAssessment, TerminalDivert, VelocityNull, Complete, Rejected }
 
@@ -1077,6 +1084,7 @@ namespace MuMech
                 return;
             }
 
+            int limitedEngineCount = 0;
             foreach (ModuleEngines engine in Vessel.parts.SelectMany(part => part.Modules.OfType<ModuleEngines>()))
             {
                 if (!engine.isOperational || !engine.EngineIgnited) continue;
@@ -1085,7 +1093,12 @@ namespace MuMech
                 float originalLimit = _thrustLimitsBeforeV2FineControl[engine];
                 engine.thrustPercentage = Math.Min(originalLimit,
                     originalLimit * (float)command.RelativeEngineThrustLimit);
+                limitedEngineCount++;
             }
+
+            _v2FineEngineCount = limitedEngineCount;
+            _v2FineEngineRelativeLimit = limitedEngineCount > 0 ? command.RelativeEngineThrustLimit : 1;
+            _v2FineEngineExpectedAcceleration = limitedEngineCount > 0 ? command.ExpectedAcceleration : double.NaN;
         }
 
         private void RestoreV2FineThrustLimits()
@@ -1095,6 +1108,9 @@ namespace MuMech
                 if (entry.Key != null) entry.Key.thrustPercentage = entry.Value;
             }
             _thrustLimitsBeforeV2FineControl.Clear();
+            _v2FineEngineCount = 0;
+            _v2FineEngineRelativeLimit = 1;
+            _v2FineEngineExpectedAcceleration = double.NaN;
         }
 
         private double ThrustVectorAlignmentError(Vector3d commandedVector)
@@ -1586,6 +1602,10 @@ namespace MuMech
                     JsonNumber(VesselState.ThrustForward.x), JsonNumber(VesselState.ThrustForward.y), JsonNumber(VesselState.ThrustForward.z),
                     JsonNumber(thrustVectorError), JsonNumber(Vessel?.angularVelocity.magnitude ?? double.NaN),
                     BurnAlignmentReady(_commandedV2AttitudeVector) ? "true" : "false");
+                baseFields += string.Format(CultureInfo.InvariantCulture,
+                    ",\"v2EngineThrustLimiterActive\":{0},\"v2EngineThrustLimiterRelative\":{1},\"v2EngineThrustLimiterExpectedAcceleration\":{2},\"v2EngineThrustLimiterEngineCount\":{3}",
+                    _v2FineEngineCount > 0 ? "true" : "false", JsonNumber(_v2FineEngineRelativeLimit),
+                    JsonNumber(_v2FineEngineExpectedAcceleration), _v2FineEngineCount);
                 baseFields += string.Format(CultureInfo.InvariantCulture,
                     ",\"airlessPlanSnapshotVersion\":{0},\"activeAirlessPlanSnapshotVersion\":{1},\"atmosphericPlanSnapshotVersion\":{2},\"airlessPlanningDurationMilliseconds\":{3},\"phaseManagerWorkUnits\":{4}",
                     airlessPlan?.SnapshotVersion ?? -1, _activePlan?.SnapshotVersion ?? -1,
