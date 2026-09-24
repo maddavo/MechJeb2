@@ -46,8 +46,8 @@ namespace MuMech
         private double _lastAtmosphericEntryPlanningMilliseconds = double.NaN;
         private double _nextAtmosphericCandidateSimulationUT;
         private long _atmosphericCandidateGeneration;
-        private bool _atmosphericInitialWarpIssued;
-        private bool _atmosphericWarpIssued;
+        private bool _atmosphericFreshValidationRequested;
+        private AtmosphericEntryPhaseManager _atmosphericPhaseManager;
         private string _lastV1Phase;
         private bool? _lastV1Burning;
         private bool? _lastWarped;
@@ -193,6 +193,8 @@ namespace MuMech
             _visualAssessmentCompleted = false;
             _airlessDescentCommitted = false;
             _terminalWarpGate.Reset();
+            _atmosphericPhaseManager = null;
+            _atmosphericFreshValidationRequested = false;
             _siteAssessment = null;
             if (MainBody.atmosphere)
             {
@@ -240,6 +242,62 @@ namespace MuMech
             if (decision.Directive != AirlessLandingPhaseDirective.Reject) return true;
             RejectController(decision.Reason);
             return false;
+        }
+
+        private bool StartAtmosphericPhaseManager(AtmosphericLandingPlan plan)
+        {
+            LandingGuidanceV2Snapshot snapshot = CaptureSnapshot();
+            double maximumAcceleration = snapshot?.MaximumAcceleration ?? 0;
+            double lead = maximumAcceleration > 0
+                ? plan.StrategicEntryDeltaV.magnitude / maximumAcceleration * 0.5 + 0.10
+                : 0;
+            _atmosphericPhaseManager = new AtmosphericEntryPhaseManager(lead);
+            _atmosphericFreshValidationRequested = false;
+            AtmosphericEntryPhaseDecision decision = _atmosphericPhaseManager.Start(plan);
+            if (decision.Directive != AtmosphericEntryDirective.Reject) return true;
+            RejectController(decision.Reason);
+            return false;
+        }
+
+        // A candidate is tied to a single immutable orbit snapshot. At the
+        // warp-exit and post-burn boundaries invalidate the old simulation,
+        // queue a new worker result, and keep V2's own attitude/thrust users
+        // until that result is accepted or explicitly rejected.
+        private void BeginAtmosphericFreshValidation()
+        {
+            if (_atmosphericFreshValidationRequested) return;
+            _atmosphericFreshValidationRequested = true;
+            ClearAtmosphericCandidateResult();
+            Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Users.Add(this);
+            RefreshPreflight(true, true);
+        }
+
+        private bool TryAcceptAtmosphericFreshValidation(bool postBurn)
+        {
+            BeginAtmosphericFreshValidation();
+            RefreshPreflight(false);
+            AtmosphericLandingPlan plan = Preflight?.AtmosphericPlan;
+            if (plan == null || plan.State == AtmosphericLandingPlanState.WaitingForEstimate)
+            {
+                ControllerStatus = "V2 is holding at 1x while its independent atmospheric simulation validates the current trajectory.";
+                return false;
+            }
+            if (_atmosphericPhaseManager == null)
+            {
+                RejectController("V2 atmospheric validation completed after its phase authority was lost.");
+                return false;
+            }
+            AtmosphericEntryPhaseDecision decision = postBurn
+                ? _atmosphericPhaseManager.AcceptPostBurnValidation(plan)
+                : _atmosphericPhaseManager.AcceptFreshBurnValidation(plan, Preflight.Snapshot.UT);
+            if (decision.Directive == AtmosphericEntryDirective.Reject)
+            {
+                RejectController(decision.Reason);
+                return false;
+            }
+            _atmosphericCandidatePlan = _atmosphericPhaseManager.Plan;
+            _atmosphericFreshValidationRequested = false;
+            return true;
         }
 
         private bool RejectController(string reason)
@@ -295,20 +353,15 @@ namespace MuMech
                         if (Preflight?.AtmosphericPlan?.State == AtmosphericLandingPlanState.Candidate)
                         {
                             _atmosphericCandidatePlan = Preflight.AtmosphericPlan;
-                            if (_atmosphericCandidatePlan.StrategicEntryDeltaV.magnitude <= 0.5)
-                            {
-                                Core.Thrust.Users.Add(this);
-                                Core.Attitude.Users.Add(this);
+                            if (!StartAtmosphericPhaseManager(_atmosphericCandidatePlan)) break;
+                            Core.Thrust.Users.Add(this);
+                            Core.Attitude.Users.Add(this);
+                            if (_atmosphericPhaseManager.Phase == AtmosphericEntryPhase.Entry)
                                 TransitionTo(V2FlightPhase.AtmosphericEntry,
                                     "V2 validated the current atmospheric entry trajectory; beginning the independent entry profile.");
-                            }
                             else
-                            {
-                                Core.Thrust.Users.Add(this);
-                                Core.Attitude.Users.Add(this);
                                 TransitionTo(V2FlightPhase.WarpToAtmosphericEntry,
-                                    "V2 validated its strategic atmospheric entry burn; moving to its burn gate.");
-                            }
+                                    "V2 validated its strategic atmospheric entry burn; moving to its staged burn gate.");
                         }
                         else if (Preflight?.AtmosphericPlan?.State == AtmosphericLandingPlanState.Rejected)
                             RejectController(Preflight.AtmosphericPlan.Reason);
@@ -641,107 +694,152 @@ namespace MuMech
                     break;
                 case V2FlightPhase.WarpToAtmosphericEntry:
                     Core.Thrust.ThrustOff();
-                    if (_atmosphericCandidatePlan == null)
+                    if (_atmosphericPhaseManager == null || _atmosphericPhaseManager.Plan == null)
                     {
-                        ReleaseV2Control();
-                        TransitionTo(V2FlightPhase.Preflight, "V2 atmospheric burn candidate expired; obtaining a fresh simulation.");
+                        RejectController("V2 atmospheric controller lost its committed entry plan.");
                         break;
                     }
-                    Core.Warp.MinimumWarp(true);
-                    if (_atmosphericInitialWarpIssued)
+                    AtmosphericLandingPlan atmosphericWarpPlan = _atmosphericPhaseManager.Plan;
+                    bool preparingAtmosphericWarp = _atmosphericPhaseManager.Phase == AtmosphericEntryPhase.PrepareWarp ||
+                        _atmosphericPhaseManager.Phase == AtmosphericEntryPhase.WarpToBurn;
+                    if (preparingAtmosphericWarp)
                     {
-                        // Candidate dynamics may not cross even a coarse rails
-                        // boundary. Acquire a fresh snapshot and simulation at
-                        // the 1x alignment gate before commanding attitude.
-                        _atmosphericInitialWarpIssued = false;
-                        ReleaseV2Control();
-                        TransitionTo(V2FlightPhase.Preflight,
-                            "V2 exited coarse warp at the atmospheric alignment gate; acquiring a fresh candidate simulation.");
+                        Core.Attitude.attitudeTo(atmosphericWarpPlan.StrategicEntryDeltaV, AttitudeReference.INERTIAL_COT, this);
+                        _commandedV2AttitudeVector = atmosphericWarpPlan.StrategicEntryDeltaV;
+                    }
+                    AtmosphericEntryPhaseDecision atmosphericWarpDecision = _atmosphericPhaseManager.Tick(VesselState.Time,
+                        V2AutoWarp, BurnAlignmentError(atmosphericWarpPlan.StrategicEntryDeltaV), double.NaN);
+                    if (atmosphericWarpDecision.Directive == AtmosphericEntryDirective.Reject)
+                    {
+                        RejectController(atmosphericWarpDecision.Reason);
                         break;
                     }
-                    if (_atmosphericWarpIssued)
+                    if (atmosphericWarpDecision.Directive == AtmosphericEntryDirective.RequestInitialWarp)
                     {
-                        // Candidate dynamics may not cross a warp boundary.
-                        // Rebuild the snapshot and run a new V2 simulation
-                        // before asking for attitude or throttle.
-                        _atmosphericWarpIssued = false;
-                        ReleaseV2Control();
-                        TransitionTo(V2FlightPhase.Preflight,
-                            "V2 exited warp at the atmospheric burn gate; acquiring a fresh candidate simulation.");
+                        Core.Warp.WarpToUT(atmosphericWarpDecision.WarpUT);
+                        ControllerStatus = "V2 is coarse-warping to the atmospheric entry-burn alignment gate.";
                         break;
                     }
-                    Core.Attitude.attitudeTo(_atmosphericCandidatePlan.StrategicEntryDeltaV, AttitudeReference.INERTIAL_COT, this);
-                    _commandedV2AttitudeVector = _atmosphericCandidatePlan.StrategicEntryDeltaV;
-                    bool atmosphericBurnAligned = BurnAlignmentReady(_atmosphericCandidatePlan.StrategicEntryDeltaV);
-                    if (!atmosphericBurnAligned)
+                    if (atmosphericWarpDecision.Directive == AtmosphericEntryDirective.RequestAttitude)
                     {
+                        Core.Warp.MinimumWarp(true);
                         ControllerStatus = "V2 is holding at 1x until the atmospheric entry-burn attitude is aligned and settled.";
                         break;
                     }
-                    if (AtmosphericBurnWarpGate.CanRequestWarp(VesselState.Time,
-                        _atmosphericCandidatePlan.StrategicEntryBurnUT,
-                        AirlessLandingPhaseManager.InitialWarpLeadSeconds, V2AutoWarp, atmosphericBurnAligned))
+                    if (atmosphericWarpDecision.Directive == AtmosphericEntryDirective.WarpAuthorized)
                     {
-                        Core.Warp.WarpToUT(_atmosphericCandidatePlan.StrategicEntryBurnUT - AirlessLandingPhaseManager.InitialWarpLeadSeconds);
-                        _atmosphericInitialWarpIssued = true;
-                        ControllerStatus = "V2 is coarse-warping to the 10-minute atmospheric entry-burn alignment gate.";
+                        ControllerStatus = "V2 confirmed atmospheric entry-burn attitude at 1x; auto-warp is authorized.";
                         break;
                     }
-                    if (AtmosphericBurnWarpGate.CanRequestWarp(VesselState.Time,
-                        _atmosphericCandidatePlan.StrategicEntryBurnUT,
-                        AirlessLandingPhaseManager.WarpSettleMargin, V2AutoWarp, atmosphericBurnAligned))
+                    if (atmosphericWarpDecision.Directive == AtmosphericEntryDirective.RequestWarp)
                     {
-                        Core.Warp.WarpToUT(_atmosphericCandidatePlan.StrategicEntryBurnUT - AirlessLandingPhaseManager.WarpSettleMargin);
-                        _atmosphericWarpIssued = true;
+                        Core.Warp.WarpToUT(atmosphericWarpDecision.WarpUT);
                         break;
                     }
-                    RefreshPreflight(true);
-                    if (Preflight?.AtmosphericPlan?.State != AtmosphericLandingPlanState.Candidate ||
-                        Preflight.AtmosphericPlan.StrategicEntryDeltaV.magnitude <= 0.5 ||
-                        Preflight.AtmosphericPlan.StrategicEntryBurnUT < VesselState.Time - 2.0)
+                    if (atmosphericWarpDecision.Directive == AtmosphericEntryDirective.ExitWarpAndRequestAttitude)
                     {
-                        ReleaseV2Control();
-                        TransitionTo(V2FlightPhase.Preflight, "V2 atmospheric burn gate requires a fresh candidate simulation.");
+                        Core.Warp.MinimumWarp(true);
+                        BeginAtmosphericFreshValidation();
+                        TransitionTo(V2FlightPhase.AlignAtmosphericEntryBurn,
+                            "V2 left warp at 1x and is obtaining a fresh atmospheric entry-burn validation.");
                         break;
                     }
-                    _atmosphericCandidatePlan = Preflight.AtmosphericPlan;
-                    if (_atmosphericCandidatePlan.StrategicEntryBurnUT > VesselState.Time + 25.0)
+                    if (atmosphericWarpDecision.Directive == AtmosphericEntryDirective.RequirePostBurnValidation)
                     {
-                        ControllerStatus = "V2 atmospheric entry candidate changed after warp; returning to its staged alignment gate.";
+                        if (TryAcceptAtmosphericFreshValidation(true))
+                        {
+                            if (_atmosphericPhaseManager.Phase == AtmosphericEntryPhase.Entry)
+                                TransitionTo(V2FlightPhase.AtmosphericEntry,
+                                    "V2 independently validated the actual post-burn atmospheric trajectory.");
+                            else
+                                TransitionTo(V2FlightPhase.WarpToAtmosphericEntry,
+                                    "V2 post-burn validation scheduled a bounded corrective atmospheric entry burn.");
+                        }
                         break;
                     }
-                    _burnTargetVelocity = VesselState.OrbitalVelocity + _atmosphericCandidatePlan.StrategicEntryDeltaV;
-                    TransitionTo(V2FlightPhase.AlignAtmosphericEntryBurn, "Aligning for the validated V2 atmospheric entry burn.");
+                    if (atmosphericWarpDecision.Directive == AtmosphericEntryDirective.EnterAtmosphericEntry)
+                        TransitionTo(V2FlightPhase.AtmosphericEntry,
+                            "V2 is executing its independently validated atmospheric entry profile.");
+                    else
+                        RejectController("V2 atmospheric warp gate returned an unsupported controller directive.");
                     break;
                 case V2FlightPhase.AlignAtmosphericEntryBurn:
                     Core.Thrust.ThrustOff();
-                    Core.Attitude.attitudeTo(_atmosphericCandidatePlan.StrategicEntryDeltaV, AttitudeReference.INERTIAL_COT, this);
-                    _commandedV2AttitudeVector = _atmosphericCandidatePlan.StrategicEntryDeltaV;
-                    if (BurnAlignmentReady(_atmosphericCandidatePlan.StrategicEntryDeltaV))
+                    if (_atmosphericPhaseManager == null || _atmosphericPhaseManager.Plan == null)
                     {
-                        BeginFiniteBurn("atmospheric_strategic_entry", _atmosphericCandidatePlan.StrategicEntryDeltaV.magnitude);
-                        TransitionTo(V2FlightPhase.AtmosphericEntryBurn, "Executing the finite V2 atmospheric entry burn.");
+                        RejectController("V2 atmospheric controller lost its entry-burn plan at the ignition gate.");
+                        break;
                     }
+                    AtmosphericLandingPlan atmosphericAlignPlan = _atmosphericPhaseManager.Plan;
+                    Core.Attitude.attitudeTo(atmosphericAlignPlan.StrategicEntryDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    _commandedV2AttitudeVector = atmosphericAlignPlan.StrategicEntryDeltaV;
+                    AtmosphericEntryPhaseDecision atmosphericAlignDecision = _atmosphericPhaseManager.Tick(VesselState.Time,
+                        false, BurnAlignmentError(atmosphericAlignPlan.StrategicEntryDeltaV), double.NaN);
+                    if (atmosphericAlignDecision.Directive == AtmosphericEntryDirective.RequireFreshBurnValidation)
+                    {
+                        if (!TryAcceptAtmosphericFreshValidation(false)) break;
+                        atmosphericAlignPlan = _atmosphericPhaseManager.Plan;
+                        Core.Attitude.attitudeTo(atmosphericAlignPlan.StrategicEntryDeltaV, AttitudeReference.INERTIAL_COT, this);
+                        _commandedV2AttitudeVector = atmosphericAlignPlan.StrategicEntryDeltaV;
+                        atmosphericAlignDecision = _atmosphericPhaseManager.Tick(VesselState.Time, false,
+                            BurnAlignmentError(atmosphericAlignPlan.StrategicEntryDeltaV), double.NaN);
+                    }
+                    if (atmosphericAlignDecision.Directive == AtmosphericEntryDirective.Reject)
+                    {
+                        RejectController(atmosphericAlignDecision.Reason);
+                        break;
+                    }
+                    if (atmosphericAlignDecision.Directive == AtmosphericEntryDirective.RequestAttitude)
+                    {
+                        ControllerStatus = "V2 is holding at 1x until fresh entry validation and burn attitude are both ready.";
+                        break;
+                    }
+                    if (atmosphericAlignDecision.Directive == AtmosphericEntryDirective.BeginFiniteBurn)
+                    {
+                        BeginFiniteBurn("atmospheric_strategic_entry", atmosphericAlignPlan.StrategicEntryDeltaV.magnitude);
+                        TransitionTo(V2FlightPhase.AtmosphericEntryBurn, "Executing the finite V2 atmospheric entry burn.");
+                        break;
+                    }
+                    if (atmosphericAlignDecision.Directive == AtmosphericEntryDirective.EnterAtmosphericEntry)
+                    {
+                        TransitionTo(V2FlightPhase.AtmosphericEntry,
+                            "V2 fresh ignition validation established a direct atmospheric entry trajectory.");
+                        break;
+                    }
+                    RejectController("V2 atmospheric ignition gate returned an unsupported controller directive.");
                     break;
                 case V2FlightPhase.AtmosphericEntryBurn:
-                    Core.Attitude.attitudeTo(_atmosphericCandidatePlan.StrategicEntryDeltaV, AttitudeReference.INERTIAL_COT, this);
-                    _commandedV2AttitudeVector = _atmosphericCandidatePlan.StrategicEntryDeltaV;
+                    if (_atmosphericPhaseManager == null || _atmosphericPhaseManager.Plan == null)
+                    {
+                        RejectController("V2 atmospheric controller lost its entry-burn plan during execution.");
+                        break;
+                    }
+                    AtmosphericLandingPlan atmosphericBurnPlan = _atmosphericPhaseManager.Plan;
+                    Core.Attitude.attitudeTo(atmosphericBurnPlan.StrategicEntryDeltaV, AttitudeReference.INERTIAL_COT, this);
+                    _commandedV2AttitudeVector = atmosphericBurnPlan.StrategicEntryDeltaV;
                     double remainingEntryDv = RemainingFiniteBurnDeltaV;
-                    if (!BurnAlignmentReady(_atmosphericCandidatePlan.StrategicEntryDeltaV))
+                    AtmosphericEntryPhaseDecision atmosphericBurnDecision = _atmosphericPhaseManager.Tick(VesselState.Time,
+                        false, BurnAlignmentError(atmosphericBurnPlan.StrategicEntryDeltaV), remainingEntryDv);
+                    if (atmosphericBurnDecision.Directive == AtmosphericEntryDirective.RequestFiniteBurnThrottle)
+                    {
+                        CommandFiniteBurnThrottle(remainingEntryDv);
+                        break;
+                    }
+                    if (atmosphericBurnDecision.Directive == AtmosphericEntryDirective.RequestAttitude)
                     {
                         Core.Thrust.ThrustOff();
                         ControllerStatus = "V2 paused the atmospheric entry burn until measured thrust-vector alignment is restored.";
                         break;
                     }
-                    if (remainingEntryDv <= AirlessLandingPhaseManager.BurnCompleteDeltaV)
+                    if (atmosphericBurnDecision.Directive != AtmosphericEntryDirective.FiniteBurnComplete)
                     {
-                        FinishFiniteBurn();
-                        ClearAtmosphericCandidateResult();
-                        Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Users.Add(this);
-                        TransitionTo(V2FlightPhase.Preflight,
-                            "V2 atmospheric entry burn complete; independently validating the actual post-burn trajectory.");
+                        RejectController(atmosphericBurnDecision.Reason ?? "V2 atmospheric burn did not retain finite-burn authority.");
+                        break;
                     }
-                    else CommandFiniteBurnThrottle(remainingEntryDv);
+                    FinishFiniteBurn();
+                    BeginAtmosphericFreshValidation();
+                    TransitionTo(V2FlightPhase.WarpToAtmosphericEntry,
+                        "V2 entry burn complete; independently validating the actual post-burn trajectory before entry.");
                     break;
                 case V2FlightPhase.AtmosphericEntry:
                     // Atmospheric flight is never warped.  Keep the vehicle
@@ -1066,8 +1164,8 @@ namespace MuMech
             Core.Hoverslam.Users.Remove(this);
             Core.GetComputerModule<MechJebModuleLandingPredictions>()?.Users.Remove(this);
             ClearAtmosphericCandidateResult();
-            _atmosphericInitialWarpIssued = false;
-            _atmosphericWarpIssued = false;
+            _atmosphericFreshValidationRequested = false;
+            _atmosphericPhaseManager = null;
             _finiteBurnTracking = false;
         }
         private double RemainingFiniteBurnDeltaV => _finiteBurnProgress == null
