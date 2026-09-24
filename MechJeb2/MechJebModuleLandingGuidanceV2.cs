@@ -66,6 +66,10 @@ namespace MuMech
         // resulting KSP commands.
         private readonly AirlessLandingPhaseManager _airlessPhaseManager = new AirlessLandingPhaseManager();
         private readonly AirlessTerminalWarpGate _terminalWarpGate = new AirlessTerminalWarpGate();
+        // V2 alone owns the decision to stage during its commanded burns. The
+        // generic staging module remains only the actuator after this gate.
+        private readonly V2PoweredStagingGate _v2PoweredStagingGate = new V2PoweredStagingGate();
+        private double _lastV2StageUT = double.NegativeInfinity;
         private string _lastV2Phase;
         private double _activeTargetLatitude;
         private double _activeTargetLongitude;
@@ -193,6 +197,8 @@ namespace MuMech
             _visualAssessmentCompleted = false;
             _airlessDescentCommitted = false;
             _terminalWarpGate.Reset();
+            _v2PoweredStagingGate.Reset();
+            _lastV2StageUT = double.NegativeInfinity;
             _atmosphericPhaseManager = null;
             _atmosphericFreshValidationRequested = false;
             _siteAssessment = null;
@@ -857,19 +863,46 @@ namespace MuMech
                         RejectController(Preflight.AtmosphericPlan.Reason);
                         break;
                     }
+                    // A safely deployed chute owns the final ballistic
+                    // descent on a capsule or bell-shaped vessel. Do not
+                    // command a competing powered braking maneuver below it.
+                    if (VesselState.ParachuteDeployed)
+                    {
+                        ControllerStatus = "V2 is holding the ballistic entry profile under safely deployed parachutes.";
+                        break;
+                    }
                     if (AtmosphericBrakingEntryRequired())
                         TransitionTo(V2FlightPhase.BrakingApproach,
                             "V2 atmospheric energy gate reached its conservative powered-braking entry.");
                     break;
                 case V2FlightPhase.BrakingApproach:
                     Core.Warp.MinimumWarp(true);
-                    if (VesselState.AltitudeBottom <= VisualAssessmentAltitude && !_visualAssessmentCompleted)
+                    if (MainBody.atmosphere && VesselState.ParachuteDeployed)
+                    {
+                        Core.Thrust.ThrustOff();
+                        TransitionTo(V2FlightPhase.AtmosphericEntry,
+                            "V2 returned to its ballistic parachute descent profile before powered braking.");
+                        break;
+                    }
+                    if (!MainBody.atmosphere && VesselState.AltitudeBottom <= VisualAssessmentAltitude && !_visualAssessmentCompleted)
                     {
                         Core.Warp.MinimumWarp(true);
                         TransitionTo(V2FlightPhase.VisualAssessment, "V2 entered the local visual-assessment gate.");
                         break;
                     }
-                    Vector3d adjustedVelocity = TerminalVelocityError();
+                    double downSpeed = Math.Max(0, -Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up));
+                    AtmosphericBallisticBrakingCommand atmosphericBraking = MainBody.atmosphere
+                        ? AtmosphericBallisticBraking.Calculate(VesselState.AltitudeBottom, downSpeed,
+                            Vessel.graviticAcceleration.magnitude, VesselState.MinThrustAcceleration,
+                            VesselState.MaxThrustAcceleration, Core.Thrust.ThrottleLimit)
+                        : null;
+                    if (atmosphericBraking != null && !atmosphericBraking.Valid)
+                    {
+                        Core.Thrust.ThrustOff();
+                        ControllerStatus = atmosphericBraking.RejectionReason;
+                        break;
+                    }
+                    Vector3d adjustedVelocity = atmosphericBraking == null ? TerminalVelocityError() : VesselState.SurfaceVelocity;
                     Vector3d brakingDirection = -adjustedVelocity;
                     Core.Attitude.attitudeTo(brakingDirection, AttitudeReference.INERTIAL_COT, this);
                     _commandedV2AttitudeVector = brakingDirection;
@@ -877,6 +910,16 @@ namespace MuMech
                     {
                         Core.Thrust.ThrustOff();
                         ControllerStatus = "V2 is holding braking throttle until the measured thrust vector is aligned and settled.";
+                        break;
+                    }
+                    if (atmosphericBraking != null)
+                    {
+                        AirlessFineThrustCommand fine = AirlessFineThrustControl.CalculateTerminal(
+                            atmosphericBraking.RequestedThrottle, VesselState.MinThrustAcceleration,
+                            VesselState.MaxThrustAcceleration, availableMainThrottle: Core.Thrust.ThrottleLimit);
+                        Core.Thrust.TargetThrottle = (float)Math.Min(fine.RequestedThrottle, Core.Thrust.ThrottleLimit);
+                        ApplyV2FineThrustLimit(fine);
+                        ControllerStatus = "V2 is holding retrograde and tracking its conservative ballistic braking envelope.";
                         break;
                     }
                     Core.Thrust.TargetThrottle = 1.0f;
@@ -896,6 +939,7 @@ namespace MuMech
                     TickVelocityNull();
                     break;
             }
+            ConsiderV2PoweredStaging();
         }
 
         private void BeginAirlessRecoveryReplan(string reason)
@@ -1036,6 +1080,37 @@ namespace MuMech
                 if (VesselState.AltitudeASL <= landingASL + parachute.deployAltitude)
                     parachute.Deploy();
             }
+        }
+
+        private void ConsiderV2PoweredStaging()
+        {
+            bool poweredBurnPhase = _flightPhase == V2FlightPhase.PlaneAlignment ||
+                _flightPhase == V2FlightPhase.StrategicBurn || _flightPhase == V2FlightPhase.BoundedTrim ||
+                _flightPhase == V2FlightPhase.AtmosphericEntryBurn || _flightPhase == V2FlightPhase.BrakingApproach ||
+                _flightPhase == V2FlightPhase.TerminalDivert || _flightPhase == V2FlightPhase.VelocityNull;
+            bool nextStageUsable = false;
+            if (poweredBurnPhase && Vessel != null && Vessel.currentStage > 0)
+            {
+                Core.StageStats.RequestUpdate();
+                int nextStage = Vessel.currentStage - 1;
+                nextStageUsable = Core.StageStats.VacStats.Any(s => s.KSPStage == nextStage && s.DeltaV > 1.0 &&
+                    s.MaxThrust > 0 && s.DeltaTime > 0);
+            }
+            V2PoweredStageDecision decision = _v2PoweredStagingGate.Decide(VesselState.Time, poweredBurnPhase,
+                VesselState.ParachuteDeployed, Core.Thrust.TargetThrottle, VesselState.CurrentThrustAcceleration,
+                VesselState.MaxThrustAcceleration, nextStageUsable);
+            if (decision.Directive != V2PoweredStageDirective.CommandStage ||
+                VesselState.Time - _lastV2StageUT < 2.0) return;
+
+            // Remove thrust before activating the next KSP stage. The next
+            // physics frame supplies fresh measured acceleration to V2; no
+            // old-stage thrust observation is permitted to continue a burn.
+            Core.Thrust.ThrustOff();
+            Core.Staging.ImmediateStage();
+            _lastV2StageUT = VesselState.Time;
+            _v2PoweredStagingGate.Reset();
+            _pendingTargetEvent = "v2_stage_command";
+            ControllerStatus = "V2 staged after a sustained measured loss of full-throttle propulsion.";
         }
 
         // The shared hoverslam estimate does not model atmospheric drag. V2
@@ -1198,6 +1273,7 @@ namespace MuMech
             ClearAtmosphericCandidateResult();
             _atmosphericFreshValidationRequested = false;
             _atmosphericPhaseManager = null;
+            _v2PoweredStagingGate.Reset();
             _finiteBurnTracking = false;
         }
         private double RemainingFiniteBurnDeltaV => _finiteBurnProgress == null
@@ -1857,6 +1933,9 @@ namespace MuMech
                     terminalIgnitionAvailable ? "true" : "false", JsonNumber(terminalIgnitionUT),
                     JsonNumber(terminalIgnitionCountdown),
                     BurnAlignmentReady(Core.Hoverslam?.IgnitionAttitude ?? Vector3d.zero) ? "true" : "false");
+                baseFields += string.Format(CultureInfo.InvariantCulture,
+                    ",\"v2CurrentStage\":{0},\"v2LastStageUT\":{1}",
+                    Vessel?.currentStage ?? -1, JsonNumber(_lastV2StageUT));
                 baseFields += string.Format(CultureInfo.InvariantCulture,
                     ",\"airlessPlanSnapshotVersion\":{0},\"activeAirlessPlanSnapshotVersion\":{1},\"atmosphericPlanSnapshotVersion\":{2},\"airlessPlanningDurationMilliseconds\":{3},\"atmosphericEntryPlanningDurationMilliseconds\":{4},\"atmosphericEntryPlanningRunning\":{5},\"phaseManagerWorkUnits\":{6}",
                     airlessPlan?.SnapshotVersion ?? -1, _activePlan?.SnapshotVersion ?? -1,
