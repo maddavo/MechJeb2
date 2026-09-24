@@ -850,6 +850,7 @@ namespace MuMech
                     Core.Warp.MinimumWarp(true);
                     Core.Thrust.ThrustOff();
                     Core.Attitude.attitudeTo(-VesselState.SurfaceVelocity, AttitudeReference.INERTIAL_COT, this);
+                    DeployV2AtmosphericParachutes();
                     RefreshPreflight(false);
                     if (Preflight?.AtmosphericPlan?.State == AtmosphericLandingPlanState.Rejected)
                     {
@@ -1016,6 +1017,25 @@ namespace MuMech
             _siteAssessment = AssessLocalSite(latitude, longitude);
             TransitionTo(V2FlightPhase.TerminalDivert,
                 "V2 visual rebase complete; terminal-divert guidance is tracking the assessed local target.");
+        }
+
+        // V2 owns atmospheric parachute deployment. It uses each parachute's
+        // configured deploy altitude and KSP's safe-state check, measured from
+        // the active target terrain. This does not use or alter V1's settings.
+        private void DeployV2AtmosphericParachutes()
+        {
+            if (VesselState?.MainBody == null || !VesselState.MainBody.atmosphere) return;
+            double landingASL;
+            try { landingASL = MainBody.TerrainAltitude(V2ActiveTargetLatitude, V2ActiveTargetLongitude, true); }
+            catch (Exception) { return; }
+            for (int i = 0; i < VesselState.Parachutes.Count; i++)
+            {
+                ModuleParachute parachute = VesselState.Parachutes[i];
+                if (parachute.deploymentState != ModuleParachute.deploymentStates.STOWED ||
+                    parachute.deploymentSafeState != ModuleParachute.deploymentSafeStates.SAFE) continue;
+                if (VesselState.AltitudeASL <= landingASL + parachute.deployAltitude)
+                    parachute.Deploy();
+            }
         }
 
         // The shared hoverslam estimate does not model atmospheric drag. V2
