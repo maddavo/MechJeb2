@@ -104,13 +104,13 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             var coast = new AirlessConicTrajectory(snapshot.Body.gravParameter, snapshot.UT, snapshot.Position, snapshot.Velocity);
             double bestError = double.PositiveInfinity;
             double bestDeltaV = double.NaN;
-            double bestCrossingDifference = double.NaN;
             double bestBurnUT = double.NaN;
             Vector3d bestPosition = Vector3d.zero;
             Vector3d bestVelocity = Vector3d.zero;
             for (int epochIndex = 0; epochIndex <= 48; ++epochIndex)
             {
-                double burnUT = snapshot.UT + 2.0 + coast.Period * epochIndex / 48.0;
+                double burnUT = snapshot.UT + AirlessLandingPlanner.MinimumPreAlignmentLeadSeconds +
+                    coast.Period * epochIndex / 48.0;
                 Assert.True(coast.TryStateAt(burnUT, out Vector3d position, out Vector3d velocity));
                 for (int flightIndex = 1; flightIndex <= 36; ++flightIndex)
                 {
@@ -122,24 +122,22 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
                         V3 velocityV3 = ToV3(velocity);
                         (V3 transferVelocity, _) = Gooding.Solve(snapshot.Body.gravParameter, positionV3, ToV3(target),
                             flightTime, TransferGeometry.Prograde, 0, V3.Cross(positionV3, velocityV3));
-                        var transfer = new AirlessConicTrajectory(snapshot.Body.gravParameter, burnUT, position, ToVector3d(transferVelocity));
-                        if (!transfer.TryStateAt(burnUT + flightTime, out Vector3d arrived, out _)) continue;
-                        double error = Vector3d.Distance(arrived, target);
-                        double deltaV = (ToVector3d(transferVelocity) - velocity).magnitude;
-                        bool reachesSurfaceAtTarget = transfer.TryNextRadiusCrossing(burnUT, snapshot.Body.Radius + snapshot.TargetTerrainAltitude, out double crossingUT) &&
-                            Math.Abs(crossingUT - (burnUT + flightTime)) < 1.0;
-                        if (error < bestError)
-                        {
-                            bestError = error;
-                            bestCrossingDifference = reachesSurfaceAtTarget ? crossingUT - (burnUT + flightTime) : double.NaN;
-                        }
-                        if (reachesSurfaceAtTarget && (double.IsNaN(bestDeltaV) || deltaV < bestDeltaV))
-                        {
-                            bestDeltaV = deltaV;
-                            bestBurnUT = burnUT;
-                            bestPosition = position;
-                            bestVelocity = ToVector3d(transferVelocity);
-                        }
+                        Vector3d candidateVelocity = ToVector3d(transferVelocity);
+                        var candidateSnapshot = new LandingGuidanceV2Snapshot(snapshot.Version, burnUT, snapshot.Body,
+                            position, candidateVelocity, snapshot.Mass, snapshot.AvailableDeltaV,
+                            snapshot.MaximumAcceleration, snapshot.MinimumAcceleration, snapshot.TargetLatitude,
+                            snapshot.TargetLongitude, false, snapshot.TargetReferenceUT, snapshot.TargetReferencePosition,
+                            snapshot.HasTargetReferencePosition, snapshot.TargetTerrainAltitude);
+                        // Gooding's endpoint can lie beyond an earlier surface
+                        // crossing. Score the first physical contact used by V2,
+                        // not merely the requested Lambert endpoint.
+                        LandingGuidanceV2Estimate candidateEstimate = AirlessImpactEstimator.Estimate(candidateSnapshot);
+                        if (!candidateEstimate.HasImpact || candidateEstimate.TargetError >= bestError) continue;
+                        bestError = candidateEstimate.TargetError;
+                        bestDeltaV = (candidateVelocity - velocity).magnitude;
+                        bestBurnUT = burnUT;
+                        bestPosition = position;
+                        bestVelocity = candidateVelocity;
                     }
                     catch (Exception) { }
                 }
@@ -149,8 +147,11 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
                 snapshot.MinimumAcceleration, snapshot.TargetLatitude, snapshot.TargetLongitude, false,
                 snapshot.TargetReferenceUT, snapshot.TargetReferencePosition, snapshot.HasTargetReferencePosition, snapshot.TargetTerrainAltitude);
             LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(transferSnapshot);
-            Assert.True(bestError < 1.0 && Math.Abs(bestCrossingDifference) < 1.0 && bestDeltaV < snapshot.AvailableDeltaV && estimate.HasImpact,
-                "bestError=" + bestError + " dv=" + bestDeltaV + " crossingDifference=" + bestCrossingDifference +
+            // The selected candidate is evaluated at its first physical
+            // contact with the target terrain sphere, matching flight code.
+            Assert.True(bestError < 1.0 && bestDeltaV < snapshot.AvailableDeltaV && estimate.HasImpact &&
+                estimate.TargetError < 0.01,
+                "bestError=" + bestError + " dv=" + bestDeltaV +
                 " estimator=" + estimate.Outcome + " detail=" + estimate.Detail + " targetError=" + estimate.TargetError);
         }
 
@@ -478,14 +479,39 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.True(before.HasImpact);
             Assert.True(before.TargetError > committed.CorridorLimit);
 
-            // This snapshot is deliberately conservative enough that the
-            // reserve calculation cannot prove a terminal allocation. The
-            // required result is a complete fresh replan, never coast, warp,
-            // or a rejected controller that releases the vessel.
+            // The corrected surface-frame calculation identifies a bounded
+            // reserve-protected trim. It must reach the same strategic corridor
+            // before V2 is permitted to request any terminal warp.
             AirlessPostBurnDecision decision = AirlessLandingPlanner.DecidePostBurn(postStrategic, committed, true);
-            Assert.Equal(AirlessPostBurnAction.Replan, decision.Action);
+            Assert.Equal(AirlessPostBurnAction.RecoveryTrim, decision.Action);
             Assert.True(decision.Estimate.HasImpact);
-            Assert.Contains("fresh complete target-transfer plan", decision.Reason);
+            Assert.True(decision.Estimate.TargetError <= committed.CorridorLimit,
+                "error=" + decision.Estimate.TargetError + " corridor=" + committed.CorridorLimit);
+            Assert.InRange(decision.Correction.magnitude, 0.01, decision.RecoveryBudget);
+            Assert.Contains("reserve-protected recovery trim", decision.Reason);
+
+            double duration = decision.Correction.magnitude / postStrategic.MaximumAcceleration;
+            double ut = postStrategic.UT;
+            Vector3d position = postStrategic.Position;
+            Vector3d velocity = postStrategic.Velocity;
+            Vector3d direction = decision.Correction.normalized;
+            for (double elapsed = 0; elapsed < duration;)
+            {
+                double dt = Math.Min(0.02, duration - elapsed);
+                var step = new AirlessConicTrajectory(postStrategic.Body.gravParameter, ut, position, velocity);
+                Assert.True(step.TryStateAt(ut + dt, out position, out velocity));
+                velocity += direction * postStrategic.MaximumAcceleration * dt;
+                elapsed += dt;
+                ut += dt;
+            }
+            var delivered = new LandingGuidanceV2Snapshot(postStrategic.Version + 1, ut, postStrategic.Body,
+                position, velocity, postStrategic.Mass, postStrategic.AvailableDeltaV - decision.Correction.magnitude,
+                postStrategic.MaximumAcceleration, postStrategic.MinimumAcceleration, postStrategic.TargetLatitude,
+                postStrategic.TargetLongitude, false, postStrategic.TargetReferenceUT, postStrategic.TargetReferencePosition,
+                postStrategic.HasTargetReferencePosition, postStrategic.TargetTerrainAltitude);
+            LandingGuidanceV2Estimate deliveredEstimate = AirlessImpactEstimator.Estimate(delivered);
+            Assert.True(deliveredEstimate.HasImpact && deliveredEstimate.TargetError <= committed.CorridorLimit,
+                "deliveredError=" + deliveredEstimate.TargetError + " corridor=" + committed.CorridorLimit);
         }
 
         [Fact]
@@ -504,6 +530,19 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.True(estimate.HasImpact, estimate.Detail);
             Assert.True(estimate.TargetError > 7000, "targetError=" + estimate.TargetError);
             Assert.False(AirlessTerminalWarpGate.EndpointIsCurrentAndWithinCorridor(estimate, 400));
+        }
+
+        [Fact]
+        public void RecordedMunPlanSchedulesTheFirstFiniteEventAfterThePreAlignmentLead()
+        {
+            LandingGuidanceV2Snapshot start = RecordedMunSnapshot();
+            AirlessLandingPlan plan = AirlessLandingPlanner.Plan(start);
+            Assert.True(plan.CommandAuthorized, plan.Reason);
+            double firstFiniteBurnUT = plan.PlaneAlignmentDeltaVMagnitude > AirlessLandingPhaseManager.BurnCompleteDeltaV
+                ? plan.PlaneAlignmentBurnUT
+                : plan.StrategicBurnUT;
+            Assert.True(firstFiniteBurnUT >= start.UT + AirlessLandingPlanner.MinimumPreAlignmentLeadSeconds,
+                "start=" + start.UT + " firstFiniteBurn=" + firstFiniteBurnUT);
         }
 
         [Fact]
@@ -603,19 +642,13 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             body.gravParameter = mu;
             body.atmosphere = false;
             body.rotationPeriod = rotationPeriod;
-            body.angularVelocity = Vector3d.up * (2.0 * Math.PI / rotationPeriod);
+            body.angularVelocity = new Vector3d(0, -1, 0) * (2.0 * Math.PI / rotationPeriod);
             return body;
         }
 
         private static Vector3d RotateTarget(LandingGuidanceV2Snapshot snapshot, double ut)
         {
-            Vector3d axis = snapshot.Body.angularVelocity.normalized;
-            double radians = 2.0 * Math.PI * (ut - snapshot.TargetReferenceUT) / snapshot.Body.rotationPeriod;
-            double c = Math.Cos(radians);
-            double s = Math.Sin(radians);
-            Vector3d target = snapshot.TargetReferencePosition.normalized *
-                (snapshot.Body.Radius + (double.IsNaN(snapshot.TargetTerrainAltitude) ? 0 : snapshot.TargetTerrainAltitude));
-            return target * c + Vector3d.Cross(axis, target) * s + axis * Vector3d.Dot(axis, target) * (1.0 - c);
+            return AirlessTargetGeometry.SurfacePositionAtUT(snapshot, ut);
         }
 
         private static V3 ToV3(Vector3d vector) => new V3(vector.x, vector.y, vector.z);

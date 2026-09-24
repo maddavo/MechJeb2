@@ -36,6 +36,15 @@ namespace MuMech
         private AirlessLandingPlan _lastCompletedAirlessPlan;
         private bool _airlessPlanningRunning;
         private long _airlessPlanningGeneration;
+        // Post-burn correction performs a bounded three-axis search. It is
+        // intentionally worker-owned for the same reason as strategic planning:
+        // a failed endpoint must not stall KSP's physics update.
+        private readonly Queue _readyAirlessRecoveryResults = new Queue();
+        private bool _airlessRecoveryRunning;
+        private long _airlessRecoveryGeneration;
+        private AirlessPostBurnDecision _completedAirlessRecovery;
+        private double _nextAirlessRecoveryUT;
+        private bool _terminalWarpDenied;
         private ReentrySimulation.Result _atmosphericCandidateResult;
         private LandingGuidanceV2Snapshot _atmosphericCandidateSnapshot;
         private AtmosphericLandingPlan _atmosphericCandidatePlan;
@@ -197,6 +206,7 @@ namespace MuMech
             _airlessPlanningGeneration++;
             _airlessPlanningRunning = false;
             _lastCompletedAirlessPlan = null;
+            ResetAirlessRecovery();
             _originalTargetLatitude = Core.Target.targetLatitude;
             _originalTargetLongitude = Core.Target.targetLongitude;
             _visualRebaseDone = false;
@@ -595,19 +605,9 @@ namespace MuMech
                     }
                     FinishFiniteBurn();
                     RefreshPreflight(false, true);
-                    LandingGuidanceV2Snapshot trimSnapshot = CaptureSnapshot();
-                    AirlessPostBurnDecision postBurn = AirlessLandingPlanner.DecidePostBurn(trimSnapshot, _activePlan, true);
-                    if (postBurn.Action == AirlessPostBurnAction.RecoveryTrim)
-                    {
-                        _trimDeltaV = postBurn.Correction;
-                        _burnTargetVelocity = VesselState.OrbitalVelocity + _trimDeltaV;
-                        TransitionTo(V2FlightPhase.AlignTrim,
-                            postBurn.Reason + " Budget " + postBurn.RecoveryBudget.ToString("F1", CultureInfo.InvariantCulture) + " m/s.");
-                    }
-                    else if (postBurn.Action == AirlessPostBurnAction.Coast)
-                        TransitionTo(V2FlightPhase.Coast, postBurn.Reason);
-                    else
-                        BeginAirlessRecoveryReplan(postBurn.Reason);
+                    RequestAirlessRecovery(CaptureSnapshot());
+                    TransitionTo(V2FlightPhase.Coast,
+                        "V2 strategic burn complete; validating the measured post-burn endpoint on the recovery worker before coast or trim.");
                     break;
                 case V2FlightPhase.AlignTrim:
                     Core.Thrust.ThrustOff();
@@ -638,12 +638,47 @@ namespace MuMech
                         if (postTrim.Action == AirlessPostBurnAction.Coast)
                             TransitionTo(V2FlightPhase.Coast, "Bounded V2 trim complete. " + postTrim.Reason);
                         else
-                            BeginAirlessRecoveryReplan(postTrim.Reason);
+                        {
+                            _terminalWarpDenied = true;
+                            TransitionTo(V2FlightPhase.Coast,
+                                "V2 trim endpoint remains outside the target corridor; retaining controlled 1x coast until terminal braking.");
+                        }
                     }
                     else CommandFiniteBurnThrottle(RemainingFiniteBurnDeltaV);
                     break;
                 case V2FlightPhase.Coast:
                     Core.Thrust.ThrustOff();
+                    if (_airlessRecoveryRunning)
+                    {
+                        Core.Warp.MinimumWarp(true);
+                        Core.Attitude.attitudeTo(-VesselState.SurfaceVelocity, AttitudeReference.INERTIAL_COT, this);
+                        ControllerStatus = "V2 is holding at 1x while its bounded post-burn recovery search validates the measured endpoint.";
+                        break;
+                    }
+                    if (_completedAirlessRecovery != null)
+                    {
+                        AirlessPostBurnDecision recovery = _completedAirlessRecovery;
+                        _completedAirlessRecovery = null;
+                        if (recovery.Action == AirlessPostBurnAction.RecoveryTrim)
+                        {
+                            _terminalWarpDenied = false;
+                            _terminalWarpGate.Reset();
+                            _terminalAttitudeLatch.Reset();
+                            _trimDeltaV = recovery.Correction;
+                            _burnTargetVelocity = VesselState.OrbitalVelocity + _trimDeltaV;
+                            TransitionTo(V2FlightPhase.AlignTrim,
+                                recovery.Reason + " Budget " + recovery.RecoveryBudget.ToString("F1", CultureInfo.InvariantCulture) + " m/s.");
+                            break;
+                        }
+                        if (recovery.Action == AirlessPostBurnAction.Replan)
+                        {
+                            // A committed impact trajectory must never loop through
+                            // a repeated warp request. Retain V2 authority at 1x;
+                            // the emergency lead below transfers to braking.
+                            _terminalWarpDenied = true;
+                            ControllerStatus = "V2 rejected terminal auto-warp after the measured endpoint missed the target corridor; retaining controlled 1x coast and terminal braking authority.";
+                        }
+                    }
                     // A coasting airless descent remains a controlled phase.
                     // Check a current immutable endpoint at the normal bounded
                     // refresh cadence; do not run a synchronous estimator on
@@ -665,10 +700,13 @@ namespace MuMech
                             break;
                         }
                         // The strategic burn has already put the vessel on an
-                        // impact trajectory.  Do not return to Preflight here:
-                        // Preflight can authorize a later strategic warp and
-                        // thereby pass the terminal ignition deadline.
-                        ControllerStatus = "V2 retained committed descent authority after the coast endpoint left the target corridor; holding 1x for terminal braking.";
+                        // impact trajectory. A bounded correction search runs on
+                        // a worker; until it completes, rails warp is forbidden.
+                        RequestAirlessRecovery(coastSnapshot);
+                        Core.Warp.MinimumWarp(true);
+                        Core.Attitude.attitudeTo(-VesselState.SurfaceVelocity, AttitudeReference.INERTIAL_COT, this);
+                        ControllerStatus = "V2 is holding controlled 1x coast while a bounded recovery correction validates the measured endpoint.";
+                        break;
                     }
                     if (coastSafety == AirlessCoastSafetyAction.EmergencyBrake)
                     {
@@ -701,7 +739,7 @@ namespace MuMech
                         ControllerStatus = "V2 is holding at 1x until terminal-braking attitude remains inside the authority gate.";
                         break;
                     }
-                    if (V2AutoWarp && VesselState.Time < Core.Hoverslam.IgnitionUT - 10.0)
+                    if (V2AutoWarp && !_terminalWarpDenied && VesselState.Time < Core.Hoverslam.IgnitionUT - 10.0)
                     {
                         // The target and impact state must be evaluated at the
                         // instant rails warp is requested. The post-trim
@@ -710,8 +748,10 @@ namespace MuMech
                         if (_activePlan == null || !AirlessTerminalWarpGate.EndpointIsCurrentAndWithinCorridor(
                             Preflight?.Estimate, _activePlan.CorridorLimit))
                         {
-                            _terminalWarpGate.Reset();
-                            BeginAirlessRecoveryReplan("V2 denied terminal auto-warp because the fresh impact endpoint left the target corridor.");
+                            _terminalWarpDenied = true;
+                            RequestAirlessRecovery(Preflight?.Snapshot);
+                            Core.Warp.MinimumWarp(true);
+                            ControllerStatus = "V2 denied terminal auto-warp because the fresh measured endpoint left the target corridor; retaining 1x control while recovery is evaluated.";
                             break;
                         }
                         Core.Warp.WarpToUT(Core.Hoverslam.IgnitionUT - 10.0);
@@ -1497,6 +1537,7 @@ namespace MuMech
             ConsumeAtmosphericCandidateResults();
             ConsumeAtmosphericEntryPlanningResults();
             ConsumeAirlessPlanningResults();
+            ConsumeAirlessRecoveryResults();
             if (!HighLogic.LoadedSceneIsFlight || (!Core.Target.PositionTargetExists && !(_hasActiveTarget && ControllerActive)) ||
                 Vessel == null || MainBody == null)
             {
@@ -1660,6 +1701,74 @@ namespace MuMech
                 Generation = generation;
                 DurationMilliseconds = durationMilliseconds;
             }
+        }
+
+        private void ResetAirlessRecovery()
+        {
+            _airlessRecoveryGeneration++;
+            _airlessRecoveryRunning = false;
+            _completedAirlessRecovery = null;
+            _nextAirlessRecoveryUT = double.NegativeInfinity;
+            _terminalWarpDenied = false;
+        }
+
+        private void RequestAirlessRecovery(LandingGuidanceV2Snapshot snapshot)
+        {
+            if (!_airlessDescentCommitted || snapshot == null || _activePlan == null || _airlessRecoveryRunning ||
+                VesselState.Time < _nextAirlessRecoveryUT)
+                return;
+            _completedAirlessRecovery = null;
+            _airlessRecoveryRunning = true;
+            _nextAirlessRecoveryUT = VesselState.Time + 5.0;
+            long generation = _airlessRecoveryGeneration;
+            ThreadPool.QueueUserWorkItem(RunAirlessRecovery,
+                new AirlessRecoveryJob(snapshot, _activePlan, generation));
+        }
+
+        private void RunAirlessRecovery(object value)
+        {
+            var job = (AirlessRecoveryJob)value;
+            AirlessPostBurnDecision decision;
+            try { decision = AirlessLandingPlanner.DecidePostBurn(job.Snapshot, job.Plan, true); }
+            catch (Exception ex)
+            {
+                LandingGuidanceV2Estimate estimate = AirlessImpactEstimator.Estimate(job.Snapshot);
+                decision = new AirlessPostBurnDecision(AirlessPostBurnAction.Replan, Vector3d.zero, estimate, 0,
+                    "V2 post-burn recovery worker failed: " + ex.GetType().Name);
+            }
+            lock (_readyAirlessRecoveryResults)
+                _readyAirlessRecoveryResults.Enqueue(new AirlessRecoveryResult(decision, job.Generation));
+        }
+
+        private void ConsumeAirlessRecoveryResults()
+        {
+            lock (_readyAirlessRecoveryResults)
+            {
+                while (_readyAirlessRecoveryResults.Count > 0)
+                {
+                    var completed = (AirlessRecoveryResult)_readyAirlessRecoveryResults.Dequeue();
+                    if (completed.Generation != _airlessRecoveryGeneration) continue;
+                    _airlessRecoveryRunning = false;
+                    _completedAirlessRecovery = completed.Decision;
+                }
+            }
+        }
+
+        private sealed class AirlessRecoveryJob
+        {
+            public readonly LandingGuidanceV2Snapshot Snapshot;
+            public readonly AirlessLandingPlan Plan;
+            public readonly long Generation;
+            public AirlessRecoveryJob(LandingGuidanceV2Snapshot snapshot, AirlessLandingPlan plan, long generation)
+            { Snapshot = snapshot; Plan = plan; Generation = generation; }
+        }
+
+        private sealed class AirlessRecoveryResult
+        {
+            public readonly AirlessPostBurnDecision Decision;
+            public readonly long Generation;
+            public AirlessRecoveryResult(AirlessPostBurnDecision decision, long generation)
+            { Decision = decision; Generation = generation; }
         }
 
         private void StartAirlessPlanning(LandingGuidanceV2Snapshot snapshot)

@@ -98,15 +98,7 @@ namespace MuMech
 
         private static Vector3d TargetPositionAtUT(LandingGuidanceV2Snapshot snapshot, double ut)
         {
-            // The selected target is a terrain location.  Its reference vector
-            // arrives at sea level from KSP, so recover the selected site's
-            // fixed terrain radius before rotating it into the candidate epoch.
-            // Solving a transfer to the buried sea-level point makes the later
-            // terrain refinement advance contact by seconds and can turn a
-            // valid selected site into a multi-kilometre false corridor miss.
-            Vector3d target = AirlessTargetGeometry.ReferenceSurfacePosition(snapshot);
-            double rotationRadians = 2.0 * Math.PI * (ut - snapshot.TargetReferenceUT) / snapshot.Body.rotationPeriod;
-            return RotateAroundAxis(target, snapshot.Body.angularVelocity, rotationRadians);
+            return AirlessTargetGeometry.SurfacePositionAtUT(snapshot, ut);
         }
 
         internal static Vector3d RotateAroundAxis(Vector3d vector, Vector3d axis, double radians)

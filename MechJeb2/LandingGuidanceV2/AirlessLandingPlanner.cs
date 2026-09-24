@@ -38,6 +38,12 @@ namespace MuMech
         // instead of letting epoch quantisation alone exceed its width.
         private const int RefinementSamples = 360;
         private const double DesiredLongSideFraction = 0.50;
+        // A V2 finite event must be scheduled far enough ahead to complete the
+        // proven sequence: leave rails, acquire burn attitude at 1x, verify it,
+        // and only then request the final warp.  An accurately targeted burn a
+        // few seconds away is not an executable auto-warp landing plan.
+        public const double MinimumPreAlignmentLeadSeconds =
+            AirlessLandingPhaseManager.InitialWarpLeadSeconds + 60.0;
 
         public static AirlessLandingPlan Planning(LandingGuidanceV2Snapshot snapshot) =>
             new AirlessLandingPlan(snapshot?.Version ?? -1, AirlessLandingPlanState.Planning, Vector3d.zero,
@@ -62,7 +68,7 @@ namespace MuMech
                 // two-body transfer to the rotating target at each coast epoch,
                 // then independently propagate and budget that proposed burn.
                 Candidate direct = SolveTargetedTransfers(snapshot, coast);
-                if (direct.Valid && direct.WithinCorridor)
+                if (IsScheduledWithPreAlignmentLead(direct) && direct.Valid && direct.WithinCorridor)
                 {
                     AirlessLandingBudget directBudget = CandidateBudget(direct);
                     if (directBudget.Fits(snapshot.AvailableDeltaV))
@@ -70,8 +76,8 @@ namespace MuMech
                             "Direct rotating-target transfer satisfies the impact, long-side corridor, and budget constraints.");
                 }
 
-                Candidate best = direct;
-                double bestScore = direct.Valid ? CandidateScore(direct, snapshot.AvailableDeltaV) : double.PositiveInfinity;
+                Candidate best = IsScheduledWithPreAlignmentLead(direct) ? direct : default(Candidate);
+                double bestScore = best.Valid ? CandidateScore(best, snapshot.AvailableDeltaV) : double.PositiveInfinity;
                 for (int i = 0; i <= CoarseSamples; ++i)
                     Consider(SolveStrategicVector(snapshot, coast, snapshot.UT + 10.0 + coast.Period * i / CoarseSamples), snapshot.AvailableDeltaV, ref best, ref bestScore);
 
@@ -395,7 +401,7 @@ namespace MuMech
 
         private static void Consider(Candidate candidate, double availableDeltaV, ref Candidate best, ref double bestScore)
         {
-            if (!candidate.Valid) return;
+            if (!candidate.Valid || !IsScheduledWithPreAlignmentLead(candidate)) return;
             double score = CandidateScore(candidate, availableDeltaV);
             if (score < bestScore)
             {
@@ -437,7 +443,7 @@ namespace MuMech
                             target.ToV3(), flightTime, TransferGeometry.Prograde, 0, angularMomentum);
                         Vector3d burn = initialTransferVelocity.ToVector3d() - velocity;
                         Candidate candidate = EvaluateVector(source, burnUT, position, velocity, burn);
-                        if (!candidate.Valid || !candidate.WithinCorridor) continue;
+                        if (!IsScheduledWithPreAlignmentLead(candidate) || !candidate.Valid || !candidate.WithinCorridor) continue;
 
                         double score = CandidateScore(candidate, source.AvailableDeltaV);
                         if (score < bestScore)
@@ -681,6 +687,17 @@ namespace MuMech
             return new Candidate(source, burnUT, Vector3d.zero, burn, estimate, downrange, crossRange, corridor, source.AvailableDeltaV);
         }
 
+        private static bool IsScheduledWithPreAlignmentLead(Candidate candidate)
+        {
+            if (!candidate.Valid || candidate.Source == null) return false;
+            double firstFiniteBurnUT = candidate.PlaneAlignmentBurn.magnitude >
+                AirlessLandingPhaseManager.BurnCompleteDeltaV
+                ? candidate.PlaneAlignmentBurnUT
+                : candidate.BurnUT;
+            return Finite(firstFiniteBurnUT) &&
+                firstFiniteBurnUT >= candidate.Source.UT + MinimumPreAlignmentLeadSeconds;
+        }
+
         private static double CandidateScore(Candidate candidate, double availableDeltaV)
         {
             double desiredDownrange = candidate.Corridor * DesiredLongSideFraction;
@@ -738,9 +755,7 @@ namespace MuMech
 
         private static Vector3d TargetAt(LandingGuidanceV2Snapshot snapshot, double ut)
         {
-            Vector3d target = AirlessTargetGeometry.ReferenceSurfacePosition(snapshot);
-            double rotationRadians = 2.0 * Math.PI * (ut - snapshot.TargetReferenceUT) / snapshot.Body.rotationPeriod;
-            return AirlessImpactEstimator.RotateAroundAxis(target, snapshot.Body.angularVelocity, rotationRadians);
+            return AirlessTargetGeometry.SurfacePositionAtUT(snapshot, ut);
         }
 
         private static Vector3d BaselineDeorbitBurn(LandingGuidanceV2Snapshot source, double epoch, Vector3d position,
