@@ -117,6 +117,15 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void VisualRebaseGateNeverConcealsAMaterialTargetingError()
+        {
+            Assert.Equal(VisualTargetAction.Rebase, VisualRebaseGate.Decide(500, 500));
+            Assert.Equal(VisualTargetAction.RetainOriginalAndReportFailure, VisualRebaseGate.Decide(500.01, 500));
+            Assert.Equal(VisualTargetAction.RetainOriginalAndReportFailure,
+                VisualRebaseGate.Decide(double.NaN, 500));
+        }
+
+        [Fact]
         public void CoastSafetyReplansAStaleOrOutOfCorridorEndpointBeforeTheBrakingLead()
         {
             LandingGuidanceV2Snapshot snapshot = Snapshot(100, 1000, 20);
