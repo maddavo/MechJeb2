@@ -856,9 +856,9 @@ namespace MuMech
                         RejectController(Preflight.AtmosphericPlan.Reason);
                         break;
                     }
-                    if (!double.IsNaN(Core.Hoverslam.IgnitionUT) && !double.IsInfinity(Core.Hoverslam.IgnitionUT) &&
-                        Core.Hoverslam.IgnitionCountdown <= 5.0)
-                        TransitionTo(V2FlightPhase.BrakingApproach, "V2 atmospheric powered braking has begun.");
+                    if (AtmosphericBrakingEntryRequired())
+                        TransitionTo(V2FlightPhase.BrakingApproach,
+                            "V2 atmospheric energy gate reached its conservative powered-braking entry.");
                     break;
                 case V2FlightPhase.BrakingApproach:
                     Core.Warp.MinimumWarp(true);
@@ -1016,6 +1016,18 @@ namespace MuMech
             _siteAssessment = AssessLocalSite(latitude, longitude);
             TransitionTo(V2FlightPhase.TerminalDivert,
                 "V2 visual rebase complete; terminal-divert guidance is tracking the assessed local target.");
+        }
+
+        // The shared hoverslam estimate does not model atmospheric drag. V2
+        // enters powered braking from current physical state instead: twice
+        // the ideal stopping distance leaves a full stopping-distance margin
+        // for drag variation, attitude settling, and finite engine response.
+        private bool AtmosphericBrakingEntryRequired()
+        {
+            double gravity = Vessel.graviticAcceleration.magnitude;
+            double descentSpeed = Math.Max(0, -Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up));
+            return AtmosphericEnergyGate.ShouldBeginPoweredBraking(VesselState.AltitudeBottom, descentSpeed,
+                gravity, VesselState.MaxThrustAcceleration);
         }
 
         private Vector3d TerminalVelocityError()

@@ -59,6 +59,18 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.Equal(AtmosphericEntryPhase.Entry, manager.Phase);
         }
 
+        [Theory]
+        [InlineData(200, 80, 1.63, 30, true)]
+        [InlineData(2500, 80, 1.63, 30, false)]
+        [InlineData(1000, 80, 9.81, 10, true)]
+        [InlineData(1000, 0, 1.63, 30, false)]
+        public void AtmosphericEnergyGateUsesConservativeLiveBrakingDistance(double altitude, double descentSpeed,
+            double gravity, double maximumAcceleration, bool expected)
+        {
+            Assert.Equal(expected, AtmosphericEnergyGate.ShouldBeginPoweredBraking(altitude, descentSpeed,
+                gravity, maximumAcceleration));
+        }
+
         [Fact]
         public void ControllerHarnessExecutesAtmosphericWarpBurnAndPostBurnEntryValidation()
         {

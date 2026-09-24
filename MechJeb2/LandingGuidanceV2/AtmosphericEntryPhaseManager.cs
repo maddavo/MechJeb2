@@ -307,6 +307,22 @@ namespace MuMech
         }
     }
 
+    public static class AtmosphericEnergyGate
+    {
+        public static bool ShouldBeginPoweredBraking(double altitude, double descentSpeed,
+            double gravity, double maximumAcceleration)
+        {
+            if (!Finite(altitude) || !Finite(descentSpeed) || !Finite(gravity) || !Finite(maximumAcceleration)) return false;
+            double netAcceleration = maximumAcceleration - gravity;
+            if (netAcceleration <= 0 || descentSpeed <= 0) return false;
+            // Two times the ideal stopping distance: one stopping-distance
+            // margin covers modelled drag variation and finite attitude/engine response.
+            return altitude <= descentSpeed * descentSpeed / netAcceleration;
+        }
+
+        private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    }
+
     public enum AtmosphericEntryPhase
     {
         Idle, InitialWarpToBurn, PrepareWarp, WarpToBurn, AlignBurn, Burn, AwaitPostBurnValidation, Entry, Rejected
