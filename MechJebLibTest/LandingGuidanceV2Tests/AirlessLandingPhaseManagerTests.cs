@@ -129,6 +129,30 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void TerminalFineThrustRespectsTheMainThrottleSafetyCapWithoutChangingPhysicalAcceleration()
+        {
+            // V2 must account for MechJeb's separate main-throttle cap. A
+            // 10% cap still permits a 5.4% physical request by choosing a
+            // 54% engine range and issuing 10% main throttle.
+            AirlessFineThrustCommand command = AirlessFineThrustControl.CalculateTerminal(0.054, 0, 30,
+                availableMainThrottle: 0.10);
+            Assert.True(command.UseEngineThrustLimiter);
+            Assert.Equal(0.54, command.RelativeEngineThrustLimit, 12);
+            Assert.Equal(0.10, command.RequestedThrottle, 12);
+            Assert.Equal(1.62, command.ExpectedAcceleration, 12);
+        }
+
+        [Fact]
+        public void TerminalPolicyUsesOnlyAccelerationAvailableThroughTheMainThrottleSafetyCap()
+        {
+            AirlessTerminalGuidanceCommand command = AirlessTerminalGuidance.Calculate(Vector3d.zero,
+                new Vector3d(0, -0.5, 0), Vector3d.up, 100, 1.63, 0, 30, 0.5, 0.10);
+            Assert.True(command.Valid);
+            Assert.InRange(command.RequestedThrottle, 0, 0.10);
+            Assert.InRange(command.DesiredAcceleration, 0, 3.0);
+        }
+
+        [Fact]
         public void TerminalPolicyRejectsAMinimumThrustProfileMismatch()
         {
             AirlessTerminalGuidanceCommand command = AirlessTerminalGuidance.Calculate(Vector3d.zero,
