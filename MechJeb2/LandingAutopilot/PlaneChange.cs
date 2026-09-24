@@ -82,8 +82,6 @@ namespace MuMech
                     if (_planeChangeDVLeft < 0.1F)
                     {
                         Core.Thrust.ThrustOff();
-                        // Preserve the proven Solver Basis V1 phase handoff.
-                        // LowDeorbitBurn was the historical stalled path.
                         return new DeorbitBurn(Core);
                     }
                 }

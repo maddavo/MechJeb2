@@ -8,8 +8,13 @@ namespace MuMech
     {
         public class FinalDescent : AutopilotStep
         {
+            // Terminal descent needs a speed envelope as well as a braking-distance
+            // calculation.  The latter alone produces impractically large allowed
+            // speeds for high-TWR vessels on low-gravity bodies.
+            private const double MinimumTerminalDescentSpeed = 5.0;
+            private const double MaximumTerminalDescentSpeed = 25.0;
+            private const double TerminalDescentGravityTime = 4.0;
             private IDescentSpeedPolicy _aggressivePolicy;
-            private bool _finalThrottleUpTriggered;
 
             public FinalDescent(MechJebCore core) : base(core)
             {
@@ -91,36 +96,20 @@ namespace MuMech
                 else
                 {
                     // last 300 meters:
-                    float desiredSpeed = -Mathf.Lerp(0, (float)Math.Sqrt((VesselState.LimitedMaxThrustAcceleration - VesselState.LocalGravity) * 2 * 300) * 0.90F, (float)minalt / 300);
-                    if (VesselState.SpeedSurfaceHorizontal < 5)
-                    {
-                        if (desiredSpeed < VesselState.SpeedVertical && !_finalThrottleUpTriggered)
-                        {
-                            // if we're not facing approximately retrograde, turn to point retrograde and follow min thrust limiter:
-                            Core.Thrust.Tmode = MechJebModuleThrustController.TMode.OFF;
-                            Core.Attitude.attitudeTo(Vector3d.back, AttitudeReference.SURFACE_VELOCITY, null);
-                            Core.Thrust.RequestActiveThrottle(0.0f);
-                        }
-                        else
-                        {
-                            _finalThrottleUpTriggered = true;
-                            // if we're falling more or less straight down, control vertical speed and
-                            // kill horizontal velocity
-                            Core.Thrust.Tmode = MechJebModuleThrustController.TMode.KEEP_VERTICAL;
-                            // take into account desired landing speed:
-                            Core.Thrust.TransSpdAct = (float)Math.Min(-Core.Landing.TouchdownSpeed, desiredSpeed);
-                            Core.Thrust.TransKillH = true;
-                        }
-                    }
-                    else
-                    {
-                        // if we're falling at a significant angle from vertical, our vertical speed might be
-                        // quite small but we might still need to decelerate. Reduce the horizontal speed
-                        // by thrusting directly retrograde
-                        Core.Thrust.Tmode = MechJebModuleThrustController.TMode.OFF;
-                        Core.Attitude.attitudeTo(Vector3d.back, AttitudeReference.SURFACE_VELOCITY, null);
-                        Core.Thrust.RequestActiveThrottle(1.0f);
-                    }
+                    double netBrakingAcceleration = Math.Max(0,
+                        VesselState.LimitedMaxThrustAcceleration - VesselState.LocalGravity);
+                    double brakingDistanceSpeed = Math.Sqrt(2 * netBrakingAcceleration * Math.Max(0, minalt)) * 0.90;
+                    double bodyAwareSpeedCap = Math.Max(MinimumTerminalDescentSpeed,
+                        Math.Min(MaximumTerminalDescentSpeed, TerminalDescentGravityTime * VesselState.LocalGravity));
+                    double desiredSpeed = -Math.Min(brakingDistanceSpeed, bodyAwareSpeedCap);
+
+                    // At this height a direct, full-throttle retrograde burn can turn a
+                    // few metres per second of drift into an ascent on a high-TWR craft.
+                    // Keep vertical speed under closed-loop control and let the thrust
+                    // controller remove the remaining lateral velocity at the same time.
+                    Core.Thrust.Tmode = MechJebModuleThrustController.TMode.KEEP_VERTICAL;
+                    Core.Thrust.TransSpdAct = (float)Math.Min(-Core.Landing.TouchdownSpeed, desiredSpeed);
+                    Core.Thrust.TransKillH = true;
                 }
 
                 Status = Localizer.Format("#MechJeb_LandingGuidance_Status9",

@@ -9,6 +9,15 @@ namespace MuMech
     {
         public class CoastToDeceleration : AutopilotStep
         {
+            private const double RcsEnableCorrectionDv = 1.5;
+            private const double RcsDisableCorrectionDv = 0.5;
+            private const double MaximumRcsCorrectionDv = 3.0;
+            private const double MaximumRcsCommandChange = 0.5;
+
+            private bool _haveRcsCommand;
+            private long _lastRcsPredictionVersion = -1;
+            private Vector3d _rcsCorrectionCommand;
+
             public CoastToDeceleration(MechJebCore core) : base(core)
             {
             }
@@ -17,20 +26,44 @@ namespace MuMech
             {
                 if (!Core.Landing.PredictionReady)
                     return this;
+                if (!Core.Landing.RCSAdjustment)
+                    return this;
 
-                Vector3d deltaV = Core.Landing.ComputeCourseCorrection(true);
+                if (Core.Landing.PredictionVersion != _lastRcsPredictionVersion)
+                {
+                    _lastRcsPredictionVersion = Core.Landing.PredictionVersion;
+                    Vector3d correction = LimitMagnitude(Core.Landing.ComputeCourseCorrection(true), MaximumRcsCorrectionDv);
+                    _rcsCorrectionCommand = _haveRcsCommand
+                        ? MoveTowards(_rcsCorrectionCommand, correction, MaximumRcsCommandChange)
+                        : correction;
+                    _haveRcsCommand = true;
+                }
 
-                if (!Core.Landing.RCSAdjustment) return this;
+                if (!_haveRcsCommand)
+                    return this;
 
-                if (deltaV.magnitude > 3)
+                if (_rcsCorrectionCommand.magnitude > RcsEnableCorrectionDv)
                     Core.RCS.Enabled = true;
-                else if (deltaV.magnitude < 0.01)
+                else if (_rcsCorrectionCommand.magnitude < RcsDisableCorrectionDv)
                     Core.RCS.Enabled = false;
 
                 if (Core.RCS.Enabled)
-                    Core.RCS.SetWorldVelocityError(deltaV);
+                    Core.RCS.SetWorldVelocityError(_rcsCorrectionCommand);
 
                 return this;
+            }
+
+            private static Vector3d LimitMagnitude(Vector3d vector, double maximumMagnitude)
+            {
+                double magnitude = vector.magnitude;
+                return magnitude > maximumMagnitude ? vector * (maximumMagnitude / magnitude) : vector;
+            }
+
+            private static Vector3d MoveTowards(Vector3d current, Vector3d target, double maximumChange)
+            {
+                Vector3d difference = target - current;
+                double distance = difference.magnitude;
+                return distance > maximumChange ? current + difference * (maximumChange / distance) : target;
             }
 
             private bool _warpReady;

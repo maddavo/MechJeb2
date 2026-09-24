@@ -172,7 +172,6 @@ namespace MuMech
             _orbitReenters = OrbitReenters(initialOrbit);
 
             _startX = _initialOrbit.WorldBCIPositionAtUT(_startUT);
-            // This calls some Unity function so it should be done outside the thread
             if (_orbitReenters)
             {
                 _startUT = ut;

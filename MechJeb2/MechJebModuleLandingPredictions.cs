@@ -264,17 +264,9 @@ namespace MuMech
             }
 
             Orbit patch = GetReenteringPatch() ?? Orbit;
-            // The atmosphere/parachute model needs an estimate of terrain height for
-            // deployment timing.  On an airless body it is only a simulated landing
-            // radius; feeding the last endpoint's terrain height back into the next
-            // simulation creates a self-exciting position/terrain feedback loop.
-            if (patch.referenceBody.atmosphere && result != null)
+            if (result != null && result.Outcome == ReentrySimulation.Outcome.LANDED && result.Body != null)
             {
-                if (result.Outcome == ReentrySimulation.Outcome.LANDED && result.Body != null)
-                {
-                    altitudeOfPreviousPrediction =
-                        result.EndASL; // Note that we are caling GetResult here to force the it to calculate the endASL, if it has not already done this. It is not allowed to do this previously as we are only allowed to do it from this thread, not the reentry simulation thread.
-                }
+                altitudeOfPreviousPrediction = result.EndASL;
             }
 
             // Is this a simulation run with errors added? If so then add some error to the parachute multiple
@@ -466,36 +458,27 @@ namespace MuMech
 
         private void AcceptNormalResult(ReentrySimulation.Result newResult)
         {
-            // The initial prediction has nothing to compare against.
             if (result == null || ResultsAgree(result, newResult))
             {
-                TraceNormalResultDecision("publish-agree", result, newResult);
                 if (candidateResult != null)
                 {
                     candidateResult.Release();
                     candidateResult = null;
                 }
-
                 PublishNormalResult(newResult);
-                return;
             }
-
-            // A large movement must be observed twice in succession before it can alter
-            // the marker or steer the vessel.  Alternating branch results therefore leave
-            // the last coherent prediction in control rather than inducing a feedback loop.
-            if (candidateResult != null && ResultsAgree(candidateResult, newResult))
+            else if (candidateResult != null && ResultsAgree(candidateResult, newResult))
             {
-                TraceNormalResultDecision("publish-candidate-agree", candidateResult, newResult);
                 candidateResult.Release();
                 candidateResult = null;
                 PublishNormalResult(newResult);
-                return;
             }
-
-            if (candidateResult != null)
-                candidateResult.Release();
-            TraceNormalResultDecision("hold-candidate", result, newResult);
-            candidateResult = newResult;
+            else
+            {
+                if (candidateResult != null)
+                    candidateResult.Release();
+                candidateResult = newResult;
+            }
         }
 
         protected Orbit GetReenteringPatch()

@@ -16,6 +16,13 @@ namespace MuMech
     {
         private bool _deployedGears;
         public bool LandAtTarget;
+        // Diagnostic build: retain a concise landing trace in KSP.log without changing
+        // any control command.  It is deliberately rate-limited because the predictor
+        // and autopilot both run far more often than a useful human-readable trace.
+        public bool LandingTraceEnabled = true;
+        private double _nextLandingTraceUT;
+        private long _lastTracedPredictionVersion = -1;
+        private string _lastTracedStep;
 
         [Persistent(pass = (int)(Pass.LOCAL | Pass.TYPE | Pass.GLOBAL))]
         public readonly EditableDouble TouchdownSpeed = 0.5;
@@ -43,6 +50,7 @@ namespace MuMech
         //Landing prediction data:
         private MechJebModuleLandingPredictions _predictor;
         public ReentrySimulation.Result Prediction => _predictor.Result;
+        public long PredictionVersion => _predictor.ResultVersion;
 
         private ReentrySimulation.Result _errorPrediction => _predictor.GetErrorResult();
 
@@ -99,6 +107,13 @@ namespace MuMech
                 Prediction.EndPosition.Longitude, _landingAltitude) - MainBody.position; // The current position of the landing site
 
         private Vector3d _rotatedLandingSite => Prediction.WorldEndPosition(); // The position where the landing site will be when we land at it
+
+        // These diagnostic values use the finite-difference landing-response basis
+        // from ComputeCourseCorrection, rather than an approximate surface-velocity
+        // basis. They therefore describe the same geometry used by the solver.
+        public double LastCourseCorrectionDownrangeError { get; private set; } = double.NaN;
+        public double LastCourseCorrectionLongBias       { get; private set; }
+        public double LastCourseCorrectionHandoffLimit   { get; private set; }
 
         public IDescentSpeedPolicy DescentSpeedPolicy;
         private double _vesselAverageDrag;
@@ -183,6 +198,55 @@ namespace MuMech
             _vesselAverageDrag = VesselAverageDrag();
             base.OnFixedUpdate();
             DeployParachutes();
+            TraceLandingState();
+        }
+
+        private void TraceLandingState()
+        {
+            if (!LandingTraceEnabled || !Active)
+                return;
+
+            string step = CurrentStep.GetType().Name;
+            if (_lastTracedStep != step)
+            {
+                TraceLanding($"step={step} status=\"{Status}\"");
+                _lastTracedStep = step;
+            }
+
+            if (PredictionVersion != _lastTracedPredictionVersion)
+            {
+                _lastTracedPredictionVersion = PredictionVersion;
+                if (Prediction != null)
+                {
+                    double error = PredictionReady
+                        ? Vector3d.Distance(Core.Target.GetPositionTargetPosition(), LandingSite)
+                        : double.NaN;
+                    TraceLanding($"prediction version={PredictionVersion} outcome={Prediction.Outcome} inputUT={Prediction.InputUT:F2} endUT={Prediction.EndUT:F2} " +
+                        $"lat={Prediction.EndPosition.Latitude:F6} lon={Prediction.EndPosition.Longitude:F6} endASL={Prediction.EndASL:F1} targetError={error:F1}");
+                }
+            }
+
+            // The course-correction and braking controllers can make meaningful
+            // changes faster than the normal one-second summary. Sample both at
+            // 10 Hz so a log distinguishes smooth control from pulse or throttle
+            // hunting.
+            double stateTraceInterval = step == nameof(Landing.DecelerationBurn) ||
+                                        step == nameof(Landing.CourseCorrection) ? 0.1 : 1.0;
+            if (VesselState.Time < _nextLandingTraceUT)
+                return;
+
+            _nextLandingTraceUT = VesselState.Time + stateTraceInterval;
+            TraceLanding($"state step={step} ut={VesselState.Time:F2} warp={TimeWarp.CurrentRate:F1} alt={VesselState.AltitudeASL:F1} " +
+                $"surfaceSpeed={VesselState.SpeedSurface:F2} verticalSpeed={VesselState.SpeedVertical:F2} horizontalSpeed={VesselState.SpeedSurfaceHorizontal:F2} " +
+                $"throttle={Core.Thrust.TargetThrottle:F3} thrustAccel={VesselState.CurrentThrustAcceleration:F3} maxAccel={VesselState.LimitedMaxThrustAcceleration:F3} " +
+                $"apA={Orbit.ApA:F1} peA={Orbit.PeA:F1} attitudeError={Core.Attitude.attitudeAngleFromTarget():F2} " +
+                $"predictionVersion={PredictionVersion}{CurrentStep.TraceDetails}");
+        }
+
+        public void TraceLanding(string message)
+        {
+            if (LandingTraceEnabled)
+                Debug.Log("[MechJebLandingTrace] " + message);
         }
 
         protected override void OnModuleEnabled()
@@ -205,7 +269,8 @@ namespace MuMech
 
         // Estimate the delta-V of the correction burn that would be required to put us on
         // course for the target
-        public Vector3d ComputeCourseCorrection(bool allowPrograde)
+        public Vector3d ComputeCourseCorrection(bool allowPrograde, double downrangeLongBias = 0,
+            double downrangeHandoffLimit = 0)
         {
             // actualLandingPosition is the predicted actual landing position
             Vector3d actualLandingPosition = _rotatedLandingSite - MainBody.position;
@@ -296,6 +361,29 @@ namespace MuMech
                 // position has to be controlled by radial+/- burns:
                 downrangeDirection = perturbationDirections[1];
                 downrangeDelta = deltas[1];
+            }
+
+            LastCourseCorrectionDownrangeError = double.NaN;
+            LastCourseCorrectionLongBias = 0;
+            LastCourseCorrectionHandoffLimit = downrangeHandoffLimit;
+            if (allowPrograde && downrangeDelta.sqrMagnitude > 1e-12)
+            {
+                Vector3d responseDownrangeDirection = downrangeDelta.normalized;
+                double downrangeError = Vector3d.Dot(desiredDelta, responseDownrangeDirection);
+                LastCourseCorrectionDownrangeError = downrangeError;
+
+                // This is the solver's own predicted impact-space response to a
+                // downrange correction. Aim for a small long-side endpoint, but only
+                // within the braking handoff envelope. A larger long miss remains a
+                // normal Course Correction problem rather than collapsing to zero.
+                if (downrangeLongBias > 0 && downrangeHandoffLimit > 0 &&
+                    downrangeError >= -downrangeHandoffLimit)
+                {
+                    double desiredDownrangeMovement = Math.Max(0, downrangeError + downrangeLongBias);
+                    desiredDelta += (desiredDownrangeMovement - downrangeError) * responseDownrangeDirection;
+                    LastCourseCorrectionLongBias = downrangeLongBias;
+                }
+
             }
 
             // Now solve a 2x2 system of linear equations to determine the linear combination
