@@ -503,6 +503,25 @@ namespace MuMech
     /// </summary>
     public enum AirlessAuthorityAction { Continue, Abort }
 
+    /// <summary>
+    /// Shared policy for a planned atmospheric entry burn.  The atmospheric
+    /// controller owns the candidate simulation, but it must obey the same
+    /// safety rule as an airless burn: rails warp is not allowed until the
+    /// measured burn attitude is already settled.  This deliberately has no
+    /// Unity or vessel dependency so the command gate is regression-testable.
+    /// </summary>
+    public static class AtmosphericBurnWarpGate
+    {
+        public static bool CanRequestWarp(double currentUT, double burnUT, double leadSeconds,
+            bool autoWarpEnabled, bool attitudeAligned)
+        {
+            return autoWarpEnabled && attitudeAligned && Finite(currentUT) && Finite(burnUT) &&
+                Finite(leadSeconds) && leadSeconds >= 0 && currentUT < burnUT - leadSeconds;
+        }
+
+        private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    }
+
     public static class AirlessAuthorityGate
     {
         public static AirlessAuthorityAction Decide(double maximumAcceleration, double localGravity, out string reason)

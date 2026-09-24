@@ -642,13 +642,6 @@ namespace MuMech
                         TransitionTo(V2FlightPhase.Preflight, "V2 atmospheric burn candidate expired; obtaining a fresh simulation.");
                         break;
                     }
-                    if (V2AutoWarp && VesselState.Time < _atmosphericCandidatePlan.StrategicEntryBurnUT - AirlessLandingPhaseManager.InitialWarpLeadSeconds)
-                    {
-                        Core.Warp.WarpToUT(_atmosphericCandidatePlan.StrategicEntryBurnUT - AirlessLandingPhaseManager.InitialWarpLeadSeconds);
-                        _atmosphericInitialWarpIssued = true;
-                        ControllerStatus = "V2 is coarse-warping to the 10-minute atmospheric entry-burn alignment gate.";
-                        break;
-                    }
                     Core.Warp.MinimumWarp(true);
                     if (_atmosphericInitialWarpIssued)
                     {
@@ -674,12 +667,24 @@ namespace MuMech
                     }
                     Core.Attitude.attitudeTo(_atmosphericCandidatePlan.StrategicEntryDeltaV, AttitudeReference.INERTIAL_COT, this);
                     _commandedV2AttitudeVector = _atmosphericCandidatePlan.StrategicEntryDeltaV;
-                    if (!BurnAlignmentReady(_atmosphericCandidatePlan.StrategicEntryDeltaV))
+                    bool atmosphericBurnAligned = BurnAlignmentReady(_atmosphericCandidatePlan.StrategicEntryDeltaV);
+                    if (!atmosphericBurnAligned)
                     {
                         ControllerStatus = "V2 is holding at 1x until the atmospheric entry-burn attitude is aligned and settled.";
                         break;
                     }
-                    if (V2AutoWarp && VesselState.Time < _atmosphericCandidatePlan.StrategicEntryBurnUT - AirlessLandingPhaseManager.WarpSettleMargin)
+                    if (AtmosphericBurnWarpGate.CanRequestWarp(VesselState.Time,
+                        _atmosphericCandidatePlan.StrategicEntryBurnUT,
+                        AirlessLandingPhaseManager.InitialWarpLeadSeconds, V2AutoWarp, atmosphericBurnAligned))
+                    {
+                        Core.Warp.WarpToUT(_atmosphericCandidatePlan.StrategicEntryBurnUT - AirlessLandingPhaseManager.InitialWarpLeadSeconds);
+                        _atmosphericInitialWarpIssued = true;
+                        ControllerStatus = "V2 is coarse-warping to the 10-minute atmospheric entry-burn alignment gate.";
+                        break;
+                    }
+                    if (AtmosphericBurnWarpGate.CanRequestWarp(VesselState.Time,
+                        _atmosphericCandidatePlan.StrategicEntryBurnUT,
+                        AirlessLandingPhaseManager.WarpSettleMargin, V2AutoWarp, atmosphericBurnAligned))
                     {
                         Core.Warp.WarpToUT(_atmosphericCandidatePlan.StrategicEntryBurnUT - AirlessLandingPhaseManager.WarpSettleMargin);
                         _atmosphericWarpIssued = true;
