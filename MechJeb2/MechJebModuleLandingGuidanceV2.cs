@@ -920,12 +920,13 @@ namespace MuMech
         private AirlessTerminalGuidanceCommand TerminalCommand(Vector3d target) =>
             AirlessTerminalGuidance.Calculate(target - VesselState.CoM, VesselState.SurfaceVelocity, VesselState.Up,
                 VesselState.AltitudeBottom, Vessel.graviticAcceleration.magnitude, VesselState.MinThrustAcceleration,
-                VesselState.MaxThrustAcceleration, Core.Hoverslam.FinalDescentSpeed);
+                VesselState.MaxThrustAcceleration, Core.Hoverslam.FinalDescentSpeed, Core.Thrust.ThrottleLimit);
 
         private void CommandTerminalThrottle(AirlessTerminalGuidanceCommand terminalCommand)
         {
             AirlessFineThrustCommand command = AirlessFineThrustControl.CalculateTerminal(
-                terminalCommand.RequestedThrottle, VesselState.MinThrustAcceleration, VesselState.MaxThrustAcceleration);
+                terminalCommand.RequestedThrottle, VesselState.MinThrustAcceleration, VesselState.MaxThrustAcceleration,
+                availableMainThrottle: Core.Thrust.ThrottleLimit);
             Core.Thrust.TargetThrottle = (float)Math.Min(command.RequestedThrottle, Core.Thrust.ThrottleLimit);
             ApplyV2FineThrustLimit(command);
         }

@@ -326,13 +326,23 @@ namespace MuMech
         // its available full-throttle range so the main throttle has useful
         // continuous resolution near touchdown.
         public static AirlessFineThrustCommand CalculateTerminal(double requestedThrottle,
-            double minimumAcceleration, double maximumAcceleration, double terminalFineThrottleCeiling = 0.10)
+            double minimumAcceleration, double maximumAcceleration, double terminalFineThrottleCeiling = 0.10,
+            double availableMainThrottle = 1.0)
         {
             double throttle = Clamp01(requestedThrottle);
+            double mainThrottleLimit = Clamp01(availableMainThrottle);
             if (throttle <= 0 || throttle > Clamp01(terminalFineThrottleCeiling) ||
                 !Finite(minimumAcceleration) || !Finite(maximumAcceleration) || maximumAcceleration <= minimumAcceleration)
                 return new AirlessFineThrustCommand(false, throttle, 1, Math.Max(0, maximumAcceleration) * throttle);
-            double relativeLimit = Math.Min(1, throttle * FineControlHeadroom);
+            // A MechJeb safety limiter is a cap on main throttle.  Select an
+            // engine range that leaves the remapped main throttle at or below
+            // that cap; otherwise the thrust controller would silently clip
+            // a terminal command after V2 had planned for its full value.
+            if (mainThrottleLimit <= 0 || throttle > mainThrottleLimit)
+                return new AirlessFineThrustCommand(false, throttle, 1,
+                    minimumAcceleration + (maximumAcceleration - minimumAcceleration) * throttle);
+            double relativeLimit = Math.Min(1, Math.Max(throttle * FineControlHeadroom,
+                throttle / mainThrottleLimit));
             return RemapThrottle(throttle, minimumAcceleration, maximumAcceleration, relativeLimit);
         }
 
@@ -411,10 +421,15 @@ namespace MuMech
 
         public static AirlessTerminalGuidanceCommand Calculate(Vector3d positionError,
             Vector3d surfaceVelocity, Vector3d up, double altitude, double gravity,
-            double minimumAcceleration, double maximumAcceleration, double finalDescentSpeed)
+            double minimumAcceleration, double maximumAcceleration, double finalDescentSpeed,
+            double availableMainThrottle = 1.0)
         {
+            double mainThrottleLimit = Clamp01(availableMainThrottle);
+            double availableMaximumAcceleration = minimumAcceleration +
+                (maximumAcceleration - minimumAcceleration) * mainThrottleLimit;
             if (up.sqrMagnitude < 1e-12 || !Finite(altitude) || !Finite(gravity) ||
-                !Finite(maximumAcceleration) || maximumAcceleration <= gravity)
+                !Finite(maximumAcceleration) || maximumAcceleration <= minimumAcceleration ||
+                !Finite(minimumAcceleration) || availableMaximumAcceleration <= gravity)
                 return Invalid("V2 terminal guidance requires thrust acceleration greater than local gravity.");
 
             Vector3d localUp = up.normalized;
@@ -445,7 +460,7 @@ namespace MuMech
             // braking.
             Vector3d horizontalVelocityError = Vector3d.Exclude(localUp, velocityError);
             Vector3d horizontalCorrection = -horizontalVelocityError;
-            double horizontalDemand = Math.Min(Math.Max(0, maximumAcceleration - verticalDemand), horizontalCorrection.magnitude);
+            double horizontalDemand = Math.Min(Math.Max(0, availableMaximumAcceleration - verticalDemand), horizontalCorrection.magnitude);
             Vector3d thrustVector = horizontalDemand <= 1e-12
                 ? localUp * verticalDemand
                 : horizontalCorrection.normalized * horizontalDemand + localUp * verticalDemand;
@@ -454,7 +469,7 @@ namespace MuMech
             // engine can continuously deliver below its physical minimum
             // thrust.  The flight layer accounts for that engine constraint;
             // V2 never uses pulse-width modulation to hide it.
-            double desiredAcceleration = Math.Min(maximumAcceleration, Math.Max(0, thrustVector.magnitude));
+            double desiredAcceleration = Math.Min(availableMaximumAcceleration, Math.Max(0, thrustVector.magnitude));
             if (minimumAcceleration > desiredAcceleration + 1e-6)
                 return Invalid("V2 terminal guidance cannot meet the requested descent profile because minimum continuous thrust exceeds the required acceleration.");
             // Convert requested acceleration through the engine's actual
@@ -473,6 +488,7 @@ namespace MuMech
 
         private static AirlessTerminalGuidanceCommand Invalid(string reason) =>
             new AirlessTerminalGuidanceCommand(false, false, 0, 0, Vector3d.zero, Vector3d.zero, Vector3d.zero, reason);
+        private static double Clamp01(double value) => !Finite(value) ? 0 : Math.Max(0, Math.Min(1, value));
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
     }
 
