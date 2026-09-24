@@ -477,6 +477,18 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.InRange(Math.Abs(velocity.y), 0, 2.0);
         }
 
+        [Fact]
+        public void TerminalPolicyRejectsAThrottleCapThatCannotStopTheCurrentDescent()
+        {
+            // 10% of 30 m/s² produces only 1.37 m/s² of net upward braking
+            // on the Mun. An 80 m/s descent needs more than 2 km to stop, so
+            // a 1 km terminal state must not be presented as controllable.
+            AirlessTerminalGuidanceCommand command = AirlessTerminalGuidance.Calculate(new Vector3d(-600, -1000, 0),
+                new Vector3d(0, -80, 0), Vector3d.up, 1000, 1.63, 0, 30, 0.5, 0.10);
+            Assert.False(command.Valid);
+            Assert.Contains("cannot stop the current descent", command.RejectionReason);
+        }
+
         private static LandingGuidanceV2Snapshot Snapshot(long version, double ut, double maximumAcceleration)
         {
             var body = (CelestialBody)FormatterServices.GetUninitializedObject(typeof(CelestialBody));
@@ -513,7 +525,8 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         private static void SimulateTerminalDescent(double lateralError, double altitude, double verticalVelocity,
-            double gravity, double minimumAcceleration, double maximumAcceleration, out bool touchedDown, out Vector3d position, out Vector3d velocity)
+            double gravity, double minimumAcceleration, double maximumAcceleration, out bool touchedDown, out Vector3d position,
+            out Vector3d velocity, double availableMainThrottle = 1.0)
         {
             position = new Vector3d(lateralError, altitude, 0);
             velocity = new Vector3d(0, verticalVelocity, 0);
@@ -522,9 +535,14 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             for (int i = 0; i != 30000; ++i)
             {
                 AirlessTerminalGuidanceCommand command = AirlessTerminalGuidance.Calculate(-position, velocity,
-                    Vector3d.up, position.y, gravity, minimumAcceleration, maximumAcceleration, 0.5);
-                Assert.True(command.Valid);
-                double deliveredAcceleration = minimumAcceleration + (maximumAcceleration - minimumAcceleration) * command.RequestedThrottle;
+                    Vector3d.up, position.y, gravity, minimumAcceleration, maximumAcceleration, 0.5, availableMainThrottle);
+                Assert.True(command.Valid, command.RejectionReason + " position=" + position + " velocity=" + velocity +
+                    " gravity=" + gravity + " maxAcceleration=" + maximumAcceleration + " throttleLimit=" + availableMainThrottle);
+                AirlessFineThrustCommand fineCommand = AirlessFineThrustControl.CalculateTerminal(command.RequestedThrottle,
+                    minimumAcceleration, maximumAcceleration, availableMainThrottle: availableMainThrottle);
+                Assert.InRange(fineCommand.RequestedThrottle, 0, availableMainThrottle);
+                double deliveredAcceleration = minimumAcceleration + (maximumAcceleration - minimumAcceleration) *
+                    fineCommand.RelativeEngineThrustLimit * fineCommand.RequestedThrottle;
                 velocity += (command.ThrustDirection * deliveredAcceleration - Vector3d.up * gravity) * step;
                 position += velocity * step;
                 if (position.y <= 0)

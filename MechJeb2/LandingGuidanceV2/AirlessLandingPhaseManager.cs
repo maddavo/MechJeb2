@@ -443,6 +443,24 @@ namespace MuMech
 
             Vector3d localUp = up.normalized;
             double height = Math.Max(0.05, altitude);
+            double descentSpeed = Math.Max(0, -Vector3d.Dot(surfaceVelocity, localUp));
+            double requestedTouchdownSpeed = Math.Max(0.1, finalDescentSpeed);
+            double maximumNetBrakingAcceleration = availableMaximumAcceleration - gravity;
+            double minimumBrakingDistance = descentSpeed <= requestedTouchdownSpeed
+                ? 0
+                : (descentSpeed * descentSpeed - requestedTouchdownSpeed * requestedTouchdownSpeed) /
+                    (2.0 * maximumNetBrakingAcceleration);
+            // A throttle cap can leave enough thrust to hover yet still make
+            // the current descent physically unrecoverable.  Reject before
+            // sending a burn command in that case; engine limiting cannot add
+            // braking authority beyond the selected main-throttle cap.
+            // Inside the final contact-height tolerance the next physics tick
+            // can register touchdown before a continuous-speed calculation
+            // reaches its mathematical target. Keep maximum braking authority
+            // there; outside it, an insufficient stopping distance is a real
+            // unrecoverable condition.
+            if (height > TouchdownAltitude && height + 1e-6 < minimumBrakingDistance)
+                return Invalid("V2 terminal guidance cannot stop the current descent within the available altitude under the active main-throttle limit.");
             Vector3d horizontalError = Vector3d.Exclude(localUp, positionError);
             double verticalSpeedDown = -Vector3d.Dot(surfaceVelocity, localUp);
             double timeToGround = Math.Max(3.0, height / Math.Max(0.5, verticalSpeedDown));
@@ -454,7 +472,7 @@ namespace MuMech
                 // This remains bounded and is scaled from the current time to
                 // ground rather than a body-specific correction impulse.
                 : horizontalError.normalized * Math.Min(30.0, horizontalError.magnitude / timeToGround);
-            Vector3d desiredVelocity = desiredHorizontalVelocity - Math.Max(0.1, finalDescentSpeed) * localUp;
+            Vector3d desiredVelocity = desiredHorizontalVelocity - requestedTouchdownSpeed * localUp;
             Vector3d velocityError = surfaceVelocity - desiredVelocity;
 
             // The commanded acceleration is sized from the velocity that must
