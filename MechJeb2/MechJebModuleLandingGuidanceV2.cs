@@ -656,8 +656,17 @@ namespace MuMech
                         terminalIgnitionAvailable);
                     if (coastSafety == AirlessCoastSafetyAction.Replan)
                     {
-                        BeginAirlessRecoveryReplan("V2 coast endpoint left the current target corridor; acquiring a fresh complete airless plan.");
-                        break;
+                        if (CommittedAirlessDescentRecoveryGate.Decide(_airlessDescentCommitted) ==
+                            CommittedAirlessDescentRecoveryAction.StrategicReplan)
+                        {
+                            BeginAirlessRecoveryReplan("V2 coast endpoint left the current target corridor; acquiring a fresh complete airless plan.");
+                            break;
+                        }
+                        // The strategic burn has already put the vessel on an
+                        // impact trajectory.  Do not return to Preflight here:
+                        // Preflight can authorize a later strategic warp and
+                        // thereby pass the terminal ignition deadline.
+                        ControllerStatus = "V2 retained committed descent authority after the coast endpoint left the target corridor; holding 1x for terminal braking.";
                     }
                     if (coastSafety == AirlessCoastSafetyAction.EmergencyBrake)
                     {
@@ -971,6 +980,21 @@ namespace MuMech
             Core.Thrust.ThrustOff();
             Core.Warp.MinimumWarp(true);
             _terminalWarpGate.Reset();
+            if (CommittedAirlessDescentRecoveryGate.Decide(_airlessDescentCommitted) ==
+                CommittedAirlessDescentRecoveryAction.ControlledCoast)
+            {
+                // Once a finite deorbit burn has completed, re-entering the
+                // strategic planner is unsafe: a replacement plan could be
+                // scheduled after the terminal ignition deadline.  Hold 1x,
+                // keep acquiring the terminal attitude, and let the existing
+                // coast logic transfer directly into controlled braking.
+                string committedReason = "V2 retained committed descent authority; it will not re-enter strategic warp after " + reason;
+                if (_flightPhase == V2FlightPhase.Coast)
+                    ControllerStatus = committedReason;
+                else
+                    TransitionTo(V2FlightPhase.Coast, committedReason);
+                return;
+            }
             // Discard any candidate made before the executed burn. The next
             // Preflight tick owns an immutable post-burn snapshot and waits for
             // its worker result before it can request a second finite burn.

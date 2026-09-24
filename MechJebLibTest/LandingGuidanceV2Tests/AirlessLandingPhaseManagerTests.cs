@@ -206,6 +206,15 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void CommittedDescentCannotReturnToStrategicReplanAuthority()
+        {
+            Assert.Equal(CommittedAirlessDescentRecoveryAction.StrategicReplan,
+                CommittedAirlessDescentRecoveryGate.Decide(false));
+            Assert.Equal(CommittedAirlessDescentRecoveryAction.ControlledCoast,
+                CommittedAirlessDescentRecoveryGate.Decide(true));
+        }
+
+        [Fact]
         public void TerminalWarpRequiresTwoSecondsOfContinuousBrakingAttitude()
         {
             var gate = new AirlessTerminalWarpGate();

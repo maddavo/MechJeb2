@@ -522,6 +522,21 @@ namespace MuMech
     public enum AirlessCoastSafetyAction { Continue, Replan, EmergencyBrake }
 
     /// <summary>
+    /// A finite airless deorbit burn commits the vessel to a surface-intercept
+    /// trajectory.  A later endpoint disagreement must never restart the
+    /// strategic sequence, because that sequence is permitted to request warp.
+    /// Keep the vessel at 1x in controlled coast until the terminal burn gate.
+    /// </summary>
+    public enum CommittedAirlessDescentRecoveryAction { StrategicReplan, ControlledCoast }
+
+    public static class CommittedAirlessDescentRecoveryGate
+    {
+        public static CommittedAirlessDescentRecoveryAction Decide(bool descentCommitted) =>
+            descentCommitted ? CommittedAirlessDescentRecoveryAction.ControlledCoast :
+                CommittedAirlessDescentRecoveryAction.StrategicReplan;
+    }
+
+    /// <summary>
     /// A plan authorizes commands only while the live vessel still has the
     /// minimum powered authority needed to arrest an airless descent.  It is
     /// intentionally independent of the planner: a plan from an earlier
