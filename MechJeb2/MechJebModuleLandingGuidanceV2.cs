@@ -1529,6 +1529,11 @@ namespace MuMech
                     ? VesselState.ThrustVectorLastFrame.magnitude / VesselState.Mass
                     : double.NaN;
                 bool burning = commandedThrottle > 0.001 || actualThrustAcceleration > 0.001;
+                double terminalIgnitionUT = Core.Hoverslam?.IgnitionUT ?? double.NaN;
+                double terminalIgnitionCountdown = Core.Hoverslam?.IgnitionCountdown ?? double.NaN;
+                bool terminalIgnitionAvailable = !double.IsNaN(terminalIgnitionUT) &&
+                    !double.IsInfinity(terminalIgnitionUT) && !double.IsNaN(terminalIgnitionCountdown) &&
+                    !double.IsInfinity(terminalIgnitionCountdown);
                 string v1Phase = JsonString(phase);
                 string v1Status = JsonString(status);
                 string predOutcome = JsonString(predictionOutcome);
@@ -1613,6 +1618,11 @@ namespace MuMech
                     ",\"v2EngineThrustLimiterActive\":{0},\"v2EngineThrustLimiterRelative\":{1},\"v2EngineThrustLimiterExpectedAcceleration\":{2},\"v2EngineThrustLimiterEngineCount\":{3}",
                     _v2FineEngineCount > 0 ? "true" : "false", JsonNumber(_v2FineEngineRelativeLimit),
                     JsonNumber(_v2FineEngineExpectedAcceleration), _v2FineEngineCount);
+                baseFields += string.Format(CultureInfo.InvariantCulture,
+                    ",\"v2TerminalIgnitionAvailable\":{0},\"v2TerminalIgnitionUT\":{1},\"v2TerminalIgnitionCountdown\":{2},\"v2TerminalWarpAttitudeReady\":{3}",
+                    terminalIgnitionAvailable ? "true" : "false", JsonNumber(terminalIgnitionUT),
+                    JsonNumber(terminalIgnitionCountdown),
+                    BurnAlignmentReady(Core.Hoverslam?.IgnitionAttitude ?? Vector3d.zero) ? "true" : "false");
                 baseFields += string.Format(CultureInfo.InvariantCulture,
                     ",\"airlessPlanSnapshotVersion\":{0},\"activeAirlessPlanSnapshotVersion\":{1},\"atmosphericPlanSnapshotVersion\":{2},\"airlessPlanningDurationMilliseconds\":{3},\"phaseManagerWorkUnits\":{4}",
                     airlessPlan?.SnapshotVersion ?? -1, _activePlan?.SnapshotVersion ?? -1,
