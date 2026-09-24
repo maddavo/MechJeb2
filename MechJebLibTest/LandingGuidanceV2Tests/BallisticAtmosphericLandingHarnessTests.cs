@@ -23,6 +23,23 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.True(descent.StageCommanded);
             Assert.True(descent.Landed, descent.RejectionReason);
         }
+
+        [Fact]
+        public void PostBurnEstimatorFailureRetainsV2EntryProfileAndReachesBallisticTouchdown()
+        {
+            AtmosphericEntryControllerHarnessResult entry = new AtmosphericEntryControllerHarness().Execute(
+                Candidate(100, 1000, 30), 100, 0.65, 27.9, Rejected(102));
+            BallisticAtmosphericLandingHarnessResult descent = new BallisticAtmosphericLandingHarness().Execute(
+                5000, 180, 9.81, 30, parachutesDeploy: true, injectStageFailure: false);
+
+            Assert.True(entry.FiniteBurnCompleted);
+            Assert.True(entry.PostBurnValidationRequired);
+            Assert.Equal(AtmosphericEntryPhase.Entry, entry.FinalPhase);
+            Assert.Equal(AtmosphericEntryDirective.EnterAtmosphericEntry, entry.LastDirective);
+            Assert.Contains("conservative", entry.LastReason);
+            Assert.True(descent.ParachutesDeployed);
+            Assert.True(descent.Landed, descent.RejectionReason);
+        }
         [Theory]
         [InlineData(5000, 180, 9.81, 0, 30, true)]
         [InlineData(5000, 180, 9.81, 0, 9.81, false)]
@@ -88,5 +105,9 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         private static AtmosphericLandingPlan Candidate(long version, double burnUT, double deltaV) =>
             new AtmosphericLandingPlan(version, AtmosphericLandingPlanState.Candidate, 100, 5000, 1000, 100, 100,
                 "test", new Vector3d(deltaV, 0, 0), burnUT, burnUT + 200, 100);
+
+        private static AtmosphericLandingPlan Rejected(long version) =>
+            new AtmosphericLandingPlan(version, AtmosphericLandingPlanState.Rejected, double.NaN, double.NaN,
+                double.NaN, double.NaN, double.NaN, "Harness deliberately rejected the post-burn estimate.");
     }
 }

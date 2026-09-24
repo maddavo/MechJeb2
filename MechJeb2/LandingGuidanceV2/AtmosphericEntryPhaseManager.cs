@@ -135,9 +135,16 @@ namespace MuMech
         {
             if (Phase != AtmosphericEntryPhase.AwaitPostBurnValidation)
                 return Reject("A V2 atmospheric post-burn plan was supplied outside its validation gate.");
-            if (!Executable(plan, out string reason)) return Reject(reason);
+            // The finite entry burn has already been delivered. A later
+            // estimator failure must not release the vessel onto an entry
+            // trajectory: retain V2 authority and continue the conservative
+            // retrograde/parachute or powered-braking profile. Pre-burn
+            // validation still rejects before any V2 thrust is commanded.
+            if (!Executable(plan, out string reason)) return EnterConservativeEntry(
+                "V2 post-burn validation could not certify a replacement entry plan; continuing the conservative entry profile: " + reason);
             if (plan.SnapshotVersion <= _plan.SnapshotVersion)
-                return Reject("V2 atmospheric post-burn validation did not use a fresh snapshot.");
+                return EnterConservativeEntry(
+                    "V2 post-burn validation did not provide a fresh snapshot; continuing the conservative entry profile.");
             _plan = plan;
             _burnGateValidated = false;
             if (plan.StrategicEntryDeltaV.magnitude <= BurnCompleteDeltaV)
@@ -147,6 +154,14 @@ namespace MuMech
             }
             Phase = AtmosphericEntryPhase.InitialWarpToBurn;
             return Decision(AtmosphericEntryDirective.None);
+        }
+
+        private AtmosphericEntryPhaseDecision EnterConservativeEntry(string reason)
+        {
+            Phase = AtmosphericEntryPhase.Entry;
+            LastWorkUnits = 1;
+            return new AtmosphericEntryPhaseDecision(Phase, AtmosphericEntryDirective.EnterAtmosphericEntry,
+                double.NaN, reason, LastWorkUnits);
         }
 
         private static bool Executable(AtmosphericLandingPlan plan, out string reason)
@@ -197,7 +212,7 @@ namespace MuMech
         public AtmosphericEntryControllerHarnessResult Execute(AtmosphericLandingPlan plan, double startUT,
             double finiteBurnLeadSeconds, double maximumAcceleration, AtmosphericLandingPlan postBurnPlan,
             double physicsStepSeconds = 0.02, bool freshValidationIsValid = true,
-            double attitudeErrorDegrees = 0)
+            double attitudeErrorDegrees = 0, bool autoWarp = true)
         {
             var result = new AtmosphericEntryControllerHarnessResult();
             var manager = new AtmosphericEntryPhaseManager(finiteBurnLeadSeconds);
@@ -212,25 +227,25 @@ namespace MuMech
             double ut = startUT;
             double step = Math.Max(0.001, physicsStepSeconds);
             double acceleration = Math.Max(0.001, maximumAcceleration);
-            result.Add(manager.Tick(ut, true, attitudeErrorDegrees, double.NaN));
+            result.Add(manager.Tick(ut, autoWarp, attitudeErrorDegrees, double.NaN));
             if (result.LastDirective == AtmosphericEntryDirective.RequestInitialWarp)
             {
                 result.InitialWarpRequested = true;
                 ut = result.LastWarpUT;
-                result.Add(manager.Tick(ut, true, attitudeErrorDegrees, double.NaN));
+                result.Add(manager.Tick(ut, autoWarp, attitudeErrorDegrees, double.NaN));
             }
             if (result.LastDirective == AtmosphericEntryDirective.RequestAttitude)
             {
                 ut += step;
-                result.Add(manager.Tick(ut, true, attitudeErrorDegrees, double.NaN));
+                result.Add(manager.Tick(ut, autoWarp, attitudeErrorDegrees, double.NaN));
             }
             if (result.LastDirective != AtmosphericEntryDirective.WarpAuthorized) return result;
-            result.Add(manager.Tick(ut, true, attitudeErrorDegrees, double.NaN));
+            result.Add(manager.Tick(ut, autoWarp, attitudeErrorDegrees, double.NaN));
             if (result.LastDirective == AtmosphericEntryDirective.RequestWarp)
             {
                 result.FinalWarpRequested = true;
                 ut = result.LastWarpUT;
-                result.Add(manager.Tick(ut, true, attitudeErrorDegrees, double.NaN));
+                result.Add(manager.Tick(ut, autoWarp, attitudeErrorDegrees, double.NaN));
             }
             if (result.LastDirective != AtmosphericEntryDirective.ExitWarpAndRequestAttitude) return result;
 

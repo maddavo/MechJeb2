@@ -91,6 +91,11 @@ namespace MuMech
         // it may not release an impact trajectory because a correction gate
         // failed.
         private bool _airlessDescentCommitted;
+        // Atmospheric V2 has the same no-release rule once it has accepted a
+        // direct entry or begun its finite entry burn. A later estimator or
+        // replacement-plan failure falls back to the conservative atmospheric
+        // profile; it cannot discard all V2 commands above the surface.
+        private bool _atmosphericDescentCommitted;
         private LandingSiteAssessment _siteAssessment;
         private string _pendingTargetEvent;
         private const double VisualAssessmentAltitude = 750.0;
@@ -196,6 +201,7 @@ namespace MuMech
             _visualRebaseDone = false;
             _visualAssessmentCompleted = false;
             _airlessDescentCommitted = false;
+            _atmosphericDescentCommitted = false;
             _terminalWarpGate.Reset();
             _v2PoweredStagingGate.Reset();
             _lastV2StageUT = double.NegativeInfinity;
@@ -316,6 +322,11 @@ namespace MuMech
                 EnterAirlessTerminalContingency(reason);
                 return false;
             }
+            if (ControllerActive && _atmosphericDescentCommitted && Vessel != null && !Vessel.LandedOrSplashed)
+            {
+                EnterAtmosphericTerminalContingency(reason);
+                return false;
+            }
             if (ControllerActive) ReleaseV2Control();
             else ClearAtmosphericCandidateResult();
             TransitionTo(V2FlightPhase.Rejected, reason);
@@ -363,8 +374,11 @@ namespace MuMech
                             Core.Thrust.Users.Add(this);
                             Core.Attitude.Users.Add(this);
                             if (_atmosphericPhaseManager.Phase == AtmosphericEntryPhase.Entry)
+                            {
+                                _atmosphericDescentCommitted = true;
                                 TransitionTo(V2FlightPhase.AtmosphericEntry,
                                     "V2 validated the current atmospheric entry trajectory; beginning the independent entry profile.");
+                            }
                             else
                                 TransitionTo(V2FlightPhase.WarpToAtmosphericEntry,
                                     "V2 validated its strategic atmospheric entry burn; moving to its staged burn gate.");
@@ -755,8 +769,11 @@ namespace MuMech
                         if (TryAcceptAtmosphericFreshValidation(true))
                         {
                             if (_atmosphericPhaseManager.Phase == AtmosphericEntryPhase.Entry)
+                            {
+                                _atmosphericDescentCommitted = true;
                                 TransitionTo(V2FlightPhase.AtmosphericEntry,
                                     "V2 independently validated the actual post-burn atmospheric trajectory.");
+                            }
                             else
                                 TransitionTo(V2FlightPhase.WarpToAtmosphericEntry,
                                     "V2 post-burn validation scheduled a bounded corrective atmospheric entry burn.");
@@ -764,8 +781,11 @@ namespace MuMech
                         break;
                     }
                     if (atmosphericWarpDecision.Directive == AtmosphericEntryDirective.EnterAtmosphericEntry)
+                    {
+                        _atmosphericDescentCommitted = true;
                         TransitionTo(V2FlightPhase.AtmosphericEntry,
                             "V2 is executing its independently validated atmospheric entry profile.");
+                    }
                     else
                         RejectController("V2 atmospheric warp gate returned an unsupported controller directive.");
                     break;
@@ -803,11 +823,13 @@ namespace MuMech
                     if (atmosphericAlignDecision.Directive == AtmosphericEntryDirective.BeginFiniteBurn)
                     {
                         BeginFiniteBurn("atmospheric_strategic_entry", atmosphericAlignPlan.StrategicEntryDeltaV.magnitude);
+                        _atmosphericDescentCommitted = true;
                         TransitionTo(V2FlightPhase.AtmosphericEntryBurn, "Executing the finite V2 atmospheric entry burn.");
                         break;
                     }
                     if (atmosphericAlignDecision.Directive == AtmosphericEntryDirective.EnterAtmosphericEntry)
                     {
+                        _atmosphericDescentCommitted = true;
                         TransitionTo(V2FlightPhase.AtmosphericEntry,
                             "V2 fresh ignition validation established a direct atmospheric entry trajectory.");
                         break;
@@ -858,11 +880,13 @@ namespace MuMech
                     Core.Attitude.attitudeTo(-VesselState.SurfaceVelocity, AttitudeReference.INERTIAL_COT, this);
                     DeployV2AtmosphericParachutes();
                     RefreshPreflight(false);
-                    if (Preflight?.AtmosphericPlan?.State == AtmosphericLandingPlanState.Rejected)
+                    if (Preflight?.AtmosphericPlan?.State == AtmosphericLandingPlanState.Rejected && !_atmosphericDescentCommitted)
                     {
                         RejectController(Preflight.AtmosphericPlan.Reason);
                         break;
                     }
+                    if (Preflight?.AtmosphericPlan?.State == AtmosphericLandingPlanState.Rejected)
+                        ControllerStatus = "V2 retained atmospheric landing authority after an estimator rejection; using the conservative descent profile.";
                     // A safely deployed chute owns the final ballistic
                     // descent on a capsule or bell-shaped vessel. Do not
                     // command a competing powered braking maneuver below it.
@@ -968,6 +992,20 @@ namespace MuMech
             // divert path instead of releasing an impact trajectory.
             TransitionTo(V2FlightPhase.BrakingApproach,
                 "V2 entered controlled terminal braking after an airless contingency: " + reason);
+        }
+
+        private void EnterAtmosphericTerminalContingency(string reason)
+        {
+            // A finite atmospheric entry burn or accepted direct entry has
+            // committed the vessel to descent. Retain V2's own actuator users
+            // and immediately return to the conservative profile instead of
+            // releasing throttle, attitude, and warp authority together.
+            Core.Warp.MinimumWarp(true);
+            Core.Thrust.ThrustOff();
+            Core.Thrust.Users.Add(this);
+            Core.Attitude.Users.Add(this);
+            TransitionTo(V2FlightPhase.AtmosphericEntry,
+                "V2 retained atmospheric landing authority after a committed-plan failure: " + reason);
         }
 
         private void TickTerminalDivert()
@@ -1275,6 +1313,7 @@ namespace MuMech
             _atmosphericPhaseManager = null;
             _v2PoweredStagingGate.Reset();
             _finiteBurnTracking = false;
+            _atmosphericDescentCommitted = false;
         }
         private double RemainingFiniteBurnDeltaV => _finiteBurnProgress == null
             ? 0

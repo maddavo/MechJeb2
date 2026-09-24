@@ -691,7 +691,7 @@ namespace MuMech
             double finiteBurnLeadSeconds, double maximumAcceleration, double physicsStepSeconds = 0.02,
             bool freshValidationIsValid = true, double controllerErrorDegrees = 0,
             double thrustVectorErrorDegrees = 0, double angularVelocityRadiansPerSecond = 0,
-            AirlessLandingPlan strategicReplan = null, bool planeValidationIsValid = true)
+            AirlessLandingPlan strategicReplan = null, bool planeValidationIsValid = true, bool autoWarp = true)
         {
             var result = new AirlessLandingControllerHarnessResult();
             var manager = new AirlessLandingPhaseManager();
@@ -708,7 +708,7 @@ namespace MuMech
 
             if (plan.PlaneAlignmentDeltaVMagnitude > AirlessLandingPhaseManager.BurnCompleteDeltaV)
             {
-                if (!AdvanceToBurnGate(manager, result, ref ut, alignmentError, step)) return result;
+                if (!AdvanceToBurnGate(manager, result, ref ut, alignmentError, step, autoWarp)) return result;
                 ut = plan.PlaneAlignmentBurnUT - finiteBurnLeadSeconds;
                 result.Add(manager.Tick(ut, false, alignmentError, double.NaN));
                 if (result.LastDirective != AirlessLandingPhaseDirective.RequireFreshPlaneValidation) return result;
@@ -730,7 +730,7 @@ namespace MuMech
                 plan = strategicReplan;
             }
 
-            if (!AdvanceToBurnGate(manager, result, ref ut, alignmentError, step)) return result;
+            if (!AdvanceToBurnGate(manager, result, ref ut, alignmentError, step, autoWarp)) return result;
             double ignitionUT = plan.StrategicBurnUT - finiteBurnLeadSeconds;
             ut = ignitionUT;
             result.Add(manager.Tick(ut, false, alignmentError, double.NaN));
@@ -749,32 +749,32 @@ namespace MuMech
         }
 
         private static bool AdvanceToBurnGate(AirlessLandingPhaseManager manager, AirlessLandingControllerHarnessResult result,
-            ref double ut, double alignmentError, double step)
+            ref double ut, double alignmentError, double step, bool autoWarp)
         {
             // The flight module gives the phase manager infinity until both the
             // controller and measured thrust vector are inside the one-degree,
             // settled authority gate. The supplied alignmentError models that
             // same contract; the harness cannot authorize an attitude-only warp.
-            result.Add(manager.Tick(ut, true, alignmentError, double.NaN));
+            result.Add(manager.Tick(ut, autoWarp, alignmentError, double.NaN));
             if (result.LastDirective == AirlessLandingPhaseDirective.RequestInitialWarp)
             {
                 result.InitialWarpRequested = true;
                 ut = result.LastWarpUT;
-                result.Add(manager.Tick(ut, true, alignmentError, double.NaN));
+                result.Add(manager.Tick(ut, autoWarp, alignmentError, double.NaN));
             }
             if (result.LastDirective == AirlessLandingPhaseDirective.RequestAttitude)
             {
                 ut += step;
-                result.Add(manager.Tick(ut, true, alignmentError, double.NaN));
+                result.Add(manager.Tick(ut, autoWarp, alignmentError, double.NaN));
             }
             if (result.LastDirective != AirlessLandingPhaseDirective.WarpAuthorized) return false;
 
-            result.Add(manager.Tick(ut, true, alignmentError, double.NaN));
+            result.Add(manager.Tick(ut, autoWarp, alignmentError, double.NaN));
             if (result.LastDirective == AirlessLandingPhaseDirective.RequestWarp)
             {
                 result.FinalWarpRequested = true;
                 ut = result.LastWarpUT;
-                result.Add(manager.Tick(ut, true, alignmentError, double.NaN));
+                result.Add(manager.Tick(ut, autoWarp, alignmentError, double.NaN));
             }
             return result.LastDirective == AirlessLandingPhaseDirective.ExitWarpAndRequestAttitude;
         }
