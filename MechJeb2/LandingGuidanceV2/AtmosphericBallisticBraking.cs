@@ -26,8 +26,8 @@ namespace MuMech
 
     public static class AtmosphericBallisticBraking
     {
-        public const double MinimumDesiredDownSpeed = 1.5;
-        public const double EnvelopeReserveFactor = 0.01;
+        public const double MinimumDesiredDownSpeed = 0.5;
+        public const double EnvelopeReserveFactor = 0.005;
 
         public static AtmosphericBallisticBrakingCommand Calculate(double altitude, double downSpeed, double gravity,
             double minimumAcceleration, double maximumAcceleration, double availableMainThrottle = 1.0)
@@ -47,7 +47,10 @@ namespace MuMech
             // powered braking begins and retains response/staging margin.
             double desiredDownSpeed = Math.Max(MinimumDesiredDownSpeed,
                 Math.Sqrt(EnvelopeReserveFactor * netAcceleration * Math.Max(0, altitude)));
-            double desiredAcceleration = gravity + Math.Max(0, downSpeed - desiredDownSpeed);
+            // Retire velocity error on a half-second response. The energy
+            // gate begins with a full stopping-distance reserve beyond the
+            // ideal arrest, which covers this finite response and staging.
+            double desiredAcceleration = gravity + 2.0 * Math.Max(0, downSpeed - desiredDownSpeed);
             double throttle = maximumAcceleration > minimumAcceleration
                 ? Clamp01((Math.Min(availableAcceleration, desiredAcceleration) - minimumAcceleration) /
                     (maximumAcceleration - minimumAcceleration))

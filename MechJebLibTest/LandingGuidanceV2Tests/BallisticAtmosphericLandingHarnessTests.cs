@@ -51,11 +51,15 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.True(result.MinimumThrottleWhenPowered < 0.90);
         }
 
-        [Fact]
-        public void PoweredBallisticProfileLandsWithoutStagingWhenItsEngineRemainsHealthy()
+        [Theory]
+        [InlineData(5000, 180, 9.81, 30)]
+        [InlineData(5000, 180, 1.63, 12)]
+        [InlineData(9000, 240, 9.81, 45)]
+        public void PoweredBallisticProfileLandsAcrossGravityAndThrustRangesWhenItsEngineRemainsHealthy(
+            double altitude, double downSpeed, double gravity, double maximumAcceleration)
         {
             BallisticAtmosphericLandingHarnessResult result = new BallisticAtmosphericLandingHarness().Execute(
-                5000, 180, 9.81, 30, parachutesDeploy: false, injectStageFailure: false);
+                altitude, downSpeed, gravity, maximumAcceleration, parachutesDeploy: false, injectStageFailure: false);
 
             Assert.True(result.Landed, result.RejectionReason);
             Assert.True(result.PoweredBrakingEntered);
