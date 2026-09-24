@@ -369,6 +369,20 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void AtmosphericEntryWarpRequiresASettledBurnAttitudeBeforeBothWarpGates()
+        {
+            const double burnUT = 1000;
+            Assert.False(AtmosphericBurnWarpGate.CanRequestWarp(100, burnUT,
+                AirlessLandingPhaseManager.InitialWarpLeadSeconds, true, false));
+            Assert.True(AtmosphericBurnWarpGate.CanRequestWarp(100, burnUT,
+                AirlessLandingPhaseManager.InitialWarpLeadSeconds, true, true));
+            Assert.False(AtmosphericBurnWarpGate.CanRequestWarp(990, burnUT,
+                AirlessLandingPhaseManager.WarpSettleMargin, true, true));
+            Assert.True(AtmosphericBurnWarpGate.CanRequestWarp(979, burnUT,
+                AirlessLandingPhaseManager.WarpSettleMargin, true, true));
+        }
+
+        [Fact]
         public void InvalidPlansFailClosedWithoutWarpOrThrottle()
         {
             var manager = new AirlessLandingPhaseManager();
