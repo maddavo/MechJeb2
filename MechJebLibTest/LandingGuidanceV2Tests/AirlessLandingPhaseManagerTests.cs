@@ -93,6 +93,30 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void FineThrustLimiterUsesTheExistingEngineLimitAsThePhysicalFullThrottleRange()
+        {
+            // An engine with 20 m/s² minimum acceleration and a pre-existing
+            // 50% engine limiter has a 60 m/s² full-throttle result. V2 must
+            // preserve that player-selected limit, then temporarily scale it
+            // to 2% for the final burn: 20 + (100 - 20) * .02 * .5 = 20.8.
+            AirlessFineThrustCommand command = AirlessFineThrustControl.Calculate(0.10, 0.75, 20, 60);
+            Assert.True(command.UseEngineThrustLimiter);
+            Assert.Equal(0.04, command.RelativeEngineThrustLimit, 6);
+            Assert.Equal(0.5, command.RequestedThrottle, 12);
+            Assert.Equal(20.8, command.ExpectedAcceleration, 12);
+            Assert.Equal(command.ExpectedAcceleration,
+                20 + (100 - 20) * (0.50 * command.RelativeEngineThrustLimit) * command.RequestedThrottle, 6);
+        }
+
+        [Fact]
+        public void FineThrustLimiterDoesNotPretendAThrottleLockedEngineHasFineControl()
+        {
+            AirlessFineThrustCommand command = AirlessFineThrustControl.Calculate(0.10, 0.75, 100, 100);
+            Assert.False(command.UseEngineThrustLimiter);
+            Assert.Equal(0.75, command.RequestedThrottle, 12);
+        }
+
+        [Fact]
         public void CoastSafetyReplansAStaleOrOutOfCorridorEndpointBeforeTheBrakingLead()
         {
             LandingGuidanceV2Snapshot snapshot = Snapshot(100, 1000, 20);
