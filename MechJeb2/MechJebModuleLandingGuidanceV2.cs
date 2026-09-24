@@ -76,6 +76,7 @@ namespace MuMech
         private Vector3d _targetReferencePosition;
         private bool _hasTargetReference;
         private bool _visualRebaseDone;
+        private bool _visualAssessmentCompleted;
         // Set as soon as V2 commits a finite airless deorbit burn. From this
         // point V2 must retain controlled flight through a terminal outcome;
         // it may not release an impact trajectory because a correction gate
@@ -184,6 +185,7 @@ namespace MuMech
             _originalTargetLatitude = Core.Target.targetLatitude;
             _originalTargetLongitude = Core.Target.targetLongitude;
             _visualRebaseDone = false;
+            _visualAssessmentCompleted = false;
             _airlessDescentCommitted = false;
             _terminalWarpGate.Reset();
             _siteAssessment = null;
@@ -752,7 +754,7 @@ namespace MuMech
                     break;
                 case V2FlightPhase.BrakingApproach:
                     Core.Warp.MinimumWarp(true);
-                    if (VesselState.AltitudeBottom <= VisualAssessmentAltitude && !_visualRebaseDone)
+                    if (VesselState.AltitudeBottom <= VisualAssessmentAltitude && !_visualAssessmentCompleted)
                     {
                         Core.Warp.MinimumWarp(true);
                         TransitionTo(V2FlightPhase.VisualAssessment, "V2 entered the local visual-assessment gate.");
@@ -882,25 +884,30 @@ namespace MuMech
                 RejectController("V2 local visual assessment has no valid impact estimate.");
                 return;
             }
-            // The terminal assessment is the controlled recovery point after a
-            // valid strategic impact. If a residual remains outside the normal
-            // visual-rebase accuracy gate, rebase to the current predicted
-            // surface point and keep V2 braking/landing authority. The trace
-            // records this explicitly; an airborne vessel is never released
-            // onto an impact trajectory for a planning-corridor failure.
-            bool contingencyRebase = Preflight.Estimate.TargetError > VisualRebaseAccuracyLimit;
+            _visualAssessmentCompleted = true;
+            if (VisualRebaseGate.Decide(Preflight.Estimate.TargetError, VisualRebaseAccuracyLimit) ==
+                VisualTargetAction.RetainOriginalAndReportFailure)
+            {
+                // The landing has reached the local gate with an unacceptable
+                // targeting error.  Retain red as the player's requested
+                // target and record the failure; a rebase here would conceal
+                // the failed long-range plan.  Terminal guidance remains
+                // engaged for a controlled recovery rather than releasing an
+                // already committed vehicle onto an impact trajectory.
+                _pendingTargetEvent = "visual_accuracy_rejected";
+                _siteAssessment = AssessLocalSite(V2ActiveTargetLatitude, V2ActiveTargetLongitude);
+                TransitionTo(V2FlightPhase.TerminalDivert,
+                    "V2 visual target-accuracy gate failed; the original target was retained for controlled terminal recovery.");
+                return;
+            }
+
             MainBody.GetLatLngAltAtUT(Preflight.Estimate.ImpactUT, Preflight.Estimate.ImpactPosition, out double latitude, out double longitude, out _);
             SetActiveTarget(latitude, longitude, true);
             _visualRebaseDone = true;
-            _pendingTargetEvent = contingencyRebase ? "terminal_contingency_rebase" : "visual_rebase";
+            _pendingTargetEvent = "visual_rebase";
             _siteAssessment = AssessLocalSite(latitude, longitude);
-            // Terrain assessment informs the trace and target choice. At this
-            // late powered gate it must not abandon an already committed
-            // descent; terminal-divert remains responsible for a controlled
-            // velocity-null touchdown.
-            TransitionTo(V2FlightPhase.TerminalDivert, contingencyRebase
-                ? "V2 terminal contingency rebase complete; terminal-divert guidance retained the predicted safe touchdown."
-                : "V2 visual rebase complete; terminal-divert guidance is tracking the assessed local target.");
+            TransitionTo(V2FlightPhase.TerminalDivert,
+                "V2 visual rebase complete; terminal-divert guidance is tracking the assessed local target.");
         }
 
         private Vector3d TerminalVelocityError()

@@ -329,6 +329,25 @@ namespace MuMech
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
     }
 
+    public enum VisualTargetAction { Rebase, RetainOriginalAndReportFailure }
+
+    /// <summary>
+    /// The visual gate is allowed to rebase red to blue only when the current
+    /// independent impact estimate has already reached the requested target
+    /// corridor.  A late rebase must never hide a kilometre-scale targeting
+    /// error by redefining it as the new requested site.
+    /// </summary>
+    public static class VisualRebaseGate
+    {
+        public static VisualTargetAction Decide(double targetError, double maximumRebaseError) =>
+            Finite(targetError) && targetError >= 0 && Finite(maximumRebaseError) && maximumRebaseError >= 0 &&
+            targetError <= maximumRebaseError
+                ? VisualTargetAction.Rebase
+                : VisualTargetAction.RetainOriginalAndReportFailure;
+
+        private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    }
+
     /// <summary>
     /// KSP-independent terminal command policy shared by the V2 flight module
     /// and the deterministic controller validation.  Given the current local
