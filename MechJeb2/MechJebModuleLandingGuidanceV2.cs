@@ -1,13 +1,13 @@
 extern alias JetBrainsAnnotations;
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using Stopwatch = System.Diagnostics.Stopwatch;
 using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
 using JetBrainsAnnotations::JetBrains.Annotations;
-using MechJebLib.Control;
 using UnityEngine;
 
 namespace MuMech
@@ -89,7 +89,10 @@ namespace MuMech
         // which V2 may first begin acquiring braking attitude.  Leave coast
         // with enough 1x time to settle the physical thrust vector.
         private const double TerminalBrakingAlignmentLeadSeconds = 15.0;
-        private readonly DeltaSigmaThrottleModulator _terminalPwm = new DeltaSigmaThrottleModulator(0.02, 0.50);
+        // V2 owns these engine settings only while its final finite-burn
+        // remapping is active.  They are restored before every control exit.
+        private readonly Dictionary<ModuleEngines, float> _thrustLimitsBeforeV2FineControl =
+            new Dictionary<ModuleEngines, float>();
 
         public enum V2FlightPhase { Idle, Preflight, WarpToStrategic, AlignPlane, PlaneAlignment, AlignStrategicBurn, StrategicBurn, AlignTrim, BoundedTrim, Coast, WarpToAtmosphericEntry, AlignAtmosphericEntryBurn, AtmosphericEntryBurn, AtmosphericEntry, BrakingApproach, VisualAssessment, TerminalDivert, VelocityNull, Complete, Rejected }
 
@@ -749,7 +752,6 @@ namespace MuMech
                     Core.Thrust.TargetThrottle = 1.0f;
                     if (!double.IsNaN(_lastAdjustedVelocity.x) && Vector3d.Angle(_lastAdjustedVelocity, adjustedVelocity) > 10.0)
                     {
-                        _terminalPwm.Reset();
                         TransitionTo(V2FlightPhase.TerminalDivert, "V2 terminal-divert guidance is tracking the active red target.");
                     }
                     _lastAdjustedVelocity = adjustedVelocity;
@@ -801,7 +803,6 @@ namespace MuMech
             double horizontalError = Vector3d.Exclude(VesselState.Up, target - VesselState.CoM).magnitude;
             if (horizontalError < 5.0 && VesselState.AltitudeBottom < 50.0)
             {
-                _terminalPwm.Reset();
                 TransitionTo(V2FlightPhase.VelocityNull, "V2 velocity-null guidance is protecting touchdown speed and clearance.");
                 return;
             }
@@ -816,14 +817,10 @@ namespace MuMech
             if (!BurnAlignmentReady(command.ThrustDirection))
             {
                 Core.Thrust.ThrustOff();
-                _terminalPwm.Reset();
                 ControllerStatus = "V2 terminal divert is holding throttle until the measured thrust vector is aligned and settled.";
                 return;
             }
-            _terminalPwm.MinOnTime = 0.50;
-            _terminalPwm.MinOffTime = TimeWarp.fixedDeltaTime;
-            Core.Thrust.TargetThrottle = _terminalPwm.ThrottleCommand(command.DesiredAcceleration,
-                VesselState.MinThrustAcceleration, VesselState.MaxThrustAcceleration, TimeWarp.fixedDeltaTime);
+            Core.Thrust.TargetThrottle = (float)Math.Min(command.RequestedThrottle, Core.Thrust.ThrottleLimit);
         }
 
         private void TickVelocityNull()
@@ -840,14 +837,10 @@ namespace MuMech
             if (!BurnAlignmentReady(command.ThrustDirection))
             {
                 Core.Thrust.ThrustOff();
-                _terminalPwm.Reset();
                 ControllerStatus = "V2 velocity-null is holding throttle until the measured thrust vector is aligned and settled.";
                 return;
             }
-            _terminalPwm.MinOnTime = 0.50;
-            _terminalPwm.MinOffTime = TimeWarp.fixedDeltaTime;
-            Core.Thrust.TargetThrottle = _terminalPwm.ThrottleCommand(command.DesiredAcceleration, VesselState.MinThrustAcceleration,
-                VesselState.MaxThrustAcceleration, TimeWarp.fixedDeltaTime);
+            Core.Thrust.TargetThrottle = (float)Math.Min(command.RequestedThrottle, Core.Thrust.ThrottleLimit);
         }
 
         private void TickVisualAssessment()
@@ -1022,6 +1015,7 @@ namespace MuMech
         {
             if (stopWarp) Core.Warp.MinimumWarp(true);
             Core.Thrust.ThrustOff();
+            RestoreV2FineThrustLimits();
             Core.Thrust.Users.Remove(this);
             Core.Attitude.Users.Remove(this);
             Core.Hoverslam.Users.Remove(this);
@@ -1051,16 +1045,44 @@ namespace MuMech
             // completion frame would corrupt the trace and burn authority.
             _finiteBurnTracking = false;
             Core.Thrust.ThrustOff();
+            RestoreV2FineThrustLimits();
         }
 
         private void CommandFiniteBurnThrottle(double remainingDeltaV)
         {
             Core.Thrust.ThrustForDv(remainingDeltaV, 0.5);
-            // ThrustForDv handles response/spool dynamics. The V2-local cap
-            // then limits its final half metre per second to 2% throttle so a
-            // high-TWR vessel has fine measured-delta-v authority.
-            Core.Thrust.TargetThrottle = FiniteBurnProgress.LimitThrottleForFineControl(remainingDeltaV,
-                Core.Thrust.TargetThrottle);
+            AirlessFineThrustCommand command = AirlessFineThrustControl.Calculate(remainingDeltaV,
+                Core.Thrust.TargetThrottle, VesselState.MinThrustAcceleration, VesselState.MaxThrustAcceleration);
+            Core.Thrust.TargetThrottle = (float)Math.Min(command.RequestedThrottle, Core.Thrust.ThrottleLimit);
+            ApplyV2FineThrustLimit(command);
+        }
+
+        private void ApplyV2FineThrustLimit(AirlessFineThrustCommand command)
+        {
+            if (!command.UseEngineThrustLimiter)
+            {
+                RestoreV2FineThrustLimits();
+                return;
+            }
+
+            foreach (ModuleEngines engine in Vessel.parts.SelectMany(part => part.Modules.OfType<ModuleEngines>()))
+            {
+                if (!engine.isOperational || !engine.EngineIgnited) continue;
+                if (!_thrustLimitsBeforeV2FineControl.ContainsKey(engine))
+                    _thrustLimitsBeforeV2FineControl.Add(engine, engine.thrustPercentage);
+                float originalLimit = _thrustLimitsBeforeV2FineControl[engine];
+                engine.thrustPercentage = Math.Min(originalLimit,
+                    originalLimit * (float)command.RelativeEngineThrustLimit);
+            }
+        }
+
+        private void RestoreV2FineThrustLimits()
+        {
+            foreach (KeyValuePair<ModuleEngines, float> entry in _thrustLimitsBeforeV2FineControl)
+            {
+                if (entry.Key != null) entry.Key.thrustPercentage = entry.Value;
+            }
+            _thrustLimitsBeforeV2FineControl.Clear();
         }
 
         private double ThrustVectorAlignmentError(Vector3d commandedVector)
@@ -1090,6 +1112,7 @@ namespace MuMech
             _phaseBurnPlannedDeltaV = plannedDeltaV;
             if (!resume)
             {
+                RestoreV2FineThrustLimits();
                 _finiteBurnProgress = new FiniteBurnProgress(plannedDeltaV);
             }
             _finiteBurnTracking = true;

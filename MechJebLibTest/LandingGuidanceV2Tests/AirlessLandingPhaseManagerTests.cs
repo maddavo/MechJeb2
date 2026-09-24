@@ -65,12 +65,31 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
-        public void FiniteBurnCapsThrottleForTheLastHalfMetrePerSecond()
+        public void FiniteBurnRemapsTheLastHalfMetrePerSecondThroughTheEngineThrustLimiter()
         {
-            Assert.Equal(0.75f, FiniteBurnProgress.LimitThrottleForFineControl(0.501, 0.75f));
-            Assert.Equal(FiniteBurnProgress.FineControlThrottleCap,
-                FiniteBurnProgress.LimitThrottleForFineControl(0.50, 0.75f));
-            Assert.Equal(0.01f, FiniteBurnProgress.LimitThrottleForFineControl(0.01, 0.01f));
+            AirlessFineThrustCommand outsideFineRange = AirlessFineThrustControl.Calculate(0.501, 0.75, 0, 100);
+            Assert.False(outsideFineRange.UseEngineThrustLimiter);
+            Assert.Equal(0.75, outsideFineRange.RequestedThrottle, 12);
+
+            AirlessFineThrustCommand command = AirlessFineThrustControl.Calculate(0.50, 0.75, 0, 100);
+            Assert.True(command.UseEngineThrustLimiter);
+            Assert.Equal(0.04, command.RelativeEngineThrustLimit, 6);
+            Assert.Equal(0.5, command.RequestedThrottle, 12);
+            Assert.Equal(2.0, command.ExpectedAcceleration, 12);
+            Assert.Equal(command.ExpectedAcceleration,
+                100 * command.RelativeEngineThrustLimit * command.RequestedThrottle, 6);
+        }
+
+        [Fact]
+        public void FineThrustLimiterPreservesAnEngineMinimumThrustFloor()
+        {
+            AirlessFineThrustCommand command = AirlessFineThrustControl.Calculate(0.10, 0.75, 20, 100);
+            Assert.True(command.UseEngineThrustLimiter);
+            Assert.Equal(0.04, command.RelativeEngineThrustLimit, 6);
+            Assert.Equal(0.5, command.RequestedThrottle, 12);
+            Assert.Equal(21.6, command.ExpectedAcceleration, 12);
+            Assert.Equal(command.ExpectedAcceleration,
+                20 + (100 - 20) * command.RelativeEngineThrustLimit * command.RequestedThrottle, 6);
         }
 
         [Fact]
@@ -310,7 +329,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             // a planner-only test: it verifies that a post-strategic state
             // with a substantial horizontal miss can brake, translate, and
             // reach terrain without a late uncontrolled impact.
-            SimulateTerminalDescent(600, 1000, -80, 1.63, 30, out bool touchedDown, out Vector3d position, out Vector3d velocity);
+            SimulateTerminalDescent(600, 1000, -80, 1.63, 0, 30, out bool touchedDown, out Vector3d position, out Vector3d velocity);
             Assert.True(touchedDown);
             Assert.InRange(Math.Abs(position.x), 0, 10);
             Assert.InRange(Math.Abs(velocity.x), 0, 3.0);
@@ -329,7 +348,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.True(strategic.FiniteBurnCompleted);
             Assert.Equal(AirlessLandingPhaseManagerPhase.Coast, strategic.FinalPhase);
 
-            SimulateTerminalDescent(600, 1000, -80, 1.63, 30, out bool touchedDown, out Vector3d position, out Vector3d velocity);
+            SimulateTerminalDescent(600, 1000, -80, 1.63, 0, 30, out bool touchedDown, out Vector3d position, out Vector3d velocity);
             Assert.True(touchedDown);
             Assert.InRange(Math.Abs(position.x), 0, 10);
             Assert.InRange(Math.Abs(velocity.x), 0, 3.0);
@@ -343,7 +362,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         public void TerminalPolicyNumericalDescentHandlesGenericAirlessGravityAndThrust(double gravity,
             double maximumAcceleration, double lateralError, double altitude, double verticalVelocity)
         {
-            SimulateTerminalDescent(lateralError, altitude, verticalVelocity, gravity, maximumAcceleration,
+            SimulateTerminalDescent(lateralError, altitude, verticalVelocity, gravity, 0, maximumAcceleration,
                 out bool touchedDown, out Vector3d position, out Vector3d velocity);
             Assert.True(touchedDown);
             Assert.InRange(Math.Abs(position.x), 0, 15);
@@ -387,7 +406,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         private static void SimulateTerminalDescent(double lateralError, double altitude, double verticalVelocity,
-            double gravity, double maximumAcceleration, out bool touchedDown, out Vector3d position, out Vector3d velocity)
+            double gravity, double minimumAcceleration, double maximumAcceleration, out bool touchedDown, out Vector3d position, out Vector3d velocity)
         {
             position = new Vector3d(lateralError, altitude, 0);
             velocity = new Vector3d(0, verticalVelocity, 0);
@@ -396,9 +415,10 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             for (int i = 0; i != 30000; ++i)
             {
                 AirlessTerminalGuidanceCommand command = AirlessTerminalGuidance.Calculate(-position, velocity,
-                    Vector3d.up, position.y, gravity, 0, maximumAcceleration, 0.5);
+                    Vector3d.up, position.y, gravity, minimumAcceleration, maximumAcceleration, 0.5);
                 Assert.True(command.Valid);
-                velocity += (command.ThrustDirection * command.DesiredAcceleration - Vector3d.up * gravity) * step;
+                double deliveredAcceleration = command.RequestedThrottle * maximumAcceleration;
+                velocity += (command.ThrustDirection * deliveredAcceleration - Vector3d.up * gravity) * step;
                 position += velocity * step;
                 if (position.y <= 0)
                 {

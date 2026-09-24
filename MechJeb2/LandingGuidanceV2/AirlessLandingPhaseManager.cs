@@ -248,7 +248,7 @@ namespace MuMech
     public sealed class FiniteBurnProgress
     {
         public const double FineControlStartDeltaV = 0.50;
-        public const float FineControlThrottleCap = 0.02f;
+        public const double FineControlThrottleCap = 0.02;
         public readonly double PlannedDeltaV;
         public double DeliveredDeltaV { get; private set; }
         public double RemainingDeltaV => Math.Max(0, PlannedDeltaV - DeliveredDeltaV);
@@ -267,16 +267,66 @@ namespace MuMech
             DeliveredDeltaV += Math.Max(0, deltaTime) * Math.Max(0, actualThrustAcceleration);
         }
 
-        // V2's finite-burn authority has its own final-delta-v throttle cap.
-        // It does not change the vessel's persistent throttle limiter, which
-        // belongs to the player and other MechJeb controllers.
-        public static float LimitThrottleForFineControl(double remainingDeltaV, float requestedThrottle)
+    }
+
+    /// <summary>
+    /// Converts the final portion of a finite burn into a command that uses
+    /// KSP's per-engine thrust limiter.  This is deliberately distinct from
+    /// MechJeb's ThrottleLimit, which is only a cap on FlightCtrlState's main
+    /// throttle.  The flight module saves and restores each engine's original
+    /// thrustPercentage while this command is active.
+    /// </summary>
+    public sealed class AirlessFineThrustCommand
+    {
+        public readonly bool UseEngineThrustLimiter;
+        public readonly double RequestedThrottle;
+        public readonly double RelativeEngineThrustLimit;
+        public readonly double ExpectedAcceleration;
+
+        public AirlessFineThrustCommand(bool useEngineThrustLimiter, double requestedThrottle,
+            double relativeEngineThrustLimit, double expectedAcceleration)
         {
-            if (double.IsNaN(remainingDeltaV) || double.IsInfinity(remainingDeltaV)) return 0;
-            return remainingDeltaV <= FineControlStartDeltaV
-                ? Math.Min(requestedThrottle, FineControlThrottleCap)
-                : requestedThrottle;
+            UseEngineThrustLimiter = useEngineThrustLimiter;
+            RequestedThrottle = requestedThrottle;
+            RelativeEngineThrustLimit = relativeEngineThrustLimit;
+            ExpectedAcceleration = expectedAcceleration;
         }
+    }
+
+    public static class AirlessFineThrustControl
+    {
+        // A final burn is remapped into a band with twice the requested
+        // acceleration.  With a zero-minimum-thrust engine, a 2% requested
+        // final throttle therefore becomes a 4% engine limit and 50% main
+        // throttle: the same thrust, with fifty times the throttle resolution.
+        public const double FineControlHeadroom = 2.0;
+
+        public static AirlessFineThrustCommand Calculate(double remainingDeltaV, double requestedThrottle,
+            double minimumAcceleration, double maximumAcceleration,
+            double fineControlStartDeltaV = FiniteBurnProgress.FineControlStartDeltaV,
+            double fineControlThrottleCeiling = FiniteBurnProgress.FineControlThrottleCap)
+        {
+            double throttle = Clamp01(requestedThrottle);
+            if (!Finite(remainingDeltaV) || remainingDeltaV > Math.Max(0, fineControlStartDeltaV) ||
+                throttle <= 0 || !Finite(minimumAcceleration) || !Finite(maximumAcceleration) ||
+                maximumAcceleration <= minimumAcceleration)
+                return new AirlessFineThrustCommand(false, throttle, 1, Math.Max(0, maximumAcceleration) * throttle);
+
+            double limitedThrottle = Math.Min(throttle, Clamp01(fineControlThrottleCeiling));
+            if (limitedThrottle <= 0)
+                return new AirlessFineThrustCommand(false, 0, 1, 0);
+
+            double relativeLimit = Math.Min(1, limitedThrottle * FineControlHeadroom);
+            double expectedAcceleration = minimumAcceleration + (maximumAcceleration - minimumAcceleration) * limitedThrottle;
+            double limitedMaximumAcceleration = minimumAcceleration +
+                (maximumAcceleration - minimumAcceleration) * relativeLimit;
+            double remappedThrottle = (expectedAcceleration - minimumAcceleration) /
+                (limitedMaximumAcceleration - minimumAcceleration);
+            return new AirlessFineThrustCommand(true, Clamp01(remappedThrottle), relativeLimit, expectedAcceleration);
+        }
+
+        private static double Clamp01(double value) => !Finite(value) ? 0 : Math.Max(0, Math.Min(1, value));
+        private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
     }
 
     /// <summary>
@@ -359,11 +409,15 @@ namespace MuMech
                 ? localUp * verticalDemand
                 : horizontalCorrection.normalized * horizontalDemand + localUp * verticalDemand;
             if (thrustVector.sqrMagnitude < 1e-12) thrustVector = localUp;
-            double desiredAcceleration = Math.Min(maximumAcceleration, Math.Max(minimumAcceleration, thrustVector.magnitude));
-            double throttle = maximumAcceleration <= minimumAcceleration
-                ? 1.0
-                : Math.Max(0, Math.Min(1, (desiredAcceleration - minimumAcceleration) /
-                    (maximumAcceleration - minimumAcceleration)));
+            // This is an acceleration request, not a promise that every
+            // engine can continuously deliver below its physical minimum
+            // thrust.  The flight layer accounts for that engine constraint;
+            // V2 never uses pulse-width modulation to hide it.
+            double desiredAcceleration = Math.Min(maximumAcceleration, Math.Max(0, thrustVector.magnitude));
+            // This is a continuous requested throttle. The thrust controller
+            // applies its normal vessel throttle limit afterwards; V2 does not
+            // pulse engines or change the player's persisted limiter.
+            double throttle = Math.Max(0, Math.Min(1, desiredAcceleration / maximumAcceleration));
             bool touchdownReady = altitude <= TouchdownAltitude && horizontalError.magnitude <= TouchdownHorizontalTolerance &&
                 surfaceVelocity.magnitude <= TouchdownSpeed;
             return new AirlessTerminalGuidanceCommand(true, touchdownReady, desiredAcceleration, throttle,
