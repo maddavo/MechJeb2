@@ -57,6 +57,17 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void AtmosphericPlannerRecognizesAnIncompleteLandedResultBeforeItCanAuthorizeEntry()
+        {
+            var incomplete = new ReentrySimulation.Result
+            {
+                Outcome = ReentrySimulation.Outcome.LANDED
+            };
+
+            Assert.False(AtmosphericLandingPlanner.HasCompletePhysicalEndpoint(incomplete));
+        }
+
+        [Fact]
         public void LatestTraceLossOfThrustRevokesStaleAirlessPlanAuthority()
         {
             // Snapshot 974 from the latest Mun trace. V2 still reported an

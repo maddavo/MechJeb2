@@ -57,6 +57,17 @@ namespace MuMech
                     double.NaN, double.NaN, double.NaN, double.NaN, double.NaN,
                     "The atmospheric estimator did not produce a landing outcome: " + estimate.Outcome + ".");
 
+            // A partially constructed simulator result can report LANDED while
+            // lacking the reference-frame conversion needed to identify its
+            // physical endpoint.  It must never authorize entry or a burn.
+            // The real simulator assigns all of these fields together when a
+            // completed result is published.
+            if (!HasCompletePhysicalEndpoint(estimate))
+                return new AtmosphericLandingPlan(snapshot.Version, AtmosphericLandingPlanState.Rejected,
+                    double.NaN, double.NaN, double.NaN, double.NaN, double.NaN,
+                    "The atmospheric estimator reported landing without a complete physical endpoint.",
+                    strategic.DeltaV, strategic.BurnUT, strategic.EntryUT, strategic.TargetError);
+
             Vector3d predicted = snapshot.Body.GetWorldSurfacePosition(estimate.EndPosition.Latitude, estimate.EndPosition.Longitude, estimate.EndASL);
             Vector3d target = snapshot.Body.GetWorldSurfacePosition(snapshot.TargetLatitude, snapshot.TargetLongitude, 0);
             double targetError = Vector3d.Distance(predicted, target);
@@ -161,6 +172,11 @@ namespace MuMech
         }
 
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+
+        public static bool HasCompletePhysicalEndpoint(ReentrySimulation.Result estimate) =>
+            estimate != null && estimate.ReferenceFrame != null && Finite(estimate.EndPosition.Radius) &&
+            estimate.EndPosition.Radius > 0 && Finite(estimate.EndVelocity.Radius) &&
+            estimate.EndVelocity.Radius >= 0 && Finite(estimate.EndASL);
 
         private struct AtmosphericEntryCandidate
         {
