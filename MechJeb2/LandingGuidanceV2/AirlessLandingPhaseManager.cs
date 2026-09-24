@@ -758,7 +758,15 @@ namespace MuMech
             var progress = new FiniteBurnProgress(plannedDeltaV);
             while (!progress.IsComplete() && result.WorkUnits < 100000)
             {
-                progress.Integrate(step, acceleration);
+                // Mirror CommandFiniteBurnThrottle: MechJeb's 0.5 s
+                // deceleration horizon is followed by V2's final engine-limit
+                // mapping. A full-throttle harness here used to hide a final
+                // one-frame overshoot that the real controller avoids.
+                double requestedThrottle = Math.Max(0.01, Math.Min(1.0,
+                    progress.RemainingDeltaV / (0.5 * acceleration)));
+                AirlessFineThrustCommand command = AirlessFineThrustControl.Calculate(progress.RemainingDeltaV,
+                    requestedThrottle, 0, acceleration);
+                progress.Integrate(step, command.ExpectedAcceleration);
                 ut += step;
                 result.Add(manager.Tick(ut, false, alignmentError, progress.RemainingDeltaV));
                 if (result.LastDirective == AirlessLandingPhaseDirective.FiniteBurnComplete)
