@@ -252,6 +252,22 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void ControllerHarnessCompletesTheSameFiniteAirlessBurnWithoutAutoWarp()
+        {
+            AirlessLandingPlan plan = Candidate(100, 1200, 1500, 30);
+            AirlessLandingControllerHarnessResult warped = new AirlessLandingControllerHarness().Execute(
+                plan, 100, 0.65, 27.9, autoWarp: true);
+            AirlessLandingControllerHarnessResult unwarped = new AirlessLandingControllerHarness().Execute(
+                plan, 100, 0.65, 27.9, autoWarp: false);
+
+            Assert.True(unwarped.FreshValidationRequired);
+            Assert.True(unwarped.FiniteBurnCompleted);
+            Assert.False(unwarped.InitialWarpRequested);
+            Assert.False(unwarped.FinalWarpRequested);
+            Assert.InRange(System.Math.Abs(unwarped.DeliveredDeltaV - warped.DeliveredDeltaV), 0, 0.01);
+        }
+
+        [Fact]
         public void ControllerHarnessExecutesPlaneAlignmentFreshReplanAndStrategicBurn()
         {
             AirlessLandingPlan planePlan = Candidate(100, 1400, 1700, 30, 8, 900);

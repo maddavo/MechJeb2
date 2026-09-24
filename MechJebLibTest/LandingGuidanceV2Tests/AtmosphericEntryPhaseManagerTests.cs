@@ -93,6 +93,23 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void ControllerHarnessCompletesTheSameAtmosphericEntryBurnWithoutAutoWarp()
+        {
+            AtmosphericLandingPlan plan = Candidate(100, 1000, 30);
+            AtmosphericLandingPlan postBurn = Candidate(102, 1001, 0);
+            AtmosphericEntryControllerHarnessResult warped = new AtmosphericEntryControllerHarness().Execute(
+                plan, 100, 0.65, 27.9, postBurn, autoWarp: true);
+            AtmosphericEntryControllerHarnessResult unwarped = new AtmosphericEntryControllerHarness().Execute(
+                plan, 100, 0.65, 27.9, postBurn, autoWarp: false);
+
+            Assert.Equal(AtmosphericEntryPhase.Entry, unwarped.FinalPhase);
+            Assert.True(unwarped.FiniteBurnCompleted);
+            Assert.False(unwarped.InitialWarpRequested);
+            Assert.False(unwarped.FinalWarpRequested);
+            Assert.InRange(System.Math.Abs(unwarped.DeliveredDeltaV - warped.DeliveredDeltaV), 0, 0.01);
+        }
+
+        [Fact]
         public void ControllerHarnessFailsClosedWhenFreshAtmosphericIgnitionValidationRejects()
         {
             AtmosphericEntryControllerHarnessResult result = new AtmosphericEntryControllerHarness().Execute(
@@ -119,16 +136,18 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
-        public void AtmosphericPostBurnValidationFailsClosedForAStaleOrUnfundedPlan()
+        public void AtmosphericPostBurnValidationRetainsConservativeEntryForAStaleOrUnfundedPlan()
         {
             var manager = ReadyForPostBurnValidation();
             AtmosphericEntryPhaseDecision stale = manager.AcceptPostBurnValidation(Candidate(100, 1001, 0));
-            Assert.Equal(AtmosphericEntryDirective.Reject, stale.Directive);
-            Assert.Contains("fresh snapshot", stale.Reason);
+            Assert.Equal(AtmosphericEntryDirective.EnterAtmosphericEntry, stale.Directive);
+            Assert.Equal(AtmosphericEntryPhase.Entry, manager.Phase);
+            Assert.Contains("conservative entry", stale.Reason);
 
             manager = ReadyForPostBurnValidation();
             AtmosphericEntryPhaseDecision unfunded = manager.AcceptPostBurnValidation(Candidate(102, 1001, 0, -1));
-            Assert.Equal(AtmosphericEntryDirective.Reject, unfunded.Directive);
+            Assert.Equal(AtmosphericEntryDirective.EnterAtmosphericEntry, unfunded.Directive);
+            Assert.Equal(AtmosphericEntryPhase.Entry, manager.Phase);
             Assert.Contains("terminal reserve", unfunded.Reason);
         }
 
