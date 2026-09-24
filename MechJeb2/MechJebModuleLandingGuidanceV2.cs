@@ -255,6 +255,18 @@ namespace MuMech
                 TransitionTo(V2FlightPhase.Rejected, "V1 Landing Guidance was engaged; V2 relinquished control.");
                 return;
             }
+            if (!MainBody.atmosphere && ControllerActive && _flightPhase != V2FlightPhase.Preflight &&
+                AirlessAuthorityGate.Decide(VesselState.MaxThrustAcceleration, Vessel.graviticAcceleration.magnitude,
+                    out string authorityReason) == AirlessAuthorityAction.Abort)
+            {
+                // This is an irreversible live-vessel failure, rather than a
+                // normal preflight rejection. Do not leave a stale plan able
+                // to command further warp or enter a terminal loop without
+                // propulsion. The trace records the explicit phase event.
+                ReleaseV2Control();
+                TransitionTo(V2FlightPhase.Rejected, authorityReason);
+                return;
+            }
             UpdateFiniteBurnProgress();
             switch (_flightPhase)
             {

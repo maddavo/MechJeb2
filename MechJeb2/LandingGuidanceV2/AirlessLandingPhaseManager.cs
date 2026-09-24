@@ -432,6 +432,51 @@ namespace MuMech
     public enum AirlessCoastSafetyAction { Continue, Replan, EmergencyBrake }
 
     /// <summary>
+    /// A plan authorizes commands only while the live vessel still has the
+    /// minimum powered authority needed to arrest an airless descent.  It is
+    /// intentionally independent of the planner: a plan from an earlier
+    /// snapshot cannot keep requesting warp after an engine, propellant, or
+    /// vessel-loss event has removed that authority.
+    /// </summary>
+    public enum AirlessAuthorityAction { Continue, Abort }
+
+    public static class AirlessAuthorityGate
+    {
+        public static AirlessAuthorityAction Decide(double maximumAcceleration, double localGravity, out string reason)
+        {
+            reason = null;
+            if (!Finite(localGravity) || localGravity < 0 || !Finite(maximumAcceleration) ||
+                maximumAcceleration <= localGravity)
+            {
+                reason = "V2 lost thrust authority: available acceleration no longer exceeds local gravity.";
+                return AirlessAuthorityAction.Abort;
+            }
+            return AirlessAuthorityAction.Continue;
+        }
+
+        public static AirlessAuthorityAction Decide(LandingGuidanceV2Snapshot snapshot, double localGravity,
+            out string reason)
+        {
+            reason = null;
+            if (snapshot == null)
+            {
+                reason = "V2 lost the live airless vessel snapshot.";
+                return AirlessAuthorityAction.Abort;
+            }
+            if (Decide(snapshot.MaximumAcceleration, localGravity, out reason) == AirlessAuthorityAction.Abort)
+                return AirlessAuthorityAction.Abort;
+            if (!Finite(snapshot.AvailableDeltaV) || snapshot.AvailableDeltaV <= 0)
+            {
+                reason = "V2 lost propulsion authority: no usable delta-V remains.";
+                return AirlessAuthorityAction.Abort;
+            }
+            return AirlessAuthorityAction.Continue;
+        }
+
+        private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    }
+
+    /// <summary>
     /// Keeps a committed airless descent from silently coasting on an invalid
     /// or out-of-corridor endpoint. The emergency lead is derived from the
     /// current vehicle acceleration and the plan's terminal braking lower

@@ -11,6 +11,23 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
     public class CapturedMunPlanningTests
     {
         [Fact]
+        public void LatestTraceLossOfThrustRevokesStaleAirlessPlanAuthority()
+        {
+            // Snapshot 974 from the latest Mun trace. V2 still reported an
+            // earlier candidate plan while the live vessel mass was 0.0001 t
+            // and maximum acceleration was zero. No phase may keep warp or
+            // burn authority in this condition.
+            var snapshot = new LandingGuidanceV2Snapshot(974, 24109677.119352, CreateMun(),
+                new Vector3d(-38047.775706, 371.211076, 202000.860746), Vector3d.zero,
+                0.0001, 780.065458, 0, 0, 0.165, -130.626389, false,
+                24108733.862233, new Vector3d(-47715.703372, 575.957857, 194223.788255), true, 4350.290494);
+
+            Assert.Equal(AirlessAuthorityAction.Abort,
+                AirlessAuthorityGate.Decide(snapshot, 1.541660, out string reason));
+            Assert.Contains("thrust authority", reason);
+        }
+
+        [Fact]
         public void RecordedMunCoastMatchesTheLaterTraceSnapshot()
         {
             var trajectory = new AirlessConicTrajectory(6.5138398e10, 24108732.482233,
