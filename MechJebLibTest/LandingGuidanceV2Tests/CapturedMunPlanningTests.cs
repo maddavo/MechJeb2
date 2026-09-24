@@ -10,6 +10,52 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
 {
     public class CapturedMunPlanningTests
     {
+        [Theory]
+        [InlineData(60000.0, 1.7658e9, 40400.0, 10000.0, 24.0, 1200.0)] // Minmus-scale
+        [InlineData(600000.0, 2.82528e12, 211926.4, 80000.0, 45.0, 3500.0)] // Tylo-scale
+        public void GenericAirlessPlannerFindsAFeasibleRotatingTargetTransfer(double radius, double mu,
+            double rotationPeriod, double parkingAltitude, double maximumAcceleration, double availableDeltaV)
+        {
+            CelestialBody body = CreateAirlessBody(radius, mu, rotationPeriod);
+            double orbitalRadius = radius + parkingAltitude;
+            double circularSpeed = Math.Sqrt(mu / orbitalRadius);
+            var snapshot = new LandingGuidanceV2Snapshot(1, 1000, body,
+                new Vector3d(-orbitalRadius, 0, 0), new Vector3d(0, 0, -circularSpeed),
+                20, availableDeltaV, maximumAcceleration, 0, 0, 90, false,
+                1000, new Vector3d(-radius, 0, 0), true, 0);
+
+            AirlessLandingPlan plan = AirlessLandingPlanner.Plan(snapshot);
+
+            Assert.True(plan.State == AirlessLandingPlanState.Candidate,
+                plan.Reason + " strategic=" + plan.StrategicDeorbitDeltaVMagnitude + " terminal=" +
+                plan.TerminalBrakingLowerBound + " trim=" + plan.TrimBudget + " reserve=" +
+                plan.TerminalDivertReserve + " margin=" + plan.LowerBoundMargin);
+            Assert.True(plan.StrategicDeorbitDeltaVMagnitude > 0 && IsFinite(plan.StrategicBurnUT));
+            Assert.True(plan.StrategicBurnUT >= snapshot.UT && plan.BrakingEntryUT > plan.StrategicBurnUT);
+            Assert.InRange(plan.SignedDownrange, 0, plan.CorridorLimit);
+            Assert.InRange(plan.CrossRange, 0, plan.CorridorLimit);
+            Assert.True(plan.LowerBoundMargin >= 0);
+        }
+
+        [Fact]
+        public void TyloScalePlannerRejectsAPlanThatCannotProtectTerminalReserve()
+        {
+            CelestialBody body = CreateAirlessBody(600000.0, 2.82528e12, 211926.4);
+            const double parkingAltitude = 80000.0;
+            double orbitalRadius = body.Radius + parkingAltitude;
+            double circularSpeed = Math.Sqrt(body.gravParameter / orbitalRadius);
+            var snapshot = new LandingGuidanceV2Snapshot(2, 1000, body,
+                new Vector3d(-orbitalRadius, 0, 0), new Vector3d(0, 0, -circularSpeed),
+                20, 2500.0, 45.0, 0, 0, 90, false,
+                1000, new Vector3d(-body.Radius, 0, 0), true, 0);
+
+            AirlessLandingPlan plan = AirlessLandingPlanner.Plan(snapshot);
+
+            Assert.Equal(AirlessLandingPlanState.Rejected, plan.State);
+            Assert.Contains("terminal-reserve", plan.Reason);
+            Assert.True(plan.LowerBoundMargin < 0);
+        }
+
         [Fact]
         public void LatestTraceLossOfThrustRevokesStaleAirlessPlanAuthority()
         {
@@ -507,12 +553,17 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
 
         private static CelestialBody CreateMun()
         {
+            return CreateAirlessBody(200000, 6.5138398e10, 138984.38);
+        }
+
+        private static CelestialBody CreateAirlessBody(double radius, double mu, double rotationPeriod)
+        {
             var body = (CelestialBody)FormatterServices.GetUninitializedObject(typeof(CelestialBody));
-            body.Radius = 200000;
-            body.gravParameter = 6.5138398e10;
+            body.Radius = radius;
+            body.gravParameter = mu;
             body.atmosphere = false;
-            body.rotationPeriod = 138984.38;
-            body.angularVelocity = Vector3d.up * (2.0 * Math.PI / body.rotationPeriod);
+            body.rotationPeriod = rotationPeriod;
+            body.angularVelocity = Vector3d.up * (2.0 * Math.PI / rotationPeriod);
             return body;
         }
 
