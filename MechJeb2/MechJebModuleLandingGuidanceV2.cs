@@ -841,7 +841,7 @@ namespace MuMech
                 ControllerStatus = "V2 terminal divert is holding throttle until the measured thrust vector is aligned and settled.";
                 return;
             }
-            Core.Thrust.TargetThrottle = (float)Math.Min(command.RequestedThrottle, Core.Thrust.ThrottleLimit);
+            CommandTerminalThrottle(command);
         }
 
         private void TickVelocityNull()
@@ -861,7 +861,7 @@ namespace MuMech
                 ControllerStatus = "V2 velocity-null is holding throttle until the measured thrust vector is aligned and settled.";
                 return;
             }
-            Core.Thrust.TargetThrottle = (float)Math.Min(command.RequestedThrottle, Core.Thrust.ThrottleLimit);
+            CommandTerminalThrottle(command);
         }
 
         private void TickVisualAssessment()
@@ -921,6 +921,14 @@ namespace MuMech
             AirlessTerminalGuidance.Calculate(target - VesselState.CoM, VesselState.SurfaceVelocity, VesselState.Up,
                 VesselState.AltitudeBottom, Vessel.graviticAcceleration.magnitude, VesselState.MinThrustAcceleration,
                 VesselState.MaxThrustAcceleration, Core.Hoverslam.FinalDescentSpeed);
+
+        private void CommandTerminalThrottle(AirlessTerminalGuidanceCommand terminalCommand)
+        {
+            AirlessFineThrustCommand command = AirlessFineThrustControl.CalculateTerminal(
+                terminalCommand.RequestedThrottle, VesselState.MinThrustAcceleration, VesselState.MaxThrustAcceleration);
+            Core.Thrust.TargetThrottle = (float)Math.Min(command.RequestedThrottle, Core.Thrust.ThrottleLimit);
+            ApplyV2FineThrustLimit(command);
+        }
 
         public bool TryAdjustV2Target(double northMeters, double eastMeters)
         {
