@@ -304,7 +304,8 @@ namespace MuMech
         public static AirlessFineThrustCommand Calculate(double remainingDeltaV, double requestedThrottle,
             double minimumAcceleration, double maximumAcceleration,
             double fineControlStartDeltaV = FiniteBurnProgress.FineControlStartDeltaV,
-            double fineControlThrottleCeiling = FiniteBurnProgress.FineControlThrottleCap)
+            double fineControlThrottleCeiling = FiniteBurnProgress.FineControlThrottleCap,
+            double availableMainThrottle = 1.0)
         {
             double throttle = Clamp01(requestedThrottle);
             if (!Finite(remainingDeltaV) || remainingDeltaV > Math.Max(0, fineControlStartDeltaV) ||
@@ -316,7 +317,15 @@ namespace MuMech
             if (limitedThrottle <= 0)
                 return new AirlessFineThrustCommand(false, 0, 1, 0);
 
-            double relativeLimit = Math.Min(1, limitedThrottle * FineControlHeadroom);
+            double mainThrottleLimit = Clamp01(availableMainThrottle);
+            if (mainThrottleLimit <= 0 || limitedThrottle > mainThrottleLimit)
+                return new AirlessFineThrustCommand(false, limitedThrottle, 1,
+                    minimumAcceleration + (maximumAcceleration - minimumAcceleration) * limitedThrottle);
+            // Retain the requested physical acceleration after MechJeb's
+            // separate main-throttle cap is applied. This is the same engine
+            // range calculation used by terminal descent.
+            double relativeLimit = Math.Min(1, Math.Max(limitedThrottle * FineControlHeadroom,
+                limitedThrottle / mainThrottleLimit));
             return RemapThrottle(limitedThrottle, minimumAcceleration, maximumAcceleration, relativeLimit);
         }
 

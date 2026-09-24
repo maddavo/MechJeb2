@@ -93,6 +93,20 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void FiniteBurnFineThrustRespectsTheMainThrottleSafetyCap()
+        {
+            // At 2% desired physical throttle, a 2% main-throttle cap must
+            // use a full engine range instead of silently clipping V2's
+            // normal 50% remapped command.
+            AirlessFineThrustCommand command = AirlessFineThrustControl.Calculate(0.10, 0.75, 0, 100,
+                availableMainThrottle: 0.02);
+            Assert.True(command.UseEngineThrustLimiter);
+            Assert.Equal(1.0, command.RelativeEngineThrustLimit, 12);
+            Assert.Equal(0.02, command.RequestedThrottle, 12);
+            Assert.Equal(2.0, command.ExpectedAcceleration, 12);
+        }
+
+        [Fact]
         public void FineThrustLimiterUsesTheExistingEngineLimitAsThePhysicalFullThrottleRange()
         {
             // An engine with 20 m/s² minimum acceleration and a pre-existing
