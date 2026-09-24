@@ -1,10 +1,28 @@
 using MuMech;
+using UnityEngine;
 using Xunit;
 
 namespace MechJebLibTest.LandingGuidanceV2Tests
 {
     public class BallisticAtmosphericLandingHarnessTests
     {
+        [Fact]
+        public void CompleteAtmosphericV2SequenceWarpsAlignsBurnsThenReachesBallisticTouchdown()
+        {
+            AtmosphericLandingPlan plan = Candidate(100, 1000, 30);
+            AtmosphericEntryControllerHarnessResult entry = new AtmosphericEntryControllerHarness().Execute(plan,
+                100, 0.65, 27.9, Candidate(102, 1001, 0));
+            BallisticAtmosphericLandingHarnessResult descent = new BallisticAtmosphericLandingHarness().Execute(
+                5000, 180, 9.81, 30, parachutesDeploy: false, injectStageFailure: true);
+
+            Assert.True(entry.InitialWarpRequested);
+            Assert.True(entry.FinalWarpRequested);
+            Assert.True(entry.FreshBurnValidationRequired);
+            Assert.True(entry.FiniteBurnCompleted);
+            Assert.Equal(AtmosphericEntryPhase.Entry, entry.FinalPhase);
+            Assert.True(descent.StageCommanded);
+            Assert.True(descent.Landed, descent.RejectionReason);
+        }
         [Theory]
         [InlineData(5000, 180, 9.81, 0, 30, true)]
         [InlineData(5000, 180, 9.81, 0, 9.81, false)]
@@ -66,5 +84,9 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.False(result.StageCommanded);
             Assert.InRange(result.TouchdownSpeed, 0, 8);
         }
+
+        private static AtmosphericLandingPlan Candidate(long version, double burnUT, double deltaV) =>
+            new AtmosphericLandingPlan(version, AtmosphericLandingPlanState.Candidate, 100, 5000, 1000, 100, 100,
+                "test", new Vector3d(deltaV, 0, 0), burnUT, burnUT + 200, 100);
     }
 }
