@@ -551,6 +551,35 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
                 " duration=" + duration + " delivered=" + progress.DeliveredDeltaV);
         }
 
+        [Fact]
+        public void RecordedMunPlanPassesThroughTheActualV2WarpAndFiniteBurnControllerHarness()
+        {
+            LandingGuidanceV2Snapshot start = RecordedMunSnapshot();
+            AirlessLandingPlan plan = AirlessLandingPlanner.Plan(start);
+            Assert.True(plan.CommandAuthorized, plan.Reason);
+
+            // This joins the recorded, generic strategic planner result to
+            // the same phase manager and measured-delta-V finite-burn logic
+            // used by the flight module. It is intentionally not a synthetic
+            // candidate-plan test.
+            double lead = plan.StrategicDeorbitDeltaVMagnitude / start.MaximumAcceleration * 0.5 + 0.10;
+            AirlessLandingControllerHarnessResult result = new AirlessLandingControllerHarness().Execute(plan,
+                start.UT, lead, start.MaximumAcceleration);
+
+            Assert.True(result.InitialWarpRequested);
+            Assert.True(result.FinalWarpRequested);
+            Assert.True(result.FreshValidationRequired);
+            Assert.True(result.FiniteBurnStarted);
+            Assert.True(result.FiniteBurnCompleted);
+            Assert.Equal(AirlessLandingPhaseManagerPhase.Coast, result.FinalPhase);
+            Assert.True(Math.Abs(result.DeliveredDeltaV - plan.StrategicDeorbitDeltaVMagnitude) <=
+                AirlessLandingPhaseManager.BurnCompleteDeltaV + 0.001,
+                "planned=" + plan.StrategicDeorbitDeltaVMagnitude + " delivered=" + result.DeliveredDeltaV +
+                " remaining=" + (plan.StrategicDeorbitDeltaVMagnitude - result.DeliveredDeltaV) +
+                " lead=" + lead + " directives=" + string.Join(",", result.Directives));
+            Assert.True(result.WorkUnits < 100000);
+        }
+
         private static LandingGuidanceV2Snapshot RecordedMunSnapshot()
         {
             const double ut = 24108762.642232;
