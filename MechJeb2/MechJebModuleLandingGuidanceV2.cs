@@ -66,6 +66,7 @@ namespace MuMech
         // resulting KSP commands.
         private readonly AirlessLandingPhaseManager _airlessPhaseManager = new AirlessLandingPhaseManager();
         private readonly AirlessTerminalWarpGate _terminalWarpGate = new AirlessTerminalWarpGate();
+        private readonly AirlessTerminalAttitudeLatch _terminalAttitudeLatch = new AirlessTerminalAttitudeLatch();
         // V2 alone owns the decision to stage during its commanded burns. The
         // generic staging module remains only the actuator after this gate.
         private readonly V2PoweredStagingGate _v2PoweredStagingGate = new V2PoweredStagingGate();
@@ -203,6 +204,7 @@ namespace MuMech
             _airlessDescentCommitted = false;
             _atmosphericDescentCommitted = false;
             _terminalWarpGate.Reset();
+            _terminalAttitudeLatch.Reset();
             _v2PoweredStagingGate.Reset();
             _lastV2StageUT = double.NegativeInfinity;
             _atmosphericPhaseManager = null;
@@ -679,10 +681,21 @@ namespace MuMech
                         ControllerStatus = "V2 is holding controlled coast while the current terminal-braking solution is rebuilt.";
                         break;
                     }
-                    Core.Attitude.attitudeTo(Core.Hoverslam.IgnitionAttitude, AttitudeReference.INERTIAL_COT, this);
-                    _commandedV2AttitudeVector = Core.Hoverslam.IgnitionAttitude;
+                    if (!_terminalAttitudeLatch.TryLatch(Core.Hoverslam.IgnitionAttitude))
+                    {
+                        Core.Thrust.ThrustOff();
+                        ControllerStatus = "V2 is holding at 1x until a finite terminal-braking attitude is available.";
+                        break;
+                    }
+                    // Align to the immutable terminal attitude selected before
+                    // warp.  Hoverslam continues asynchronously in the
+                    // background; replacing this vector during alignment made
+                    // SAS chase alternating solutions and prevented warp.
+                    Vector3d terminalWarpAttitude = _terminalAttitudeLatch.Attitude;
+                    Core.Attitude.attitudeTo(terminalWarpAttitude, AttitudeReference.INERTIAL_COT, this);
+                    _commandedV2AttitudeVector = terminalWarpAttitude;
                     if (!_terminalWarpGate.ObserveAttitude(VesselState.Time,
-                        BurnAlignmentError(Core.Hoverslam.IgnitionAttitude)))
+                        BurnAlignmentError(terminalWarpAttitude)))
                     {
                         Core.Thrust.ThrustOff();
                         ControllerStatus = "V2 is holding at 1x until terminal-braking attitude remains inside the authority gate.";
@@ -980,6 +993,7 @@ namespace MuMech
             Core.Thrust.ThrustOff();
             Core.Warp.MinimumWarp(true);
             _terminalWarpGate.Reset();
+            _terminalAttitudeLatch.Reset();
             if (CommittedAirlessDescentRecoveryGate.Decide(_airlessDescentCommitted) ==
                 CommittedAirlessDescentRecoveryAction.ControlledCoast)
             {
@@ -1446,7 +1460,11 @@ namespace MuMech
         private void TransitionTo(V2FlightPhase next, string status)
         {
             _flightPhase = next;
-            if (next == V2FlightPhase.Coast) _terminalWarpGate.Reset();
+            if (next == V2FlightPhase.Coast)
+            {
+                _terminalWarpGate.Reset();
+                _terminalAttitudeLatch.Reset();
+            }
             ControllerStatus = status;
             if (StructuredTraceEnabled && HighLogic.LoadedSceneIsFlight &&
                 (Core.Target.PositionTargetExists || ControllerActive && _hasActiveTarget) && Vessel != null)

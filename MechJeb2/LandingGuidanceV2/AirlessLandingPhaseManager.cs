@@ -537,6 +537,38 @@ namespace MuMech
     }
 
     /// <summary>
+    /// Hoverslam solutions are produced asynchronously.  Before rails warp,
+    /// V2 needs one inertial burn attitude that SAS can settle on; following
+    /// each newly completed simulation makes the vessel chase a moving target.
+    /// The terminal solution is rebuilt after warp has ended, before throttle
+    /// is allowed.
+    /// </summary>
+    public sealed class AirlessTerminalAttitudeLatch
+    {
+        public bool IsLatched { get; private set; }
+        public Vector3d Attitude { get; private set; } = Vector3d.zero;
+
+        public bool TryLatch(Vector3d candidate)
+        {
+            if (IsLatched) return true;
+            double magnitude = candidate.magnitude;
+            if (!Finite(candidate.x) || !Finite(candidate.y) || !Finite(candidate.z) || magnitude <= 1e-9)
+                return false;
+            Attitude = candidate / magnitude;
+            IsLatched = true;
+            return true;
+        }
+
+        public void Reset()
+        {
+            IsLatched = false;
+            Attitude = Vector3d.zero;
+        }
+
+        private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    }
+
+    /// <summary>
     /// A plan authorizes commands only while the live vessel still has the
     /// minimum powered authority needed to arrest an airless descent.  It is
     /// intentionally independent of the planner: a plan from an earlier

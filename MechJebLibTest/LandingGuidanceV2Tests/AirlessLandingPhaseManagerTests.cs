@@ -215,6 +215,20 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void TerminalPreWarpAlignmentLatchesTheFirstFiniteInertialAttitude()
+        {
+            var latch = new AirlessTerminalAttitudeLatch();
+            Assert.True(latch.TryLatch(new Vector3d(0, 3, 4)));
+            Assert.True(latch.IsLatched);
+            Assert.InRange(Vector3d.Distance(latch.Attitude, new Vector3d(0, 0.6, 0.8)), 0, 1e-12);
+            Assert.True(latch.TryLatch(new Vector3d(1, 0, 0)));
+            Assert.InRange(Vector3d.Distance(latch.Attitude, new Vector3d(0, 0.6, 0.8)), 0, 1e-12);
+            latch.Reset();
+            Assert.False(latch.IsLatched);
+            Assert.False(latch.TryLatch(new Vector3d(double.NaN, 0, 0)));
+        }
+
+        [Fact]
         public void TerminalWarpRequiresTwoSecondsOfContinuousBrakingAttitude()
         {
             var gate = new AirlessTerminalWarpGate();
