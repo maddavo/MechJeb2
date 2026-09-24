@@ -212,6 +212,8 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
                 CommittedAirlessDescentRecoveryGate.Decide(false));
             Assert.Equal(CommittedAirlessDescentRecoveryAction.ControlledCoast,
                 CommittedAirlessDescentRecoveryGate.Decide(true));
+            Assert.True(CommittedAirlessDescentRecoveryGate.RequiresTerminalAlignmentReset(false));
+            Assert.False(CommittedAirlessDescentRecoveryGate.RequiresTerminalAlignmentReset(true));
         }
 
         [Fact]

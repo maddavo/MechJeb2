@@ -534,6 +534,8 @@ namespace MuMech
         public static CommittedAirlessDescentRecoveryAction Decide(bool descentCommitted) =>
             descentCommitted ? CommittedAirlessDescentRecoveryAction.ControlledCoast :
                 CommittedAirlessDescentRecoveryAction.StrategicReplan;
+
+        public static bool RequiresTerminalAlignmentReset(bool descentCommitted) => !descentCommitted;
     }
 
     /// <summary>

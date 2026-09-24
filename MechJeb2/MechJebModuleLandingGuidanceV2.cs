@@ -992,8 +992,6 @@ namespace MuMech
         {
             Core.Thrust.ThrustOff();
             Core.Warp.MinimumWarp(true);
-            _terminalWarpGate.Reset();
-            _terminalAttitudeLatch.Reset();
             if (CommittedAirlessDescentRecoveryGate.Decide(_airlessDescentCommitted) ==
                 CommittedAirlessDescentRecoveryAction.ControlledCoast)
             {
@@ -1008,6 +1006,11 @@ namespace MuMech
                 else
                     TransitionTo(V2FlightPhase.Coast, committedReason);
                 return;
+            }
+            if (CommittedAirlessDescentRecoveryGate.RequiresTerminalAlignmentReset(_airlessDescentCommitted))
+            {
+                _terminalWarpGate.Reset();
+                _terminalAttitudeLatch.Reset();
             }
             // Discard any candidate made before the executed burn. The next
             // Preflight tick owns an immutable post-burn snapshot and waits for
