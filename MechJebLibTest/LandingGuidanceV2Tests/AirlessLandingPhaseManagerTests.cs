@@ -117,6 +117,27 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void TerminalFineThrustRemapsAContinuousLowThrottleWithoutChangingPhysicalAcceleration()
+        {
+            AirlessFineThrustCommand command = AirlessFineThrustControl.CalculateTerminal(0.054, 0, 30);
+            Assert.True(command.UseEngineThrustLimiter);
+            Assert.Equal(0.108, command.RelativeEngineThrustLimit, 12);
+            Assert.Equal(0.5, command.RequestedThrottle, 12);
+            Assert.Equal(1.62, command.ExpectedAcceleration, 12);
+            Assert.Equal(command.ExpectedAcceleration,
+                30 * command.RelativeEngineThrustLimit * command.RequestedThrottle, 12);
+        }
+
+        [Fact]
+        public void TerminalPolicyRejectsAMinimumThrustProfileMismatch()
+        {
+            AirlessTerminalGuidanceCommand command = AirlessTerminalGuidance.Calculate(Vector3d.zero,
+                new Vector3d(0, -0.5, 0), Vector3d.up, 100, 1.63, 20, 100, 0.5);
+            Assert.False(command.Valid);
+            Assert.Contains("minimum continuous thrust", command.RejectionReason);
+        }
+
+        [Fact]
         public void VisualRebaseGateNeverConcealsAMaterialTargetingError()
         {
             Assert.Equal(VisualTargetAction.Rebase, VisualRebaseGate.Decide(500, 500));

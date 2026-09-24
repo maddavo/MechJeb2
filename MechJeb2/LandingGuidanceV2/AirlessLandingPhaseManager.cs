@@ -317,7 +317,29 @@ namespace MuMech
                 return new AirlessFineThrustCommand(false, 0, 1, 0);
 
             double relativeLimit = Math.Min(1, limitedThrottle * FineControlHeadroom);
-            double expectedAcceleration = minimumAcceleration + (maximumAcceleration - minimumAcceleration) * limitedThrottle;
+            return RemapThrottle(limitedThrottle, minimumAcceleration, maximumAcceleration, relativeLimit);
+        }
+
+        // Terminal velocity-null and divert commands use the same physical
+        // engine limiter mechanism as a finite burn, but their low-throttle
+        // range is wider.  Preserve the requested acceleration; remap only
+        // its available full-throttle range so the main throttle has useful
+        // continuous resolution near touchdown.
+        public static AirlessFineThrustCommand CalculateTerminal(double requestedThrottle,
+            double minimumAcceleration, double maximumAcceleration, double terminalFineThrottleCeiling = 0.10)
+        {
+            double throttle = Clamp01(requestedThrottle);
+            if (throttle <= 0 || throttle > Clamp01(terminalFineThrottleCeiling) ||
+                !Finite(minimumAcceleration) || !Finite(maximumAcceleration) || maximumAcceleration <= minimumAcceleration)
+                return new AirlessFineThrustCommand(false, throttle, 1, Math.Max(0, maximumAcceleration) * throttle);
+            double relativeLimit = Math.Min(1, throttle * FineControlHeadroom);
+            return RemapThrottle(throttle, minimumAcceleration, maximumAcceleration, relativeLimit);
+        }
+
+        private static AirlessFineThrustCommand RemapThrottle(double throttle, double minimumAcceleration,
+            double maximumAcceleration, double relativeLimit)
+        {
+            double expectedAcceleration = minimumAcceleration + (maximumAcceleration - minimumAcceleration) * throttle;
             double limitedMaximumAcceleration = minimumAcceleration +
                 (maximumAcceleration - minimumAcceleration) * relativeLimit;
             double remappedThrottle = (expectedAcceleration - minimumAcceleration) /
@@ -433,10 +455,16 @@ namespace MuMech
             // thrust.  The flight layer accounts for that engine constraint;
             // V2 never uses pulse-width modulation to hide it.
             double desiredAcceleration = Math.Min(maximumAcceleration, Math.Max(0, thrustVector.magnitude));
-            // This is a continuous requested throttle. The thrust controller
-            // applies its normal vessel throttle limit afterwards; V2 does not
-            // pulse engines or change the player's persisted limiter.
-            double throttle = Math.Max(0, Math.Min(1, desiredAcceleration / maximumAcceleration));
+            if (minimumAcceleration > desiredAcceleration + 1e-6)
+                return Invalid("V2 terminal guidance cannot meet the requested descent profile because minimum continuous thrust exceeds the required acceleration.");
+            // Convert requested acceleration through the engine's actual
+            // continuous throttle range.  Minimum thrust is a floor in KSP;
+            // dividing by maximum acceleration alone would command the wrong
+            // physical acceleration whenever that floor is nonzero.
+            double throttle = maximumAcceleration > minimumAcceleration
+                ? Math.Max(0, Math.Min(1, (desiredAcceleration - minimumAcceleration) /
+                    (maximumAcceleration - minimumAcceleration)))
+                : desiredAcceleration >= maximumAcceleration ? 1 : 0;
             bool touchdownReady = altitude <= TouchdownAltitude && horizontalError.magnitude <= TouchdownHorizontalTolerance &&
                 surfaceVelocity.magnitude <= TouchdownSpeed;
             return new AirlessTerminalGuidanceCommand(true, touchdownReady, desiredAcceleration, throttle,
