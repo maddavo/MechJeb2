@@ -410,13 +410,14 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Theory]
-        [InlineData(0.49, 10.0, 300.0, 800.0, -45.0)]
-        [InlineData(1.63, 30.0, 600.0, 1000.0, -80.0)]
-        [InlineData(7.85, 45.0, 500.0, 1200.0, -90.0)]
+        [InlineData(0.49, 0.0, 10.0, 300.0, 800.0, -45.0)]
+        [InlineData(1.63, 0.0, 30.0, 600.0, 1000.0, -80.0)]
+        [InlineData(1.63, 1.0, 30.0, 600.0, 1000.0, -80.0)]
+        [InlineData(7.85, 0.0, 45.0, 500.0, 1200.0, -90.0)]
         public void TerminalPolicyNumericalDescentHandlesGenericAirlessGravityAndThrust(double gravity,
-            double maximumAcceleration, double lateralError, double altitude, double verticalVelocity)
+            double minimumAcceleration, double maximumAcceleration, double lateralError, double altitude, double verticalVelocity)
         {
-            SimulateTerminalDescent(lateralError, altitude, verticalVelocity, gravity, 0, maximumAcceleration,
+            SimulateTerminalDescent(lateralError, altitude, verticalVelocity, gravity, minimumAcceleration, maximumAcceleration,
                 out bool touchedDown, out Vector3d position, out Vector3d velocity);
             Assert.True(touchedDown);
             Assert.InRange(Math.Abs(position.x), 0, 15);
@@ -471,7 +472,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
                 AirlessTerminalGuidanceCommand command = AirlessTerminalGuidance.Calculate(-position, velocity,
                     Vector3d.up, position.y, gravity, minimumAcceleration, maximumAcceleration, 0.5);
                 Assert.True(command.Valid);
-                double deliveredAcceleration = command.RequestedThrottle * maximumAcceleration;
+                double deliveredAcceleration = minimumAcceleration + (maximumAcceleration - minimumAcceleration) * command.RequestedThrottle;
                 velocity += (command.ThrustDirection * deliveredAcceleration - Vector3d.up * gravity) * step;
                 position += velocity * step;
                 if (position.y <= 0)
