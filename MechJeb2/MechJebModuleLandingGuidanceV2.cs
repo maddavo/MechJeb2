@@ -28,6 +28,7 @@ namespace MuMech
         private ReentrySimulation.Result _lastV1Prediction;
         private ReentrySimulation.Result _lastAtmosphericPlanPrediction;
         private readonly Queue _readyAtmosphericCandidateResults = new Queue();
+        private readonly Queue _readyAtmosphericEntryPlanningResults = new Queue();
         // Airless strategic planning is also worker-owned.  Its input is an
         // immutable snapshot, so a long Lambert/plane search cannot block a
         // Unity physics update or make auto-warp stutter.
@@ -39,6 +40,10 @@ namespace MuMech
         private LandingGuidanceV2Snapshot _atmosphericCandidateSnapshot;
         private AtmosphericLandingPlan _atmosphericCandidatePlan;
         private bool _atmosphericCandidateSimulationRunning;
+        private bool _atmosphericEntryPlanningRunning;
+        private AtmosphericLandingPlan _lastAtmosphericEntryPlan;
+        private LandingGuidanceV2Snapshot _lastAtmosphericEntryPlanningSnapshot;
+        private double _lastAtmosphericEntryPlanningMilliseconds = double.NaN;
         private double _nextAtmosphericCandidateSimulationUT;
         private long _atmosphericCandidateGeneration;
         private bool _atmosphericInitialWarpIssued;
@@ -1198,6 +1203,7 @@ namespace MuMech
         public void RefreshPreflight(bool forcePlan = false, bool forceRefresh = false)
         {
             ConsumeAtmosphericCandidateResults();
+            ConsumeAtmosphericEntryPlanningResults();
             ConsumeAirlessPlanningResults();
             if (!HighLogic.LoadedSceneIsFlight || (!Core.Target.PositionTargetExists && !(_hasActiveTarget && ControllerActive)) ||
                 Vessel == null || MainBody == null)
@@ -1259,6 +1265,9 @@ namespace MuMech
             bool candidateResultIsCurrent = _atmosphericCandidateResult != null && _atmosphericCandidateSnapshot != null &&
                 _atmosphericCandidateSnapshot.Body == snapshot.Body &&
                 VesselState.Time <= _nextAtmosphericCandidateSimulationUT;
+            bool entryPlanIsCurrent = _lastAtmosphericEntryPlan != null && _lastAtmosphericEntryPlanningSnapshot != null &&
+                _lastAtmosphericEntryPlanningSnapshot.Body == snapshot.Body &&
+                VesselState.Time <= _lastAtmosphericEntryPlanningSnapshot.UT + PlanRefreshInterval;
             bool refreshAtmosphericPlan = forcePlan || Preflight?.AtmosphericPlan == null ||
                 VesselState.Time >= _nextPlanRefreshUT || !ReferenceEquals(atmosphericEstimate, _lastAtmosphericPlanPrediction);
             if (refreshAtmosphericPlan)
@@ -1267,8 +1276,12 @@ namespace MuMech
                     atmosphericPlan = AtmosphericLandingPlanner.Plan(_atmosphericCandidateSnapshot, atmosphericEstimate,
                         _atmosphericCandidatePlan.StrategicEntryDeltaV, _atmosphericCandidatePlan.StrategicEntryBurnUT,
                         _atmosphericCandidatePlan.EntryUT, _atmosphericCandidatePlan.EntryTargetError);
+                else if (entryPlanIsCurrent)
+                    atmosphericPlan = _lastAtmosphericEntryPlan;
                 else
-                    atmosphericPlan = AtmosphericLandingPlanner.Plan(snapshot, null);
+                    atmosphericPlan = new AtmosphericLandingPlan(snapshot.Version, AtmosphericLandingPlanState.WaitingForEstimate,
+                        double.NaN, double.NaN, double.NaN, double.NaN, double.NaN,
+                        "V2 is searching a bounded atmospheric entry candidate on a snapshot worker.");
                 _lastAtmosphericPlanPrediction = atmosphericEstimate;
                 _nextPlanRefreshUT = VesselState.Time + PlanRefreshInterval;
             }
@@ -1281,8 +1294,80 @@ namespace MuMech
             if (snapshot.Body.atmosphere && atmosphericPlan.State == AtmosphericLandingPlanState.WaitingForEstimate &&
                 atmosphericPlan.StrategicEntryBurnUT > 0 && !_atmosphericCandidateSimulationRunning &&
                 (forcePlan || _atmosphericCandidatePlan == null || VesselState.Time >= _nextAtmosphericCandidateSimulationUT))
-                StartAtmosphericCandidateSimulation(snapshot, atmosphericPlan);
+                StartAtmosphericCandidateSimulation(_lastAtmosphericEntryPlanningSnapshot ?? snapshot, atmosphericPlan);
+            else if (snapshot.Body.atmosphere && !entryPlanIsCurrent && !_atmosphericEntryPlanningRunning)
+                StartAtmosphericEntryPlanning(snapshot);
             WriteCorrelatedTrace(Preflight);
+        }
+
+        // The entry epoch/vector search is bounded, but it still performs
+        // enough conic work that it must not run from Unity's flight update.
+        // It consumes only the immutable snapshot and returns a candidate
+        // which will be simulated and revalidated on the normal V2 gates.
+        private void StartAtmosphericEntryPlanning(LandingGuidanceV2Snapshot snapshot)
+        {
+            _atmosphericEntryPlanningRunning = true;
+            long generation = _atmosphericCandidateGeneration;
+            ThreadPool.QueueUserWorkItem(RunAtmosphericEntryPlanning,
+                new AtmosphericEntryPlanningJob(snapshot, generation));
+        }
+
+        private void RunAtmosphericEntryPlanning(object value)
+        {
+            var job = (AtmosphericEntryPlanningJob)value;
+            Stopwatch timer = Stopwatch.StartNew();
+            AtmosphericLandingPlan plan;
+            try { plan = AtmosphericLandingPlanner.Plan(job.Snapshot, null); }
+            catch (Exception ex)
+            {
+                plan = new AtmosphericLandingPlan(job.Snapshot.Version, AtmosphericLandingPlanState.Rejected,
+                    double.NaN, double.NaN, double.NaN, double.NaN, double.NaN,
+                    "V2 atmospheric entry planner worker failed: " + ex.GetType().Name);
+            }
+            timer.Stop();
+            lock (_readyAtmosphericEntryPlanningResults)
+                _readyAtmosphericEntryPlanningResults.Enqueue(new AtmosphericEntryPlanningResult(job.Snapshot, plan,
+                    job.Generation, timer.Elapsed.TotalMilliseconds));
+        }
+
+        private void ConsumeAtmosphericEntryPlanningResults()
+        {
+            lock (_readyAtmosphericEntryPlanningResults)
+            {
+                while (_readyAtmosphericEntryPlanningResults.Count > 0)
+                {
+                    var completed = (AtmosphericEntryPlanningResult)_readyAtmosphericEntryPlanningResults.Dequeue();
+                    if (completed.Generation != _atmosphericCandidateGeneration) continue;
+                    _atmosphericEntryPlanningRunning = false;
+                    _lastAtmosphericEntryPlanningSnapshot = completed.Snapshot;
+                    _lastAtmosphericEntryPlan = completed.Plan;
+                    _lastAtmosphericEntryPlanningMilliseconds = completed.DurationMilliseconds;
+                }
+            }
+        }
+
+        private sealed class AtmosphericEntryPlanningJob
+        {
+            public readonly LandingGuidanceV2Snapshot Snapshot;
+            public readonly long Generation;
+            public AtmosphericEntryPlanningJob(LandingGuidanceV2Snapshot snapshot, long generation)
+            { Snapshot = snapshot; Generation = generation; }
+        }
+
+        private sealed class AtmosphericEntryPlanningResult
+        {
+            public readonly LandingGuidanceV2Snapshot Snapshot;
+            public readonly AtmosphericLandingPlan Plan;
+            public readonly long Generation;
+            public readonly double DurationMilliseconds;
+            public AtmosphericEntryPlanningResult(LandingGuidanceV2Snapshot snapshot, AtmosphericLandingPlan plan,
+                long generation, double durationMilliseconds)
+            {
+                Snapshot = snapshot;
+                Plan = plan;
+                Generation = generation;
+                DurationMilliseconds = durationMilliseconds;
+            }
         }
 
         private void StartAirlessPlanning(LandingGuidanceV2Snapshot snapshot)
@@ -1449,6 +1534,10 @@ namespace MuMech
             }
             _atmosphericCandidateSnapshot = null;
             _atmosphericCandidatePlan = null;
+            _atmosphericEntryPlanningRunning = false;
+            _lastAtmosphericEntryPlan = null;
+            _lastAtmosphericEntryPlanningSnapshot = null;
+            _lastAtmosphericEntryPlanningMilliseconds = double.NaN;
             _nextAtmosphericCandidateSimulationUT = 0;
         }
 
@@ -1638,9 +1727,11 @@ namespace MuMech
                     JsonNumber(terminalIgnitionCountdown),
                     BurnAlignmentReady(Core.Hoverslam?.IgnitionAttitude ?? Vector3d.zero) ? "true" : "false");
                 baseFields += string.Format(CultureInfo.InvariantCulture,
-                    ",\"airlessPlanSnapshotVersion\":{0},\"activeAirlessPlanSnapshotVersion\":{1},\"atmosphericPlanSnapshotVersion\":{2},\"airlessPlanningDurationMilliseconds\":{3},\"phaseManagerWorkUnits\":{4}",
+                    ",\"airlessPlanSnapshotVersion\":{0},\"activeAirlessPlanSnapshotVersion\":{1},\"atmosphericPlanSnapshotVersion\":{2},\"airlessPlanningDurationMilliseconds\":{3},\"atmosphericEntryPlanningDurationMilliseconds\":{4},\"atmosphericEntryPlanningRunning\":{5},\"phaseManagerWorkUnits\":{6}",
                     airlessPlan?.SnapshotVersion ?? -1, _activePlan?.SnapshotVersion ?? -1,
-                    atmosphericPlan?.SnapshotVersion ?? -1, JsonNumber(_lastAirlessPlanningMilliseconds), _airlessPhaseManager.LastWorkUnits);
+                    atmosphericPlan?.SnapshotVersion ?? -1, JsonNumber(_lastAirlessPlanningMilliseconds),
+                    JsonNumber(_lastAtmosphericEntryPlanningMilliseconds), _atmosphericEntryPlanningRunning ? "true" : "false",
+                    _airlessPhaseManager.LastWorkUnits);
 
                 var lines = new System.Collections.Generic.List<string>();
                 if (_lastV1Phase != phase)
