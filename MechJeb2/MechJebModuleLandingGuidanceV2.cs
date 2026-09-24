@@ -1222,7 +1222,6 @@ namespace MuMech
             double distance = Vector3d.Distance(current, proposed);
             double verticalSpeed = -Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up);
             double timeToGround = Math.Max(3.0, VesselState.AltitudeBottom / Math.Max(0.5, verticalSpeed));
-            double divertCost = 4.0 * distance / timeToGround;
             Core.StageStats.RequestUpdate();
             double remainingDeltaV = Core.StageStats.VacStats.Sum(s => s.DeltaV);
             // The player-facing local adjustment is paid from the plan's
@@ -1231,9 +1230,10 @@ namespace MuMech
             double reserve = _activePlan != null
                 ? _activePlan.TerminalDivertReserve
                 : Preflight?.AtmosphericPlan?.TerminalReserve ?? 20.0;
-            if (remainingDeltaV < reserve + divertCost)
+            V2LocalDivertDecision decision = V2LocalDivertGate.Decide(remainingDeltaV, reserve, distance, timeToGround);
+            if (!decision.Accepted)
             {
-                reason = "V2 target movement rejected: it would consume the protected terminal-divert reserve.";
+                reason = decision.Reason;
                 return false;
             }
             reason = null;
@@ -1253,10 +1253,11 @@ namespace MuMech
                 Math.Abs(MainBody.TerrainAltitude(latitude, longitude + epsilon, true) - center),
                 Math.Abs(MainBody.TerrainAltitude(latitude, longitude - epsilon, true) - center)
             }.Max();
-            if (MainBody.ocean && center <= 0) return new LandingSiteAssessment(false, slope, roughness, "target is below sea level on an ocean body.");
-            if (slope > 15.0) return new LandingSiteAssessment(false, slope, roughness, "local slope exceeds 15 degrees.");
-            if (roughness > 15.0) return new LandingSiteAssessment(false, slope, roughness, "local terrain varies by more than 15 m across the footprint sample.");
-            return new LandingSiteAssessment(true, slope, roughness, "local terrain accepted: slope " + slope.ToString("F1") + " deg, roughness " + roughness.ToString("F1") + " m.");
+            V2LocalSiteDecision decision = V2LocalSiteGate.Assess(MainBody.ocean, center, slope, roughness);
+            string detail = decision.Accepted
+                ? "local terrain accepted: slope " + slope.ToString("F1") + " deg, roughness " + roughness.ToString("F1") + " m."
+                : decision.Reason;
+            return new LandingSiteAssessment(decision.Accepted, slope, roughness, detail);
         }
 
         private void SetActiveTarget(double latitude, double longitude, bool traceEvent)

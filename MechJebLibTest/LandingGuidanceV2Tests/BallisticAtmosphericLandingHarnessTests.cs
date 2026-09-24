@@ -87,9 +87,10 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Theory]
-        [InlineData(5000, 180, 9.81, 30)]
-        [InlineData(5000, 180, 1.63, 12)]
-        [InlineData(9000, 240, 9.81, 45)]
+        [InlineData(5000, 180, 9.81, 30)] // Kerbin, TWR about 3.1
+        [InlineData(50000, 180, 9.81, 12)] // Kerbin, low TWR about 1.2
+        [InlineData(5000, 180, 2.94, 12)] // Duna, TWR about 4.1
+        [InlineData(9000, 240, 2.94, 18)] // Duna, higher entry speed/TWR
         public void PoweredBallisticProfileLandsAcrossGravityAndThrustRangesWhenItsEngineRemainsHealthy(
             double altitude, double downSpeed, double gravity, double maximumAcceleration)
         {
