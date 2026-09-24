@@ -1097,7 +1097,8 @@ namespace MuMech
         {
             Core.Thrust.ThrustForDv(remainingDeltaV, 0.5);
             AirlessFineThrustCommand command = AirlessFineThrustControl.Calculate(remainingDeltaV,
-                Core.Thrust.TargetThrottle, VesselState.MinThrustAcceleration, VesselState.MaxThrustAcceleration);
+                Core.Thrust.TargetThrottle, VesselState.MinThrustAcceleration, VesselState.MaxThrustAcceleration,
+                availableMainThrottle: Core.Thrust.ThrottleLimit);
             Core.Thrust.TargetThrottle = (float)Math.Min(command.RequestedThrottle, Core.Thrust.ThrottleLimit);
             ApplyV2FineThrustLimit(command);
         }
