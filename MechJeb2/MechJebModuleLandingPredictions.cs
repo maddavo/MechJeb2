@@ -129,6 +129,10 @@ namespace MuMech
         protected ReentrySimulation.Result result;
         protected ReentrySimulation.Result errorResult;
         private ReentrySimulation.Result candidateResult;
+        // Airless terrain is solved as a fixed-point iteration. It is separate
+        // from the published result so an unresolved terrain branch can never
+        // feed back into the V1 controller.
+        private double airlessTerrainIterationASL = double.NaN;
 
         // A landing result is consumed by both the map marker and the landing autopilot.
         // Keep a monotonically increasing version so the autopilot can distinguish a new,
@@ -156,6 +160,10 @@ namespace MuMech
         public bool noSkipToFreefall = false;
 
         private readonly Queue readyResults = new Queue();
+        // Each V1 landing target owns a predictor transaction. A simulation
+        // can finish after a new target has been selected, so its result must
+        // be identified before it reaches the control-facing result queue.
+        private long predictionGeneration;
 
         private Random random;
         public double maxOrbits = 1;
@@ -186,6 +194,7 @@ namespace MuMech
 
         protected override void OnModuleDisabled()
         {
+            Interlocked.Increment(ref predictionGeneration);
             stopwatch.Stop();
             stopwatch.Reset();
 
@@ -197,6 +206,32 @@ namespace MuMech
                 candidateResult.Release();
                 candidateResult = null;
             }
+            airlessTerrainIterationASL = double.NaN;
+        }
+
+        // A targeted V1 landing is a new predictor transaction. A result or
+        // terrain radius from a prior target must never command its first
+        // course correction. The landing autopilot calls this before it starts
+        // its first phase; no actuator state is changed here.
+        public void ResetTargetedLandingPrediction()
+        {
+            Interlocked.Increment(ref predictionGeneration);
+            if (candidateResult != null)
+            {
+                candidateResult.Release();
+                candidateResult = null;
+            }
+            if (result != null)
+            {
+                result.Release();
+                result = null;
+            }
+            if (errorResult != null)
+            {
+                errorResult.Release();
+                errorResult = null;
+            }
+            airlessTerrainIterationASL = double.NaN;
         }
 
         public override void OnFixedUpdate()
@@ -265,7 +300,15 @@ namespace MuMech
             }
 
             Orbit patch = GetReenteringPatch() ?? Orbit;
-            if (result != null && result.Outcome == ReentrySimulation.Outcome.LANDED && result.Body != null)
+            if (!patch.referenceBody.atmosphere && !double.IsNaN(airlessTerrainIterationASL) &&
+                !double.IsInfinity(airlessTerrainIterationASL))
+            {
+                // Do not use the published endpoint here. It may describe a
+                // different terrain branch while the current fixed-point
+                // iteration is being resolved.
+                altitudeOfPreviousPrediction = airlessTerrainIterationASL;
+            }
+            else if (result != null && result.Outcome == ReentrySimulation.Outcome.LANDED && result.Body != null)
             {
                 altitudeOfPreviousPrediction = result.EndASL;
             }
@@ -290,16 +333,39 @@ namespace MuMech
             //MechJebCore.print("Sim ran with dt=" + dt.ToString("F3"));
 
             //Run the simulation in a separate thread
-            ThreadPool.QueueUserWorkItem(RunSimulation, sim);
+            ThreadPool.QueueUserWorkItem(RunSimulation, new SimulationJob(sim,
+                Interlocked.Read(ref predictionGeneration)));
             //RunSimulation(sim);
         }
 
         private void RunSimulation(object o)
         {
-            var sim = (ReentrySimulation)o;
+            var job = (SimulationJob)o;
+            ReentrySimulation sim = job.Simulation;
             try
             {
                 ReentrySimulation.Result newResult = sim.RunSimulation();
+
+                // Never let an old target's predictor result or its timing
+                // state overwrite the current V1 landing transaction.
+                if (job.Generation != Interlocked.Read(ref predictionGeneration))
+                {
+                    bool wasErrorSimulation = newResult.MultiplierHasError;
+                    newResult.Release();
+                    if (wasErrorSimulation)
+                    {
+                        errorStopwatch.Stop();
+                        errorStopwatch.Reset();
+                        errorSimulationRunning = false;
+                    }
+                    else
+                    {
+                        stopwatch.Stop();
+                        stopwatch.Reset();
+                        SimulationRunning = false;
+                    }
+                    return;
+                }
 
                 lock (readyResults)
                 {
@@ -376,6 +442,18 @@ namespace MuMech
             }
         }
 
+        private sealed class SimulationJob
+        {
+            public readonly ReentrySimulation Simulation;
+            public readonly long Generation;
+
+            public SimulationJob(ReentrySimulation simulation, long generation)
+            {
+                Simulation = simulation;
+                Generation = generation;
+            }
+        }
+
         private void CheckForResult()
         {
             lock (readyResults)
@@ -398,6 +476,28 @@ namespace MuMech
                         }
                         else
                         {
+                            // The airless simulator has no terrain model: it
+                            // intersects a sphere at InputProbableLandingSiteASL.
+                            // Query terrain only on the flight thread, feed the
+                            // observed height into the next immutable run, and
+                            // withhold this result until the radius is
+                            // self-consistent. This breaks the repeated
+                            // flat-ground/mountain endpoint oscillation.
+                            if (newResult.Outcome == ReentrySimulation.Outcome.LANDED &&
+                                newResult.Body != null && !newResult.Body.atmosphere)
+                            {
+                                double nextTerrain = LandingPredictionTerrainConvergence.NextIterationTerrainAltitude(
+                                    newResult.EndASL, airlessTerrainIterationASL);
+                                bool terrainConsistent = LandingPredictionTerrainConvergence.IsSelfConsistent(
+                                    newResult.InputProbableLandingSiteASL, nextTerrain);
+                                airlessTerrainIterationASL = nextTerrain;
+                                if (!terrainConsistent)
+                                {
+                                    TraceNormalResultDecision("terrain_iterate", candidateResult, newResult);
+                                    newResult.Release();
+                                    continue;
+                                }
+                            }
                             AcceptNormalResult(newResult);
                         }
                     }
@@ -446,7 +546,9 @@ namespace MuMech
                 ResultAcceptanceDistance(comparedResult, newResult);
             Core.Landing.TraceLanding($"predictor {decision} inputDt={inputTimeDifference:F3} " +
                 $"distance={resultDistance:F1} acceptance={acceptanceDistance:F1} " +
-                $"newLat={newResult.EndPosition.Latitude:F6} newLon={newResult.EndPosition.Longitude:F6}");
+                $"newLat={newResult.EndPosition.Latitude:F6} newLon={newResult.EndPosition.Longitude:F6} " +
+                $"endUT={newResult.EndUT:F2} inputTerrain={newResult.InputProbableLandingSiteASL:F1} " +
+                $"endpointTerrain={newResult.EndASL:F1}");
         }
 
         private void PublishNormalResult(ReentrySimulation.Result newResult)
@@ -464,48 +566,25 @@ namespace MuMech
             // Publish only a consensus result. In particular, do not let the
             // first result after a trajectory change select one side of a
             // terrain/impact branch before a second simulation corroborates it.
-            if (result == null)
+            // Publish only after two consecutive self-consistent simulations
+            // agree. Comparing a new result directly with the old published
+            // result lets an A/B/A branch sequence accept A on every second
+            // frame while B remains unresolved, which is exactly the visible
+            // marker and course-correction oscillation reported on Minmus.
+            bool candidateAgrees = candidateResult != null && ResultsAgree(candidateResult, newResult);
+            if (LandingPredictionTerrainConvergence.HasConsecutiveAgreement(candidateResult != null, candidateAgrees))
             {
-                if (candidateResult != null && ResultsAgree(candidateResult, newResult))
-                {
-                    TraceNormalResultDecision("initial_accept", candidateResult, newResult);
-                    candidateResult.Release();
-                    candidateResult = null;
-                    PublishNormalResult(newResult);
-                    return;
-                }
-
-                TraceNormalResultDecision(candidateResult == null ? "initial_pending" : "initial_replace", candidateResult, newResult);
-                if (candidateResult != null)
-                    candidateResult.Release();
-                candidateResult = newResult;
-                return;
-            }
-
-            if (ResultsAgree(result, newResult))
-            {
-                TraceNormalResultDecision("accept", result, newResult);
-                if (candidateResult != null)
-                {
-                    candidateResult.Release();
-                    candidateResult = null;
-                }
-                PublishNormalResult(newResult);
-            }
-            else if (candidateResult != null && ResultsAgree(candidateResult, newResult))
-            {
-                TraceNormalResultDecision("candidate_accept", candidateResult, newResult);
+                TraceNormalResultDecision(result == null ? "initial_accept" : "candidate_accept", candidateResult, newResult);
                 candidateResult.Release();
                 candidateResult = null;
                 PublishNormalResult(newResult);
+                return;
             }
-            else
-            {
-                TraceNormalResultDecision(candidateResult == null ? "pending" : "replace", candidateResult, newResult);
-                if (candidateResult != null)
-                    candidateResult.Release();
-                candidateResult = newResult;
-            }
+
+            TraceNormalResultDecision(candidateResult == null ? "initial_pending" : "replace", candidateResult, newResult);
+            if (candidateResult != null)
+                candidateResult.Release();
+            candidateResult = newResult;
         }
 
         protected Orbit GetReenteringPatch()

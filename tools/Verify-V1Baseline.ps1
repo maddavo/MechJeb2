@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Baseline = 'v1-stable-minmus-consensus-20260925'
+    [string]$Baseline = 'v1-predictor-terrain-convergence-20260925'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,6 +12,7 @@ $protected = @(
     'MechJeb2/ReentrySimulation.cs',
     'MechJeb2/LandingAutopilot/CoastToDeceleration.cs',
     'MechJeb2/LandingAutopilot/LandingPredictionConsensus.cs',
+    'MechJeb2/LandingAutopilot/LandingPredictionTerrainConvergence.cs',
     'MechJeb2/LandingAutopilot/CourseCorrection.cs',
     'MechJeb2/LandingAutopilot/DeorbitBurn.cs',
     'MechJeb2/LandingAutopilot/FinalDescent.cs',

@@ -35,6 +35,26 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.False(LandingPredictionConsensus.Agrees(flat, mountain, 200, 20));
         }
 
+        [Fact]
+        public void AirlessTerrainIterationRequiresTheSimulatedContactRadiusToMatchTheEndpointTerrain()
+        {
+            Assert.False(LandingPredictionTerrainConvergence.IsSelfConsistent(0, 1791));
+            Assert.True(LandingPredictionTerrainConvergence.IsSelfConsistent(1791.0, 1792.5));
+            Assert.Equal(1791, LandingPredictionTerrainConvergence.NextIterationTerrainAltitude(1791, 0));
+        }
+
+        [Fact]
+        public void AlternatingBranchesNeverSatisfyTheConsecutivePublicationGate()
+        {
+            // A arrives: hold it. B replaces A: hold it. A replaces B: hold it.
+            // The former code compared the final A to the old published A and
+            // republished it, which allowed an A/B visual and control loop.
+            Assert.False(LandingPredictionTerrainConvergence.HasConsecutiveAgreement(false, false));
+            Assert.False(LandingPredictionTerrainConvergence.HasConsecutiveAgreement(true, false));
+            Assert.False(LandingPredictionTerrainConvergence.HasConsecutiveAgreement(true, false));
+            Assert.True(LandingPredictionTerrainConvergence.HasConsecutiveAgreement(true, true));
+        }
+
         private static ReentrySimulation.Result Result(double endUt, double endAsl)
         {
             return new ReentrySimulation.Result

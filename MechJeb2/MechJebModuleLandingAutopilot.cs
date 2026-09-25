@@ -132,6 +132,7 @@ namespace MuMech
             Users.Add(controller);
 
             _predictor.Users.Add(this);
+            _predictor.ResetTargetedLandingPrediction();
             Vessel.RemoveAllManeuverNodes(); // For the benefit of the landing predictions module
 
             _deployedGears = false;
