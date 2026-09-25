@@ -49,10 +49,17 @@ Each V1 course-correction pulse takes a bounded fraction of that predicted **sur
 
 After each remote pulse, V1 compares the measured endpoint improvement with the predicted improvement. Two consecutive responses within 25 percent of the prediction raise the remote effect fraction by one tenth, up to four fifths. A weak or adverse response halves the fraction down to one quarter. There is no correction-pulse delta-V cap. The pulse delta-V is whatever produces the selected fraction of the currently predicted landing-position movement, so it adapts to the body, trajectory, speed, gravity, and vehicle response. This is limited to V1 Course Correction. It does not alter V2, the V1 window layout, deorbit, braking, descent, attitude, RCS, staging, or warp logic. Focused tests cover gain increase, cap, reduction, effect bands, and reversal behavior.
 
+## Low-gravity terminal translation repair
+
+The same live Minmus run exposed a terminal-phase defect after the vehicle entered `KillHorizontalVelocity` at about 205 m ASL. It initially reduced a 5.3 m/s descent, but then held exactly 5% throttle for approximately 19 seconds while horizontal speed remained 3–5 m/s. The trace measured 1.06 m/s² of upward thrust acceleration at that throttle, more than Minmus gravity. The vessel climbed from 200 m to 292 m and required manual takeover.
+
+The cause was the general MechJeb minimum-throttle limiter. `KillHorizontalVelocity` correctly calculated that it needed roughly 2–3% throttle to hold height, but requested it through the generic API, which raised every nonzero request to the Landing Guidance window's 5% setting. This terminal translation step now bypasses that generic lower floor and commands its closed-loop physical throttle directly, including a value below 5% or zero. It does not change the setting, its UI, or any other landing phase. Focused tests cover low-gravity hover, descent arrest, and no-vertical-thrust handling.
+
 ## Regression criteria
 
 - V1 UI first 176 source lines remain identical to its protected baseline.
 - V1 controller phase, attitude, throttle, RCS, staging, and warp source remain protected by `tools/Verify-V1Baseline.ps1`.
 - Focused tests cover first real ridge contact, ignoring later terrain, invalid profile samples, normal two-sample publication, and rejection of alternating displaced terrain pairs.
+- Focused tests cover the Minmus terminal translation case where the physical hover request is below the general 5% throttle floor.
 - Release build and V2/Hoverslam regression suite pass.
 - A new Minmus trace must show stable accepted prediction versions through Course Correction. It must not contain the former `terrain_bracket_bisect` loop.

@@ -31,21 +31,18 @@ namespace MuMech
                 }
 
                 //control thrust to control vertical speed:
-                const double DESIRED_SPEED = 0; //hover until horizontal velocity is killed
+                const double DESIRED_SPEED = 0; // hold height until horizontal velocity is killed
                 double controlledSpeed = Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up);
-                double speedError = DESIRED_SPEED - controlledSpeed;
-                const double SPEED_CORRECTION_TIME_CONSTANT = 1.0;
-                double desiredAccel = speedError / SPEED_CORRECTION_TIME_CONSTANT;
-                double minAccel = -VesselState.LocalGravity;
-                double maxAccel = -VesselState.LocalGravity + Vector3d.Dot(VesselState.Forward, VesselState.Up) * VesselState.MaxThrustAcceleration;
-                if (maxAccel - minAccel > 0)
-                {
-                    Core.Thrust.RequestActiveThrottle(Mathf.Clamp((float)((desiredAccel - minAccel) / (maxAccel - minAccel)), 0.0f, 1.0f));
-                }
-                else
-                {
-                    Core.Thrust.RequestActiveThrottle(0.0f);
-                }
+                double verticalThrustAcceleration =
+                    Vector3d.Dot(VesselState.Forward, VesselState.Up) * VesselState.MaxThrustAcceleration;
+                double requestedThrottle = TerminalTranslationThrottlePolicy.ComputeThrottle(controlledSpeed,
+                    DESIRED_SPEED, VesselState.LocalGravity, verticalThrustAcceleration);
+
+                // The generic minimum-throttle setting is useful for ordinary
+                // manoeuvre burns, but it must not floor terminal translation.
+                // On Minmus a 5% floor can be more thrust than gravity and make
+                // a craft climb while this step is trying to remove drift.
+                Core.Thrust.RequestActiveThrottle((float)requestedThrottle, enforceMinimum: false, allowZero: true);
 
                 //angle up and slightly away from vertical:
                 Vector3d desiredThrustVector = (VesselState.Up + 0.2 * horizontalPointingDirection).normalized;
