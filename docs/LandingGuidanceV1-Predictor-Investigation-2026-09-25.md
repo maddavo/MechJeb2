@@ -22,9 +22,15 @@ For airless V1 predictions:
 2. V1 examines the already recorded descending trajectory on the KSP flight thread, using actual `TerrainAltitude` data only in the final portion below the body’s maximum terrain height.
 3. It selects the first path sample that reaches the real terrain surface and publishes that point as the prediction endpoint.
 4. The next airless simulation again starts at sea level. No endpoint terrain height is fed back into the simulator.
-5. The existing two-consecutive-prediction consensus gate remains in place, so a transient endpoint cannot drive a correction.
+5. Normal continuous endpoint updates require two consecutive compatible predictions. A candidate more than 200 m from the published endpoint requires three compatible predictions before it can replace it.
 
 This removes both the flat/mountain feedback loop and the bisection stall while avoiding a high-volume terrain query across the orbital trajectory.
+
+### Displaced-branch publication repair
+
+The later live Minmus run at approximately 17 km altitude showed a second, distinct publication failure. The terrain-profile solver produced internally consistent **pairs** of contacts, then switched to another pair on a different feature. For example, it published contacts near 263 m ASL, 157 m ASL, 92 m ASL, 46 m ASL, and sea level while the vehicle coasted without a correction burn. Each pair met the ordinary local agreement tolerance, so the old two-sample gate successively replaced the public endpoint. The target marker and reported target error consequently jumped by hundreds of metres.
+
+The replacement gate now distinguishes an ordinary moving endpoint from a change of terrain branch. It keeps the ordinary two-sample cadence for nearby updates. If the candidate is more than 200 m from the currently published endpoint, it must persist for three compatible simulations. An A/A, B/B, C/C sequence cannot therefore move the published endpoint away from A; a real B/B/B trajectory change can. Trace records include the candidate sample count, requirement, and distance from the published endpoint so a future live run can verify this decision directly.
 
 ## Live validation
 
@@ -47,6 +53,6 @@ After each remote pulse, V1 compares the measured endpoint improvement with the 
 
 - V1 UI first 176 source lines remain identical to its protected baseline.
 - V1 controller phase, attitude, throttle, RCS, staging, and warp source remain protected by `tools/Verify-V1Baseline.ps1`.
-- Focused tests cover first real ridge contact, ignoring later terrain, and invalid profile samples.
+- Focused tests cover first real ridge contact, ignoring later terrain, invalid profile samples, normal two-sample publication, and rejection of alternating displaced terrain pairs.
 - Release build and V2/Hoverslam regression suite pass.
 - A new Minmus trace must show stable accepted prediction versions through Course Correction. It must not contain the former `terrain_bracket_bisect` loop.

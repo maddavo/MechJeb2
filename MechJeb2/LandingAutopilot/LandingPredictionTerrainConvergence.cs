@@ -33,13 +33,27 @@ namespace MuMech.Landing
     }
 
     /// <summary>
-    /// A result may replace the published endpoint only when it agrees with
-    /// the immediately preceding candidate. Keeping this decision pure makes
-    /// branch-change regressions explicit.
+    /// A result may replace the published endpoint only when it remains
+    /// consistent for long enough. A normal continuously moving endpoint
+    /// needs two samples. A terrain branch that is materially displaced from
+    /// the currently published endpoint needs three samples: a pair is not
+    /// enough evidence to move V1's map marker or course-correction input to
+    /// another mountain or valley.
     /// </summary>
     public static class LandingPredictionTerrainConvergence
     {
-        public static bool HasConsecutiveAgreement(bool hasCandidate, bool candidateAgreesWithCurrent) =>
-            hasCandidate && candidateAgreesWithCurrent;
+        public const int NormalRequiredSamples = 2;
+        public const int DisplacedReplacementRequiredSamples = 3;
+
+        public static int RequiredSamples(bool hasPublishedResult, bool materiallyDisplacedFromPublished) =>
+            hasPublishedResult && materiallyDisplacedFromPublished
+                ? DisplacedReplacementRequiredSamples
+                : NormalRequiredSamples;
+
+        public static int NextCompatibleSampleCount(int currentCount, bool candidateAgreesWithCurrent) =>
+            candidateAgreesWithCurrent ? currentCount + 1 : 1;
+
+        public static bool CanPublish(int compatibleSampleCount, int requiredSamples) =>
+            compatibleSampleCount >= requiredSamples;
     }
 }

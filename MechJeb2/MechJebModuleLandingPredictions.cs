@@ -129,6 +129,7 @@ namespace MuMech
         protected ReentrySimulation.Result result;
         protected ReentrySimulation.Result errorResult;
         private ReentrySimulation.Result candidateResult;
+        private int candidateResultSampleCount;
         // A landing result is consumed by both the map marker and the landing autopilot.
         // Keep a monotonically increasing version so the autopilot can distinguish a new,
         // accepted prediction from another physics frame using the same result.
@@ -201,6 +202,7 @@ namespace MuMech
                 candidateResult.Release();
                 candidateResult = null;
             }
+            candidateResultSampleCount = 0;
         }
 
         // A targeted V1 landing is a new predictor transaction. A result or
@@ -215,6 +217,7 @@ namespace MuMech
                 candidateResult.Release();
                 candidateResult = null;
             }
+            candidateResultSampleCount = 0;
             if (result != null)
             {
                 result.Release();
@@ -549,7 +552,8 @@ namespace MuMech
         }
 
         private void TraceNormalResultDecision(string decision, ReentrySimulation.Result comparedResult,
-            ReentrySimulation.Result newResult)
+            ReentrySimulation.Result newResult, int candidateSamples = 0, int requiredSamples = 0,
+            double publishedDistance = double.NaN)
         {
             if (!Core.Landing.LandingTraceEnabled || !Core.Landing.LandAtTarget)
                 return;
@@ -563,6 +567,7 @@ namespace MuMech
                 ResultAcceptanceDistance(comparedResult, newResult);
             Core.Landing.TraceLanding($"predictor {decision} inputDt={inputTimeDifference:F3} " +
                 $"distance={resultDistance:F1} acceptance={acceptanceDistance:F1} " +
+                $"samples={candidateSamples}/{requiredSamples} publishedDistance={publishedDistance:F1} " +
                 $"newLat={newResult.EndPosition.Latitude:F6} newLon={newResult.EndPosition.Longitude:F6} " +
                 $"endUT={newResult.EndUT:F2} inputTerrain={newResult.InputProbableLandingSiteASL:F1} " +
                 $"endpointTerrain={newResult.EndASL:F1}");
@@ -583,24 +588,42 @@ namespace MuMech
             // Publish only a consensus result. In particular, do not let the
             // first result after a trajectory change select one side of a
             // terrain/impact branch before a second simulation corroborates it.
-            // Publish only after two consecutive self-consistent simulations
-            // agree. Comparing a new result directly with the old published
-            // result lets an A/B/A branch sequence accept A on every second
-            // frame while B remains unresolved, which is exactly the visible
-            // marker and course-correction oscillation reported on Minmus.
+            // A normal update needs two consecutive self-consistent samples.
+            // A candidate that is materially displaced from the published
+            // endpoint needs a third sample. This avoids accepting B/B in an
+            // A/A, B/B, C/C terrain-contact sequence while still letting a
+            // real trajectory change take effect within one simulation cycle.
             bool candidateAgrees = candidateResult != null && ResultsAgree(candidateResult, newResult);
-            if (LandingPredictionTerrainConvergence.HasConsecutiveAgreement(candidateResult != null, candidateAgrees))
+            candidateResultSampleCount = LandingPredictionTerrainConvergence.NextCompatibleSampleCount(
+                candidateResultSampleCount, candidateAgrees);
+            if (!candidateAgrees)
             {
-                TraceNormalResultDecision(result == null ? "initial_accept" : "candidate_accept", candidateResult, newResult);
+                TraceNormalResultDecision(candidateResult == null ? "initial_pending" : "replace", candidateResult, newResult,
+                    candidateResultSampleCount, LandingPredictionTerrainConvergence.NormalRequiredSamples);
+                if (candidateResult != null)
+                    candidateResult.Release();
+                candidateResult = newResult;
+                candidateResultSampleCount = 1;
+                return;
+            }
+
+            double publishedDistance = result == null ? double.NaN : ResultAcceptanceDistance(result, newResult);
+            bool materiallyDisplaced = result != null && publishedDistance > MaximumResultAcceptanceDistance;
+            int requiredSamples = LandingPredictionTerrainConvergence.RequiredSamples(result != null, materiallyDisplaced);
+            if (LandingPredictionTerrainConvergence.CanPublish(candidateResultSampleCount, requiredSamples))
+            {
+                TraceNormalResultDecision(result == null ? "initial_accept" : "candidate_accept", candidateResult, newResult,
+                    candidateResultSampleCount, requiredSamples, publishedDistance);
                 candidateResult.Release();
                 candidateResult = null;
+                candidateResultSampleCount = 0;
                 PublishNormalResult(newResult);
                 return;
             }
 
-            TraceNormalResultDecision(candidateResult == null ? "initial_pending" : "replace", candidateResult, newResult);
-            if (candidateResult != null)
-                candidateResult.Release();
+            TraceNormalResultDecision("branch_pending", candidateResult, newResult,
+                candidateResultSampleCount, requiredSamples, publishedDistance);
+            candidateResult.Release();
             candidateResult = newResult;
         }
 

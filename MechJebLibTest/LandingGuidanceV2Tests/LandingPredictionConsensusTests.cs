@@ -65,15 +65,42 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
-        public void AlternatingBranchesNeverSatisfyTheConsecutivePublicationGate()
+        public void DisplacedTerrainBranchRequiresThreeConsistentSamples()
         {
-            // A arrives: hold it. B replaces A: hold it. A replaces B: hold it.
-            // The former code compared the final A to the old published A and
-            // republished it, which allowed an A/B visual and control loop.
-            Assert.False(LandingPredictionTerrainConvergence.HasConsecutiveAgreement(false, false));
-            Assert.False(LandingPredictionTerrainConvergence.HasConsecutiveAgreement(true, false));
-            Assert.False(LandingPredictionTerrainConvergence.HasConsecutiveAgreement(true, false));
-            Assert.True(LandingPredictionTerrainConvergence.HasConsecutiveAgreement(true, true));
+            int required = LandingPredictionTerrainConvergence.RequiredSamples(true, true);
+
+            Assert.Equal(3, required);
+            Assert.False(LandingPredictionTerrainConvergence.CanPublish(1, required));
+            Assert.False(LandingPredictionTerrainConvergence.CanPublish(2, required));
+            Assert.True(LandingPredictionTerrainConvergence.CanPublish(3, required));
+        }
+
+        [Fact]
+        public void AlternatingDisplacedTerrainPairsCannotReplacePublishedEndpoint()
+        {
+            int required = LandingPredictionTerrainConvergence.RequiredSamples(true, true);
+            int samples = 0;
+
+            // A/A has already made the current published endpoint. B/B and
+            // C/C are each internally consistent pairs, but neither has the
+            // third observation needed to take over from A.
+            samples = LandingPredictionTerrainConvergence.NextCompatibleSampleCount(samples, false); // B
+            samples = LandingPredictionTerrainConvergence.NextCompatibleSampleCount(samples, true);  // B
+            Assert.False(LandingPredictionTerrainConvergence.CanPublish(samples, required));
+
+            samples = LandingPredictionTerrainConvergence.NextCompatibleSampleCount(samples, false); // C
+            samples = LandingPredictionTerrainConvergence.NextCompatibleSampleCount(samples, true);  // C
+            Assert.False(LandingPredictionTerrainConvergence.CanPublish(samples, required));
+        }
+
+        [Fact]
+        public void NormalContinuousEndpointStillPublishesAfterTwoSamples()
+        {
+            int required = LandingPredictionTerrainConvergence.RequiredSamples(true, false);
+
+            Assert.Equal(2, required);
+            Assert.False(LandingPredictionTerrainConvergence.CanPublish(1, required));
+            Assert.True(LandingPredictionTerrainConvergence.CanPublish(2, required));
         }
 
         private static ReentrySimulation.Result Result(double endUt, double endAsl)
