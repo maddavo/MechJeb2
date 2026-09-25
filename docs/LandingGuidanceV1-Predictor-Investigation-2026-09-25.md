@@ -23,7 +23,6 @@ For airless V1 predictions:
 3. It selects the first path sample that reaches the real terrain surface and publishes that point as the prediction endpoint.
 4. The next airless simulation again starts at sea level. No endpoint terrain height is fed back into the simulator.
 5. The existing two-consecutive-prediction consensus gate remains in place, so a transient endpoint cannot drive a correction.
-6. For those airless profile endpoints only, the gate accepts a bounded local contact movement: 300 m in surface position, 20 seconds in arrival, and 250 m in local terrain ASL. Atmospheric predictions retain the strict pre-existing thresholds. A kilometre-scale terrain branch still fails the spatial gate.
 
 This removes both the flat/mountain feedback loop and the bisection stall while avoiding a high-volume terrain query across the orbital trajectory.
 
@@ -31,6 +30,6 @@ This removes both the flat/mountain feedback loop and the bisection stall while 
 
 - V1 UI first 176 source lines remain identical to its protected baseline.
 - V1 controller phase, attitude, throttle, RCS, staging, and warp source remain protected by `tools/Verify-V1Baseline.ps1`.
-- Focused tests cover first real ridge contact, ignoring later terrain, invalid profile samples, stable local-slope consensus, and rejection of a kilometre-scale branch.
+- Focused tests cover first real ridge contact, ignoring later terrain, and invalid profile samples.
 - Release build and V2/Hoverslam regression suite pass.
 - A new Minmus trace must show stable accepted prediction versions through Course Correction. It must not contain the former `terrain_bracket_bisect` loop.

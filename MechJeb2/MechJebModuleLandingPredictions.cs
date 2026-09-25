@@ -140,10 +140,6 @@ namespace MuMech
         // between the two input snapshots, rather than several seconds of vessel travel.
         private const double MinimumResultAcceptanceDistance = 35;
         private const double MaximumResultAcceptanceDistance = 200;
-        // Terrain-profile contact is sampled along the recorded descending
-        // path. A local slope can move the first sampled contact farther than
-        // the normal snapshot tolerance without changing impact branch.
-        private const double MinimumAirlessProfileAcceptanceDistance = 300;
 
         public ManeuverNode aerobrakeNode;
 
@@ -546,13 +542,10 @@ namespace MuMech
         {
             double inputTimeDifference = Math.Abs(second.InputUT - first.InputUT);
             double expectedSnapshotMotion = VesselState.SpeedSurface * inputTimeDifference;
-            bool airlessTerrainProfile = first.Body != null && !first.Body.atmosphere;
             double acceptanceDistance = Math.Min(MaximumResultAcceptanceDistance,
                 Math.Max(MinimumResultAcceptanceDistance, 25 + 0.5 * expectedSnapshotMotion));
-            if (airlessTerrainProfile)
-                acceptanceDistance = Math.Max(acceptanceDistance, MinimumAirlessProfileAcceptanceDistance);
             return LandingPredictionConsensus.Agrees(first, second, acceptanceDistance,
-                ResultAcceptanceDistance(first, second), airlessTerrainProfile);
+                ResultAcceptanceDistance(first, second));
         }
 
         private void TraceNormalResultDecision(string decision, ReentrySimulation.Result comparedResult,
@@ -564,11 +557,8 @@ namespace MuMech
             double inputTimeDifference = comparedResult == null ? double.NaN :
                 Math.Abs(newResult.InputUT - comparedResult.InputUT);
             double expectedSnapshotMotion = VesselState.SpeedSurface * inputTimeDifference;
-            bool airlessTerrainProfile = newResult.Body != null && !newResult.Body.atmosphere;
             double acceptanceDistance = Math.Min(MaximumResultAcceptanceDistance,
                 Math.Max(MinimumResultAcceptanceDistance, 25 + 0.5 * expectedSnapshotMotion));
-            if (airlessTerrainProfile)
-                acceptanceDistance = Math.Max(acceptanceDistance, MinimumAirlessProfileAcceptanceDistance);
             double resultDistance = comparedResult == null ? double.NaN :
                 ResultAcceptanceDistance(comparedResult, newResult);
             Core.Landing.TraceLanding($"predictor {decision} inputDt={inputTimeDifference:F3} " +

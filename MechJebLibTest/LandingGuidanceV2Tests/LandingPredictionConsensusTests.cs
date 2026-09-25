@@ -35,31 +35,6 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.False(LandingPredictionConsensus.Agrees(flat, mountain, 200, 20));
         }
 
-
-        [Fact]
-        public void AcceptsStableAirlessTerrainProfileSamplesOnALocalSlope()
-        {
-            // Recorded first-contact samples on Minmus can differ by tens of
-            // metres in position, about 100 m in terrain ASL, and several
-            // seconds in contact time. They are one local profile, not the
-            // former kilometre-scale flat/mountain branch change.
-            var first = Result(1000, 1410);
-            var second = Result(1010, 1305);
-            second.InputUT = first.InputUT + 0.2;
-
-            Assert.True(LandingPredictionConsensus.Agrees(first, second, 300, 225, true));
-        }
-
-        [Fact]
-        public void RejectsKilometreScaleAirlessTerrainBranch()
-        {
-            var flat = Result(1000, 0);
-            var mountain = Result(1035, 1791);
-            mountain.InputUT = flat.InputUT + 0.2;
-
-            Assert.False(LandingPredictionConsensus.Agrees(flat, mountain, 300, 3700, true));
-        }
-
         [Fact]
         public void AirlessTerrainProfileSelectsTheFirstRealSurfaceCrossing()
         {
