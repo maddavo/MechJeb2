@@ -10,7 +10,6 @@ namespace MuMech
             private const double PulseCompletionDv = 0.05;
             private const double MinimumUsefulCorrectionDv = 0.05;
             private const double PostBurnPredictionSettlingTime = 0.75;
-            private const double CandidateDirectionAgreementAngle = 20;
             private const int RequiredCandidatePredictions = 2;
 
             private bool _courseCorrectionBurning;
@@ -115,10 +114,10 @@ namespace MuMech
                         return new CoastToDeceleration(Core);
 
                     _predictionVersionAtPulseCompletion = Core.Landing.PredictionVersion;
-                    if (_hasPendingCorrection &&
-                        Vector3d.Angle(_pendingCorrection, candidateCorrection) <= CandidateDirectionAgreementAngle)
+                    if (_hasPendingCorrection)
                     {
-                        _pendingCorrection = candidateCorrection;
+                        _pendingCorrection = CourseCorrectionPredictionConsensus.AddSample(_pendingCorrection,
+                            _pendingPredictionCount, candidateCorrection);
                         _pendingPredictionCount++;
                     }
                     else
@@ -128,11 +127,15 @@ namespace MuMech
                         _hasPendingCorrection = true;
                     }
 
-                    // A single nonlinear prediction can legitimately choose the other
-                    // branch of the finite-difference solution. Require a second,
-                    // independent post-burn snapshot before aiming the vehicle at it.
+                    // Require two independent post-burn snapshots. Their finite-difference
+                    // solutions can vary in direction even when the consensus predictor is
+                    // stable; use their mean rather than resetting this wait forever.
                     if (_pendingPredictionCount < RequiredCandidatePredictions)
                         return this;
+
+                    if (!CourseCorrectionPredictionConsensus.IsUsable(_pendingCorrection,
+                            MinimumUsefulCorrectionDv))
+                        return new CoastToDeceleration(Core);
 
                     UpdateRemoteEffectGain(currentError);
                     _waitingForPostBurnPrediction = false;

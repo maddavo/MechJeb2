@@ -55,11 +55,18 @@ The same live Minmus run exposed a terminal-phase defect after the vehicle enter
 
 The cause was the general MechJeb minimum-throttle limiter. `KillHorizontalVelocity` correctly calculated that it needed roughly 2–3% throttle to hold height, but requested it through the generic API, which raised every nonzero request to the Landing Guidance window's 5% setting. This terminal translation step now bypasses that generic lower floor and commands its closed-loop physical throttle directly, including a value below 5% or zero. It does not change the setting, its UI, or any other landing phase. Focused tests cover low-gravity hover, descent arrest, and no-vertical-thrust handling.
 
+## Post-burn course-correction release repair
+
+The subsequent live run of the prior installed DLL reached Course Correction at roughly 20 km altitude, then remained at zero throttle. The predictor was healthy: it published versions 598 through 625 and continued beyond them. The controller nevertheless remained `waiting=True`. The trace showed its post-burn confirmation counter alternate between zero and one because successive finite-difference correction vectors differed by more than the previous 20 degree direction threshold.
+
+The correction solver's output can vary modestly between valid, already-consensus predictor samples. Resetting the confirmation count on that variation creates an unbounded no-throttle wait. V1 now takes the vector mean of two settled post-burn correction solutions and proceeds with the ordinary effect-scaled pulse. If two solutions exactly conflict, their mean is zero and V1 returns to coast/deceleration without commanding a burn. Focused tests cover both the noisy valid pair and the exact-conflict safety case.
+
 ## Regression criteria
 
 - V1 UI first 176 source lines remain identical to its protected baseline.
 - V1 controller phase, attitude, throttle, RCS, staging, and warp source remain protected by `tools/Verify-V1Baseline.ps1`.
 - Focused tests cover first real ridge contact, ignoring later terrain, invalid profile samples, normal two-sample publication, and rejection of alternating displaced terrain pairs.
 - Focused tests cover the Minmus terminal translation case where the physical hover request is below the general 5% throttle floor.
+- Focused tests cover post-burn correction consensus so finite-difference variation cannot deadlock Course Correction.
 - Release build and V2/Hoverslam regression suite pass.
 - A new Minmus trace must show stable accepted prediction versions through Course Correction. It must not contain the former `terrain_bracket_bisect` loop.
