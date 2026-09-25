@@ -7,7 +7,6 @@ namespace MuMech
     {
         public class CourseCorrection : AutopilotStep
         {
-            private const double MaxCorrectionPulseDv = 1.0;
             private const double PulseCompletionDv = 0.05;
             private const double MinimumUsefulCorrectionDv = 0.05;
             private const double PostBurnPredictionSettlingTime = 0.75;
@@ -192,25 +191,70 @@ namespace MuMech
 
             private void BeginPulse(Vector3d deltaV, double targetError)
             {
-                double maximumPulseDv = MaxCorrectionPulseDv;
                 double nearTargetDistance = Math.Max(250, MainBody.Radius * 0.01);
-
-                if (targetError < nearTargetDistance)
-                    maximumPulseDv = 0.1;
-                else if (targetError < 4 * nearTargetDistance)
-                    maximumPulseDv = 0.25;
-
                 Vector3d direction = deltaV.normalized;
-                if (_hasLastPulseDirection && Vector3d.Angle(_lastPulseDirection, direction) > 90)
-                    maximumPulseDv = Math.Min(maximumPulseDv, 0.1);
+                bool reversesPreviousPulse = _hasLastPulseDirection &&
+                    Vector3d.Angle(_lastPulseDirection, direction) > 90;
 
-                _remainingPulseDv = Math.Min(deltaV.magnitude, maximumPulseDv);
+                _remainingPulseDv = CourseCorrectionPulsePolicy.SelectPulseDv(
+                    deltaV.magnitude, targetError, nearTargetDistance, reversesPreviousPulse);
                 _pulseDirection = direction;
                 _lastPulseDirection = direction;
                 _hasLastPulseDirection = true;
                 Status = Localizer.Format("#MechJeb_LandingGuidance_Status3",
                     deltaV.magnitude.ToString("F1")); //"Performing course correction of about " +  + " m/s"
             }
+        }
+
+        /// <summary>
+        /// Selects one bounded V1 course-correction burn. Large, well-separated
+        /// errors receive a useful initial pulse; each pulse is still followed by
+        /// two settled predictions before another command. Close-in correction and
+        /// a reversal after the previous pulse remain deliberately small.
+        /// </summary>
+        public static class CourseCorrectionPulsePolicy
+        {
+            private const double ClosePulseDv = 0.1;
+            private const double NearPulseDv = 0.25;
+            private const double NominalPulseDv = 1.0;
+            private const double MaximumFarPulseDv = 5.0;
+
+            public static double SelectPulseDv(double requestedDv, double targetError,
+                double nearTargetDistance, bool reversesPreviousPulse)
+            {
+                if (!IsFinite(requestedDv) || !IsFinite(targetError) || !IsFinite(nearTargetDistance) ||
+                    requestedDv <= 0 || nearTargetDistance <= 0)
+                    return 0;
+
+                double maximumPulseDv;
+                if (targetError < nearTargetDistance)
+                {
+                    maximumPulseDv = ClosePulseDv;
+                }
+                else if (targetError < 4 * nearTargetDistance)
+                {
+                    maximumPulseDv = NearPulseDv;
+                }
+                else if (targetError < 10 * nearTargetDistance)
+                {
+                    maximumPulseDv = NominalPulseDv;
+                }
+                else
+                {
+                    // Apply at most a quarter of a remote solution before the
+                    // predictor is sampled again. This replaces the old fixed
+                    // 1 m/s cap while retaining a hard 5 m/s safety ceiling.
+                    maximumPulseDv = Math.Min(MaximumFarPulseDv,
+                        Math.Max(NominalPulseDv, 0.25 * requestedDv));
+                }
+
+                if (reversesPreviousPulse)
+                    maximumPulseDv = Math.Min(maximumPulseDv, ClosePulseDv);
+
+                return Math.Min(requestedDv, maximumPulseDv);
+            }
+
+            private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
         }
     }
 }

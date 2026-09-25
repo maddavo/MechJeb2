@@ -30,6 +30,19 @@ This removes both the flat/mountain feedback loop and the bisection stall while 
 
 On 2026-09-25 the installed terrain-profile build completed a Minmus V1 landing at the selected target. The live run showed a temporary Course Correction consensus wait at zero throttle, then resumed and completed the landing. That outcome means the wait is a bounded predictor confirmation state, not a safe basis for loosening the consensus thresholds. The proposed local-slope threshold relaxation was therefore not installed and was reverted from source.
 
+## Adaptive course-correction pulse policy
+
+The successful landing trace showed that V1 calculates varying correction vectors (about 22 m/s down to 1.3 m/s in the sampled run), but historically limited every non-near-target pulse to 1 m/s. Each pulse then waits for two post-burn predictions. That is stable but inefficient for an initially large, well-separated error.
+
+The V1 correction step now selects one bounded adaptive pulse before retaining that same predictor-confirmation sequence:
+
+- remote target error: at most one quarter of the requested correction, capped at 5 m/s;
+- middle range: 1 m/s;
+- near target: 0.25 m/s;
+- close target or a direction reversal: 0.1 m/s.
+
+This is limited to V1 Course Correction. It does not alter V2, the V1 window layout, deorbit, braking, descent, attitude, RCS, staging, or warp logic. Focused tests cover remote, near, close, reversal, capped, and invalid inputs.
+
 ## Regression criteria
 
 - V1 UI first 176 source lines remain identical to its protected baseline.
