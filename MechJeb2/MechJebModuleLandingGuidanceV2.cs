@@ -193,7 +193,13 @@ namespace MuMech
         {
             if (ControllerActive)
                 TickController();
-            if (PreviewEnabled && HighLogic.LoadedSceneIsFlight &&
+
+            // The selected V1 controller owns its predictor and its control
+            // loop. A passive V2 preview must not run a second estimator or
+            // planner alongside it: that makes V1 timing depend on whether the
+            // V2 panel happened to be enabled. V2 resumes after V1 releases.
+            bool v1LandingActive = Core.Landing != null && Core.Landing.Enabled;
+            if (!v1LandingActive && PreviewEnabled && HighLogic.LoadedSceneIsFlight &&
                 (Core.Target.PositionTargetExists || ControllerActive && _hasActiveTarget))
                 RefreshPreflight();
         }

@@ -387,7 +387,7 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
             Assert.Equal(AirlessLandingPhaseDirective.RequestAttitude, manager.AcceptPlaneAlignmentValidation(101, 900, true).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.BeginFiniteBurn, manager.Tick(900, true, 0.1, 8).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.RequestFiniteBurnThrottle, manager.Tick(900.99, true, 0.1, 0.011).Directive);
-            Assert.Equal(AirlessLandingPhaseDirective.FiniteBurnComplete, manager.Tick(901, true, 0.1, 0.009).Directive);
+            Assert.Equal(AirlessLandingPhaseDirective.FiniteBurnComplete, manager.Tick(901, true, 0.1, 0.004).Directive);
             Assert.Equal(AirlessLandingPhaseDirective.RequireStrategicReplan, manager.Tick(902, true, 0.1, 0).Directive);
             AirlessLandingPhaseDecision replan = manager.AdoptStrategicReplan(Candidate(102, 1100, 1300, 28));
             Assert.Equal(AirlessLandingPhaseManagerPhase.InitialWarpToStrategicBurn, replan.Phase);

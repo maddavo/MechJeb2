@@ -1,4 +1,4 @@
-﻿extern alias JetBrainsAnnotations;
+extern alias JetBrainsAnnotations;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -7,6 +7,7 @@ using System.Threading;
 using Smooth.Dispose;
 using UnityEngine;
 using UnityToolbag;
+using MuMech.Landing;
 using Debug = UnityEngine.Debug;
 using Random = System.Random;
 
@@ -426,7 +427,8 @@ namespace MuMech
             double expectedSnapshotMotion = VesselState.SpeedSurface * inputTimeDifference;
             double acceptanceDistance = Math.Min(MaximumResultAcceptanceDistance,
                 Math.Max(MinimumResultAcceptanceDistance, 25 + 0.5 * expectedSnapshotMotion));
-            return ResultAcceptanceDistance(first, second) <= acceptanceDistance;
+            return LandingPredictionConsensus.Agrees(first, second, acceptanceDistance,
+                ResultAcceptanceDistance(first, second));
         }
 
         private void TraceNormalResultDecision(string decision, ReentrySimulation.Result comparedResult,
@@ -458,8 +460,31 @@ namespace MuMech
 
         private void AcceptNormalResult(ReentrySimulation.Result newResult)
         {
-            if (result == null || ResultsAgree(result, newResult))
+            // A result controls both the map marker and V1 course corrections.
+            // Publish only a consensus result. In particular, do not let the
+            // first result after a trajectory change select one side of a
+            // terrain/impact branch before a second simulation corroborates it.
+            if (result == null)
             {
+                if (candidateResult != null && ResultsAgree(candidateResult, newResult))
+                {
+                    TraceNormalResultDecision("initial_accept", candidateResult, newResult);
+                    candidateResult.Release();
+                    candidateResult = null;
+                    PublishNormalResult(newResult);
+                    return;
+                }
+
+                TraceNormalResultDecision(candidateResult == null ? "initial_pending" : "initial_replace", candidateResult, newResult);
+                if (candidateResult != null)
+                    candidateResult.Release();
+                candidateResult = newResult;
+                return;
+            }
+
+            if (ResultsAgree(result, newResult))
+            {
+                TraceNormalResultDecision("accept", result, newResult);
                 if (candidateResult != null)
                 {
                     candidateResult.Release();
@@ -469,12 +494,14 @@ namespace MuMech
             }
             else if (candidateResult != null && ResultsAgree(candidateResult, newResult))
             {
+                TraceNormalResultDecision("candidate_accept", candidateResult, newResult);
                 candidateResult.Release();
                 candidateResult = null;
                 PublishNormalResult(newResult);
             }
             else
             {
+                TraceNormalResultDecision(candidateResult == null ? "pending" : "replace", candidateResult, newResult);
                 if (candidateResult != null)
                     candidateResult.Release();
                 candidateResult = newResult;

@@ -18,8 +18,9 @@ namespace MuMech
         public const double AttitudeReadyDegrees = 1.0;
         // Completion must be materially tighter than the landing corridor.
         // The thrust controller ramps down for the final portion; this is only
-        // the residual which permits releasing finite-burn authority.
-        public const double BurnCompleteDeltaV = 0.01;
+        // the residual which permits releasing finite-burn authority. A 0.01 m/s
+        // cut-off proved materially too coarse for a sub-2 m/s recovery trim.
+        public const double BurnCompleteDeltaV = 0.005;
 
         private AirlessLandingPlan _plan;
         private bool _planeGateValidated;
