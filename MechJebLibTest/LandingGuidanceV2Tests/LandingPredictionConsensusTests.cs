@@ -36,22 +36,32 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
-        public void AirlessTerrainRootSolverBisectsTheObservedFlatMountainTwoCycle()
+        public void AirlessTerrainProfileSelectsTheFirstRealSurfaceCrossing()
         {
-            var solver = new AirlessTerrainHeightRootSolver();
+            // The descending path crosses a 300 m ridge before reaching the
+            // flat lowland at sea level. A scalar terrain-height iteration
+            // may jump between both branches; profile contact must select the
+            // first physical intersection on the path.
+            Assert.Equal(2, AirlessTerrainProfileContact.FindFirstContactIndex(
+                new[] { 1000d, 510d, 295d, 120d, -2d },
+                new[] { 0d, 0d, 300d, 0d, 0d }));
+        }
 
-            AirlessTerrainHeightDecision flatToMountain = solver.Observe(1382, 2162);
-            Assert.False(flatToMountain.Converged);
-            Assert.Equal(2162, flatToMountain.NextTerrainAltitude);
+        [Fact]
+        public void AirlessTerrainProfileIgnoresUnrelatedLaterTerrain()
+        {
+            Assert.Equal(3, AirlessTerrainProfileContact.FindFirstContactIndex(
+                new[] { 600d, 420d, 250d, 80d, -1d },
+                new[] { 0d, 0d, 0d, 100d, 400d }));
+        }
 
-            AirlessTerrainHeightDecision mountainToFlat = solver.Observe(2162, 1382);
-            Assert.False(mountainToFlat.Converged);
-            Assert.Equal(1772, mountainToFlat.NextTerrainAltitude);
-            Assert.Contains("bisect", mountainToFlat.Detail);
-
-            AirlessTerrainHeightDecision converged = solver.Observe(1772, 1773.5);
-            Assert.True(converged.Converged);
-            Assert.Equal(1773.5, converged.NextTerrainAltitude);
+        [Fact]
+        public void AirlessTerrainProfileRequiresMatchingFiniteSamples()
+        {
+            Assert.Equal(-1, AirlessTerrainProfileContact.FindFirstContactIndex(
+                new[] { 10d, double.NaN, -1d }, new[] { 0d, 0d }));
+            Assert.Equal(-1, AirlessTerrainProfileContact.FindFirstContactIndex(
+                new[] { 10d, double.NaN }, new[] { 0d, 0d }));
         }
 
         [Fact]

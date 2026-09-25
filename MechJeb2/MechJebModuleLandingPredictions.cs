@@ -129,13 +129,6 @@ namespace MuMech
         protected ReentrySimulation.Result result;
         protected ReentrySimulation.Result errorResult;
         private ReentrySimulation.Result candidateResult;
-        // Airless terrain is solved as a fixed-point iteration. It is separate
-        // from the published result so an unresolved terrain branch can never
-        // feed back into the V1 controller.
-        private double airlessTerrainIterationASL = double.NaN;
-        private readonly AirlessTerrainHeightRootSolver airlessTerrainHeightRootSolver =
-            new AirlessTerrainHeightRootSolver();
-
         // A landing result is consumed by both the map marker and the landing autopilot.
         // Keep a monotonically increasing version so the autopilot can distinguish a new,
         // accepted prediction from another physics frame using the same result.
@@ -208,8 +201,6 @@ namespace MuMech
                 candidateResult.Release();
                 candidateResult = null;
             }
-            airlessTerrainIterationASL = double.NaN;
-            airlessTerrainHeightRootSolver.Reset();
         }
 
         // A targeted V1 landing is a new predictor transaction. A result or
@@ -234,8 +225,6 @@ namespace MuMech
                 errorResult.Release();
                 errorResult = null;
             }
-            airlessTerrainIterationASL = double.NaN;
-            airlessTerrainHeightRootSolver.Reset();
         }
 
         public override void OnFixedUpdate()
@@ -304,15 +293,7 @@ namespace MuMech
             }
 
             Orbit patch = GetReenteringPatch() ?? Orbit;
-            if (!patch.referenceBody.atmosphere && !double.IsNaN(airlessTerrainIterationASL) &&
-                !double.IsInfinity(airlessTerrainIterationASL))
-            {
-                // Do not use the published endpoint here. It may describe a
-                // different terrain branch while the current fixed-point
-                // iteration is being resolved.
-                altitudeOfPreviousPrediction = airlessTerrainIterationASL;
-            }
-            else if (result != null && result.Outcome == ReentrySimulation.Outcome.LANDED && result.Body != null)
+            if (patch.referenceBody.atmosphere && result != null && result.Outcome == ReentrySimulation.Outcome.LANDED && result.Body != null)
             {
                 altitudeOfPreviousPrediction = result.EndASL;
             }
@@ -480,26 +461,16 @@ namespace MuMech
                         }
                         else
                         {
-                            // The airless simulator has no terrain model: it
-                            // intersects a sphere at InputProbableLandingSiteASL.
-                            // Query terrain only on the flight thread, feed the
-                            // observed height into the next immutable run, and
-                            // withhold this result until the radius is
-                            // self-consistent. This breaks the repeated
-                            // flat-ground/mountain endpoint oscillation.
+                            // An airless trajectory is unaffected by terrain until first
+                            // contact. Simulate to sea level, then on the flight thread
+                            // resolve the first recorded path sample that reaches the
+                            // body's actual terrain. This is a terrain profile, not a
+                            // single spherical contact height, so ridges cannot move the
+                            // next simulation onto a different branch.
                             if (newResult.Outcome == ReentrySimulation.Outcome.LANDED &&
                                 newResult.Body != null && !newResult.Body.atmosphere)
                             {
-                                AirlessTerrainHeightDecision terrainDecision = airlessTerrainHeightRootSolver.Observe(
-                                    newResult.InputProbableLandingSiteASL, newResult.EndASL);
-                                airlessTerrainIterationASL = terrainDecision.NextTerrainAltitude;
-                                if (!terrainDecision.Converged)
-                                {
-                                    TraceNormalResultDecision("terrain_" + terrainDecision.Detail.Replace(" ", "_"),
-                                        candidateResult, newResult);
-                                    newResult.Release();
-                                    continue;
-                                }
+                                ResolveAirlessTerrainProfileContact(newResult);
                             }
                             AcceptNormalResult(newResult);
                         }
@@ -512,6 +483,49 @@ namespace MuMech
                     }
                 }
             }
+        }
+
+        private void ResolveAirlessTerrainProfileContact(ReentrySimulation.Result simulationResult)
+        {
+            if (simulationResult.Trajectory == null || simulationResult.Trajectory.Count == 0)
+                return;
+
+            // TerrainAltitude is a main-thread query. Limit it to the final
+            // portion of the path below the body's highest possible terrain,
+            // rather than querying every orbital trajectory sample.
+            double maximumTerrainASL = 0;
+            if (simulationResult.Body.pqsController != null)
+                maximumTerrainASL = Math.Max(0, simulationResult.Body.pqsController.radiusMax - simulationResult.Body.Radius);
+
+            int firstPossibleContact = simulationResult.Trajectory.Count - 1;
+            for (int i = 0; i < simulationResult.Trajectory.Count; ++i)
+            {
+                if (simulationResult.Trajectory[i].Radius - simulationResult.Body.Radius <= maximumTerrainASL)
+                {
+                    firstPossibleContact = i;
+                    break;
+                }
+            }
+
+            int sampleCount = simulationResult.Trajectory.Count - firstPossibleContact;
+            var altitudeASL = new List<double>(sampleCount);
+            var terrainASL = new List<double>(sampleCount);
+            for (int i = firstPossibleContact; i < simulationResult.Trajectory.Count; ++i)
+            {
+                AbsoluteVector sample = simulationResult.Trajectory[i];
+                altitudeASL.Add(sample.Radius - simulationResult.Body.Radius);
+                terrainASL.Add(simulationResult.Body.TerrainAltitude(sample.Latitude, sample.Longitude));
+            }
+
+            int localContactIndex = AirlessTerrainProfileContact.FindFirstContactIndex(altitudeASL, terrainASL);
+            if (localContactIndex < 0)
+                return;
+
+            int contactIndex = firstPossibleContact + localContactIndex;
+            AbsoluteVector contact = simulationResult.Trajectory[contactIndex];
+            simulationResult.EndPosition = contact;
+            simulationResult.EndUT = contact.UT;
+            simulationResult.EndASL = terrainASL[contactIndex];
         }
 
         private double ResultAcceptanceDistance(ReentrySimulation.Result first, ReentrySimulation.Result second)
