@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Baseline = 'v1-terrain-contact-root-20260925'
+    [string]$Baseline = 'v1-terrain-profile-contact-20260925'
 )
 
 $ErrorActionPreference = 'Stop'
