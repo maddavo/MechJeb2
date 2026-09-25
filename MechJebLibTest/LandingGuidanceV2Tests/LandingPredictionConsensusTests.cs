@@ -36,11 +36,22 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
-        public void AirlessTerrainIterationRequiresTheSimulatedContactRadiusToMatchTheEndpointTerrain()
+        public void AirlessTerrainRootSolverBisectsTheObservedFlatMountainTwoCycle()
         {
-            Assert.False(LandingPredictionTerrainConvergence.IsSelfConsistent(0, 1791));
-            Assert.True(LandingPredictionTerrainConvergence.IsSelfConsistent(1791.0, 1792.5));
-            Assert.Equal(1791, LandingPredictionTerrainConvergence.NextIterationTerrainAltitude(1791, 0));
+            var solver = new AirlessTerrainHeightRootSolver();
+
+            AirlessTerrainHeightDecision flatToMountain = solver.Observe(1382, 2162);
+            Assert.False(flatToMountain.Converged);
+            Assert.Equal(2162, flatToMountain.NextTerrainAltitude);
+
+            AirlessTerrainHeightDecision mountainToFlat = solver.Observe(2162, 1382);
+            Assert.False(mountainToFlat.Converged);
+            Assert.Equal(1772, mountainToFlat.NextTerrainAltitude);
+            Assert.Contains("bisect", mountainToFlat.Detail);
+
+            AirlessTerrainHeightDecision converged = solver.Observe(1772, 1773.5);
+            Assert.True(converged.Converged);
+            Assert.Equal(1773.5, converged.NextTerrainAltitude);
         }
 
         [Fact]

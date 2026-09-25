@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Baseline = 'v1-predictor-terrain-convergence-20260925'
+    [string]$Baseline = 'v1-terrain-contact-root-20260925'
 )
 
 $ErrorActionPreference = 'Stop'

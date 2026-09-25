@@ -19,10 +19,12 @@ The course-correction solver then received opposite downrange errors, approximat
 
 `ReentrySimulation` represents terrain as one spherical contact radius. Before this correction, the next airless simulation used the terrain height from the previously *published* endpoint. A flat endpoint supplied a zero-height contact sphere. A later simulation could then cross that sphere over a mountain, and its terrain height moved the next contact sphere again. This is a feedback loop, not a reliable prediction.
 
+The first fixed-point guard correctly stopped the unsafe alternating control output, but the live 2026-09-25 test established that the terrain-height map can form a two-cycle: 1,382 m supplied to the simulator produced 2,162 m at the queried endpoint, and 2,162 m produced 1,382 m. The correct numerical response is bracketed root solving, not repeated substitution. V1 now bisects those two heights and continues until simulated and queried endpoint terrain agree.
+
 ## Correction and regression criteria
 
 1. An airless simulation is published only when its input terrain height agrees with the terrain queried at its own endpoint within 2 m.
-2. A terrain mismatch starts another immutable simulation using the newly queried height, but it does not change the V1 controller's published prediction.
+2. A terrain mismatch starts another immutable simulation using a bounded terrain-height root solver. When observations bound the physical contact height, the next immutable run uses their midpoint; it does not alternate between the two endpoints.
 3. Two consecutive self-consistent simulations must agree before the prediction version advances. An A/B/A branch sequence cannot publish either alternating branch.
 4. Starting a new V1 targeted landing clears prior target terrain iteration and published endpoint before any new correction can use it.
 5. Atmospheric prediction handling retains its existing behaviour.

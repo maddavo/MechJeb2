@@ -133,6 +133,8 @@ namespace MuMech
         // from the published result so an unresolved terrain branch can never
         // feed back into the V1 controller.
         private double airlessTerrainIterationASL = double.NaN;
+        private readonly AirlessTerrainHeightRootSolver airlessTerrainHeightRootSolver =
+            new AirlessTerrainHeightRootSolver();
 
         // A landing result is consumed by both the map marker and the landing autopilot.
         // Keep a monotonically increasing version so the autopilot can distinguish a new,
@@ -207,6 +209,7 @@ namespace MuMech
                 candidateResult = null;
             }
             airlessTerrainIterationASL = double.NaN;
+            airlessTerrainHeightRootSolver.Reset();
         }
 
         // A targeted V1 landing is a new predictor transaction. A result or
@@ -232,6 +235,7 @@ namespace MuMech
                 errorResult = null;
             }
             airlessTerrainIterationASL = double.NaN;
+            airlessTerrainHeightRootSolver.Reset();
         }
 
         public override void OnFixedUpdate()
@@ -486,14 +490,13 @@ namespace MuMech
                             if (newResult.Outcome == ReentrySimulation.Outcome.LANDED &&
                                 newResult.Body != null && !newResult.Body.atmosphere)
                             {
-                                double nextTerrain = LandingPredictionTerrainConvergence.NextIterationTerrainAltitude(
-                                    newResult.EndASL, airlessTerrainIterationASL);
-                                bool terrainConsistent = LandingPredictionTerrainConvergence.IsSelfConsistent(
-                                    newResult.InputProbableLandingSiteASL, nextTerrain);
-                                airlessTerrainIterationASL = nextTerrain;
-                                if (!terrainConsistent)
+                                AirlessTerrainHeightDecision terrainDecision = airlessTerrainHeightRootSolver.Observe(
+                                    newResult.InputProbableLandingSiteASL, newResult.EndASL);
+                                airlessTerrainIterationASL = terrainDecision.NextTerrainAltitude;
+                                if (!terrainDecision.Converged)
                                 {
-                                    TraceNormalResultDecision("terrain_iterate", candidateResult, newResult);
+                                    TraceNormalResultDecision("terrain_" + terrainDecision.Detail.Replace(" ", "_"),
+                                        candidateResult, newResult);
                                     newResult.Release();
                                     continue;
                                 }

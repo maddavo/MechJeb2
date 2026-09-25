@@ -22,12 +22,6 @@ namespace MuMech.Landing
                 Math.Abs(simulatedTerrainAltitude - endpointTerrainAltitude) <= ToleranceMetres;
         }
 
-        public static double NextIterationTerrainAltitude(double observedTerrainAltitude,
-            double fallbackTerrainAltitude)
-        {
-            return Finite(observedTerrainAltitude) ? observedTerrainAltitude : fallbackTerrainAltitude;
-        }
-
         // A result may replace the published endpoint only when it agrees
         // with the immediately preceding self-consistent candidate. Keeping
         // this decision pure makes the A/B/A branch regression explicit.
@@ -35,5 +29,75 @@ namespace MuMech.Landing
             hasCandidate && candidateAgreesWithCurrent;
 
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    }
+
+    /// <summary>
+    /// Finds the terrain-height fixed point without following a two-cycle.
+    /// Each simulation supplies f(h) = actualTerrainAtEndpoint(h) - h. Once
+    /// samples of both signs exist, bisection gives a deterministic contact
+    /// height whose simulated sphere reaches the real terrain surface.
+    /// </summary>
+    public sealed class AirlessTerrainHeightRootSolver
+    {
+        private bool _hasLower;
+        private double _lowerHeight;
+        private bool _hasUpper;
+        private double _upperHeight;
+
+        public void Reset()
+        {
+            _hasLower = false;
+            _lowerHeight = double.NaN;
+            _hasUpper = false;
+            _upperHeight = double.NaN;
+        }
+
+        public AirlessTerrainHeightDecision Observe(double simulatedTerrainAltitude, double endpointTerrainAltitude)
+        {
+            if (!Finite(simulatedTerrainAltitude) || !Finite(endpointTerrainAltitude))
+                return new AirlessTerrainHeightDecision(false, simulatedTerrainAltitude, "invalid terrain sample");
+
+            double residual = endpointTerrainAltitude - simulatedTerrainAltitude;
+            if (Math.Abs(residual) <= LandingPredictionTerrainConvergence.ToleranceMetres)
+                return new AirlessTerrainHeightDecision(true, endpointTerrainAltitude, "terrain contact converged");
+
+            if (residual > 0)
+            {
+                _hasLower = true;
+                _lowerHeight = simulatedTerrainAltitude;
+            }
+            else
+            {
+                _hasUpper = true;
+                _upperHeight = simulatedTerrainAltitude;
+            }
+
+            if (_hasLower && _hasUpper)
+            {
+                double low = Math.Min(_lowerHeight, _upperHeight);
+                double high = Math.Max(_lowerHeight, _upperHeight);
+                return new AirlessTerrainHeightDecision(false, (low + high) * 0.5,
+                    "terrain bracket bisect");
+            }
+
+            return new AirlessTerrainHeightDecision(false, endpointTerrainAltitude,
+                "terrain endpoint iteration");
+        }
+
+        private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+    }
+
+    public sealed class AirlessTerrainHeightDecision
+    {
+        public readonly bool Converged;
+        public readonly double NextTerrainAltitude;
+        public readonly string Detail;
+
+        public AirlessTerrainHeightDecision(bool converged, double nextTerrainAltitude, string detail)
+        {
+            Converged = converged;
+            NextTerrainAltitude = nextTerrainAltitude;
+            Detail = detail;
+        }
     }
 }
