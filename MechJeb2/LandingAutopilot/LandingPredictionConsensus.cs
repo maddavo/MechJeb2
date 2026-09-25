@@ -12,7 +12,7 @@ namespace MuMech.Landing
     public static class LandingPredictionConsensus
     {
         public static bool Agrees(ReentrySimulation.Result first, ReentrySimulation.Result second,
-            double positionTolerance, double bodySpaceDistance)
+            double positionTolerance, double bodySpaceDistance, bool airlessTerrainProfile = false)
         {
             if (first == null || second == null || first.Body != second.Body || double.IsNaN(positionTolerance) || positionTolerance < 0)
                 return false;
@@ -21,12 +21,15 @@ namespace MuMech.Landing
                 bodySpaceDistance > positionTolerance)
                 return false;
 
-            // A physically continuous coast cannot move the predicted impact
-            // time by tens of seconds between adjacent snapshots.  Permit a
-            // small amount for normal integration/snapshot movement, then wait
-            // for a corroborating branch when the projected arrival jumps.
+            // A terrain-profile endpoint can move along a local slope by one
+            // trajectory sample even though the vacuum coast is continuous.
+            // The profile branch still has to remain spatially local, but its
+            // contact time and height have a wider, explicitly bounded window.
+            // Atmospheric predictions retain the original strict rule.
             double inputDelta = Math.Abs(second.InputUT - first.InputUT);
-            double arrivalTolerance = Math.Max(2.0, 4.0 * inputDelta + 0.01 * positionTolerance);
+            double arrivalTolerance = airlessTerrainProfile
+                ? Math.Max(20.0, 4.0 * inputDelta + 0.01 * positionTolerance)
+                : Math.Max(2.0, 4.0 * inputDelta + 0.01 * positionTolerance);
             if (Math.Abs(second.EndUT - first.EndUT) > arrivalTolerance)
                 return false;
 
@@ -36,7 +39,9 @@ namespace MuMech.Landing
             // conversion reports the endpoints as deceptively close.
             if (IsFinite(first.EndASL) && IsFinite(second.EndASL))
             {
-                double terrainTolerance = Math.Max(10.0, 0.10 * positionTolerance);
+                double terrainTolerance = airlessTerrainProfile
+                    ? Math.Max(250.0, 0.10 * positionTolerance)
+                    : Math.Max(10.0, 0.10 * positionTolerance);
                 if (Math.Abs(second.EndASL - first.EndASL) > terrainTolerance)
                     return false;
             }
