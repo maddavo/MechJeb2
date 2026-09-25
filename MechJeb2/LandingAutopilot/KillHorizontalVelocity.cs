@@ -1,4 +1,4 @@
-﻿using KSP.Localization;
+using KSP.Localization;
 using UnityEngine;
 
 namespace MuMech
@@ -22,7 +22,7 @@ namespace MuMech
                 if (!Core.Landing.PredictionReady)
                     return this;
 
-                Vector3d horizontalPointingDirection = Vector3d.Exclude(VesselState.Up, VesselState.Forward).normalized;
+
                 if (VesselState.SpeedSurfaceHorizontal <= FinalDescentHorizontalSpeed)
                 {
                     Core.Thrust.RequestActiveThrottle(0.0f);
@@ -44,8 +44,11 @@ namespace MuMech
                 // a craft climb while this step is trying to remove drift.
                 Core.Thrust.RequestActiveThrottle((float)requestedThrottle, enforceMinimum: false, allowZero: true);
 
-                //angle up and slightly away from vertical:
-                Vector3d desiredThrustVector = (VesselState.Up + 0.2 * horizontalPointingDirection).normalized;
+                // Tilt against the measured horizontal velocity. Deriving this
+                // direction from VesselState.Forward can accelerate a drifting
+                // craft sideways instead of arresting its drift.
+                Vector3d desiredThrustVector = TerminalTranslationGuidance.DesiredThrustDirection(
+                    VesselState.Up, VesselState.SurfaceVelocity, VesselState.LocalGravity);
 
                 Core.Attitude.attitudeTo(desiredThrustVector, AttitudeReference.INERTIAL, Core.Landing);
 
