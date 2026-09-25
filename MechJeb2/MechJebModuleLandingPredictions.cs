@@ -541,12 +541,17 @@ namespace MuMech
             return Vector3d.Distance(firstPosition, secondPosition);
         }
 
-        private bool ResultsAgree(ReentrySimulation.Result first, ReentrySimulation.Result second)
+        private double ResultAcceptanceDistanceLimit(ReentrySimulation.Result first, ReentrySimulation.Result second)
         {
             double inputTimeDifference = Math.Abs(second.InputUT - first.InputUT);
             double expectedSnapshotMotion = VesselState.SpeedSurface * inputTimeDifference;
-            double acceptanceDistance = Math.Min(MaximumResultAcceptanceDistance,
+            return Math.Min(MaximumResultAcceptanceDistance,
                 Math.Max(MinimumResultAcceptanceDistance, 25 + 0.5 * expectedSnapshotMotion));
+        }
+
+        private bool ResultsAgree(ReentrySimulation.Result first, ReentrySimulation.Result second)
+        {
+            double acceptanceDistance = ResultAcceptanceDistanceLimit(first, second);
             return LandingPredictionConsensus.Agrees(first, second, acceptanceDistance,
                 ResultAcceptanceDistance(first, second));
         }
@@ -608,7 +613,9 @@ namespace MuMech
             }
 
             double publishedDistance = result == null ? double.NaN : ResultAcceptanceDistance(result, newResult);
-            bool materiallyDisplaced = result != null && publishedDistance > MaximumResultAcceptanceDistance;
+            double publishedAcceptanceDistance = result == null ? double.NaN : ResultAcceptanceDistanceLimit(result, newResult);
+            bool materiallyDisplaced = result != null &&
+                LandingPredictionTerrainConvergence.IsMateriallyDisplaced(publishedDistance, publishedAcceptanceDistance);
             int requiredSamples = LandingPredictionTerrainConvergence.RequiredSamples(result != null, materiallyDisplaced);
             if (LandingPredictionTerrainConvergence.CanPublish(candidateResultSampleCount, requiredSamples))
             {

@@ -50,6 +50,15 @@ namespace MuMech.Landing
                 ? DisplacedReplacementRequiredSamples
                 : NormalRequiredSamples;
 
+        // The normal acceptance distance already represents the maximum endpoint
+        // movement expected between two input snapshots. A change beyond it is
+        // evidence of a different terrain-contact branch, even when it is far
+        // smaller than the earlier fixed 200 m ceiling during a close braking burn.
+        public static bool IsMateriallyDisplaced(double publishedDistance, double acceptanceDistance) =>
+            !double.IsNaN(publishedDistance) && !double.IsInfinity(publishedDistance) &&
+            !double.IsNaN(acceptanceDistance) && !double.IsInfinity(acceptanceDistance) &&
+            acceptanceDistance >= 0 && publishedDistance > acceptanceDistance;
+
         public static int NextCompatibleSampleCount(int currentCount, bool candidateAgreesWithCurrent) =>
             candidateAgreesWithCurrent ? currentCount + 1 : 1;
 

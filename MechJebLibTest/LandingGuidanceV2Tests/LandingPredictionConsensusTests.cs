@@ -76,6 +76,19 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void CloseBrakingTerrainBranchRequiresThreeSamplesAtTheMeasuredAcceptanceScale()
+        {
+            // Live Minmus braking showed two internally consistent terrain
+            // contacts about 80–150 m apart while the consecutive-snapshot
+            // acceptance scale was 35 m. The old fixed 200 m branch threshold
+            // accepted both pairs and made throttle chase them.
+            Assert.True(LandingPredictionTerrainConvergence.IsMateriallyDisplaced(80, 35));
+            Assert.True(LandingPredictionTerrainConvergence.IsMateriallyDisplaced(150, 35));
+            Assert.False(LandingPredictionTerrainConvergence.IsMateriallyDisplaced(30, 35));
+            Assert.Equal(3, LandingPredictionTerrainConvergence.RequiredSamples(true,
+                LandingPredictionTerrainConvergence.IsMateriallyDisplaced(80, 35)));
+        }
+        [Fact]
         public void AlternatingDisplacedTerrainPairsCannotReplacePublishedEndpoint()
         {
             int required = LandingPredictionTerrainConvergence.RequiredSamples(true, true);
