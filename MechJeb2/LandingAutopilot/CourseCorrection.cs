@@ -196,8 +196,8 @@ namespace MuMech
                 bool reversesPreviousPulse = _hasLastPulseDirection &&
                     Vector3d.Angle(_lastPulseDirection, direction) > 90;
 
-                _remainingPulseDv = CourseCorrectionPulsePolicy.SelectPulseDv(
-                    deltaV.magnitude, targetError, nearTargetDistance, reversesPreviousPulse);
+                _remainingPulseDv = deltaV.magnitude * CourseCorrectionPulsePolicy.SelectEffectFraction(
+                    targetError, nearTargetDistance, reversesPreviousPulse);
                 _pulseDirection = direction;
                 _lastPulseDirection = direction;
                 _hasLastPulseDirection = true;
@@ -207,51 +207,38 @@ namespace MuMech
         }
 
         /// <summary>
-        /// Selects one bounded V1 course-correction burn. Large, well-separated
-        /// errors receive a useful initial pulse; each pulse is still followed by
-        /// two settled predictions before another command. Close-in correction and
-        /// a reversal after the previous pulse remain deliberately small.
+        /// Chooses the fraction of the predictor's requested impact movement
+        /// to apply in this pulse. The correction solver has already converted
+        /// the target miss into a delta-V vector; scaling the vector scales its
+        /// predicted surface effect without imposing a body-specific delta-V cap.
         /// </summary>
         public static class CourseCorrectionPulsePolicy
         {
-            private const double ClosePulseDv = 0.1;
-            private const double NearPulseDv = 0.25;
-            private const double NominalPulseDv = 1.0;
-            private const double MaximumFarPulseDv = 5.0;
-
-            public static double SelectPulseDv(double requestedDv, double targetError,
-                double nearTargetDistance, bool reversesPreviousPulse)
+            public static double SelectEffectFraction(double targetError, double nearTargetDistance,
+                bool reversesPreviousPulse)
             {
-                if (!IsFinite(requestedDv) || !IsFinite(targetError) || !IsFinite(nearTargetDistance) ||
-                    requestedDv <= 0 || nearTargetDistance <= 0)
+                if (!IsFinite(targetError) || !IsFinite(nearTargetDistance) ||
+                    targetError <= 0 || nearTargetDistance <= 0)
                     return 0;
 
-                double maximumPulseDv;
+                // At long range, a settled model may remove half of the present
+                // landing miss. As the target is approached, limit each command
+                // to a smaller fraction of its predicted surface effect. Every
+                // pulse still waits for two independent post-burn predictions.
+                double fraction;
                 if (targetError < nearTargetDistance)
-                {
-                    maximumPulseDv = ClosePulseDv;
-                }
+                    fraction = 0.05;
                 else if (targetError < 4 * nearTargetDistance)
-                {
-                    maximumPulseDv = NearPulseDv;
-                }
+                    fraction = 0.10;
                 else if (targetError < 10 * nearTargetDistance)
-                {
-                    maximumPulseDv = NominalPulseDv;
-                }
+                    fraction = 0.25;
                 else
-                {
-                    // Apply at most a quarter of a remote solution before the
-                    // predictor is sampled again. This replaces the old fixed
-                    // 1 m/s cap while retaining a hard 5 m/s safety ceiling.
-                    maximumPulseDv = Math.Min(MaximumFarPulseDv,
-                        Math.Max(NominalPulseDv, 0.25 * requestedDv));
-                }
+                    fraction = 0.50;
 
-                if (reversesPreviousPulse)
-                    maximumPulseDv = Math.Min(maximumPulseDv, ClosePulseDv);
-
-                return Math.Min(requestedDv, maximumPulseDv);
+                // A predicted reversal is treated as a fine trim even when its
+                // unscaled effect is large, preventing rapid branch-to-branch
+                // oscillation.
+                return reversesPreviousPulse ? Math.Min(fraction, 0.05) : fraction;
             }
 
             private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
