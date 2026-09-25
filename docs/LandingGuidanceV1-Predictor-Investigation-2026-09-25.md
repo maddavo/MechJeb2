@@ -26,6 +26,10 @@ For airless V1 predictions:
 
 This removes both the flat/mountain feedback loop and the bisection stall while avoiding a high-volume terrain query across the orbital trajectory.
 
+## Live validation
+
+On 2026-09-25 the installed terrain-profile build completed a Minmus V1 landing at the selected target. The live run showed a temporary Course Correction consensus wait at zero throttle, then resumed and completed the landing. That outcome means the wait is a bounded predictor confirmation state, not a safe basis for loosening the consensus thresholds. The proposed local-slope threshold relaxation was therefore not installed and was reverted from source.
+
 ## Regression criteria
 
 - V1 UI first 176 source lines remain identical to its protected baseline.
