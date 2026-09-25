@@ -7,7 +7,6 @@ namespace MuMech
     {
         public class CourseCorrection : AutopilotStep
         {
-            private const double PulseCompletionDv = 0.05;
             private const double MinimumUsefulCorrectionDv = 0.05;
             private const double PostBurnPredictionSettlingTime = 0.75;
             private const int RequiredCandidatePredictions = 2;
@@ -166,7 +165,7 @@ namespace MuMech
                     Core.Thrust.ThrustForDv(_remainingPulseDv, TIME_CONSTANT);
                     _remainingPulseDv -= VesselState.CurrentThrustAcceleration * TimeWarp.fixedDeltaTime;
 
-                    if (_remainingPulseDv <= PulseCompletionDv)
+                    if (CourseCorrectionPulseExecutionPolicy.HasCompleted(_remainingPulseDv))
                     {
                         Core.Thrust.TargetThrottle = 0;
                         _remainingPulseDv = 0;
