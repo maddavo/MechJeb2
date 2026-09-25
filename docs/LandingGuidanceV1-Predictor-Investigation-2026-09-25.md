@@ -34,14 +34,14 @@ On 2026-09-25 the installed terrain-profile build completed a Minmus V1 landing 
 
 The successful landing trace showed that V1 calculates varying correction vectors (about 22 m/s down to 1.3 m/s in the sampled run). A correction vector is the local solver's answer for moving the predicted surface endpoint to the requested target.
 
-Each V1 course-correction pulse now takes a bounded fraction of that predicted **surface effect**, then waits for two settled predictions before commanding another pulse:
+Each V1 course-correction pulse takes a bounded fraction of that predicted **surface effect**, then waits for two settled predictions before commanding another pulse:
 
-- remote target error: half of the calculated endpoint movement;
+- remote target error: begins at half of the calculated endpoint movement;
 - middle range: one quarter;
 - near target: one tenth;
 - close target or a direction reversal: one twentieth.
 
-There is no correction-pulse delta-V cap. The pulse delta-V is whatever produces the selected fraction of the currently predicted landing-position movement, so it adapts to the body, trajectory, speed, gravity, and vehicle response. This is limited to V1 Course Correction. It does not alter V2, the V1 window layout, deorbit, braking, descent, attitude, RCS, staging, or warp logic. Focused tests cover each target-effect band, reversal behavior, and invalid inputs.
+After each remote pulse, V1 compares the measured endpoint improvement with the predicted improvement. Two consecutive responses within 25 percent of the prediction raise the remote effect fraction by one tenth, up to four fifths. A weak or adverse response halves the fraction down to one quarter. There is no correction-pulse delta-V cap. The pulse delta-V is whatever produces the selected fraction of the currently predicted landing-position movement, so it adapts to the body, trajectory, speed, gravity, and vehicle response. This is limited to V1 Course Correction. It does not alter V2, the V1 window layout, deorbit, braking, descent, attitude, RCS, staging, or warp logic. Focused tests cover gain increase, cap, reduction, effect bands, and reversal behavior.
 
 ## Regression criteria
 

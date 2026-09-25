@@ -24,6 +24,12 @@ namespace MuMech
             private int _pendingPredictionCount;
             private bool _hasLastPulseDirection;
             private Vector3d _lastPulseDirection;
+            private double _remoteEffectFraction = CourseCorrectionPulsePolicy.InitialRemoteEffectFraction;
+            private int _verifiedRemoteResponses;
+            private bool _lastPulseWasRemote;
+            private bool _lastPulseReversed;
+            private double _lastPulseTargetError;
+            private double _lastPulseEffectFraction;
 
             public CourseCorrection(MechJebCore core) : base(core)
             {
@@ -40,6 +46,7 @@ namespace MuMech
                     double longBias = Core.Landing.LastCourseCorrectionLongBias;
                     return $" targetError={targetError:F1} downrangeError={downrangeError:F1} longBias={longBias:F1} " +
                         $"handoffLimit={Core.Landing.LastCourseCorrectionHandoffLimit:F1} pulseDv={_remainingPulseDv:F3} " +
+                        $"effectGain={_lastPulseEffectFraction:F3} remoteGain={_remoteEffectFraction:F3} " +
                         $"pulseDir=({_pulseDirection.x:F4},{_pulseDirection.y:F4},{_pulseDirection.z:F4}) " +
                         $"burning={_courseCorrectionBurning} waiting={_waitingForPostBurnPrediction} " +
                         $"waitForPredictionVersion={_predictionVersionAtPulseCompletion} " +
@@ -127,6 +134,7 @@ namespace MuMech
                     if (_pendingPredictionCount < RequiredCandidatePredictions)
                         return this;
 
+                    UpdateRemoteEffectGain(currentError);
                     _waitingForPostBurnPrediction = false;
                     _courseCorrectionBurning = false;
                     _hasPendingCorrection = false;
@@ -196,13 +204,29 @@ namespace MuMech
                 bool reversesPreviousPulse = _hasLastPulseDirection &&
                     Vector3d.Angle(_lastPulseDirection, direction) > 90;
 
-                _remainingPulseDv = deltaV.magnitude * CourseCorrectionPulsePolicy.SelectEffectFraction(
-                    targetError, nearTargetDistance, reversesPreviousPulse);
+                _lastPulseWasRemote = targetError >= 10 * nearTargetDistance;
+                _lastPulseReversed = reversesPreviousPulse;
+                _lastPulseTargetError = targetError;
+                _lastPulseEffectFraction = CourseCorrectionPulsePolicy.SelectEffectFraction(
+                    targetError, nearTargetDistance, reversesPreviousPulse, _remoteEffectFraction);
+                _remainingPulseDv = deltaV.magnitude * _lastPulseEffectFraction;
                 _pulseDirection = direction;
                 _lastPulseDirection = direction;
                 _hasLastPulseDirection = true;
                 Status = Localizer.Format("#MechJeb_LandingGuidance_Status3",
                     deltaV.magnitude.ToString("F1")); //"Performing course correction of about " +  + " m/s"
+            }
+
+            private void UpdateRemoteEffectGain(double currentError)
+            {
+                if (!_lastPulseWasRemote || _lastPulseReversed || _lastPulseEffectFraction <= 0 ||
+                    _lastPulseTargetError <= 0 || double.IsNaN(currentError) || double.IsInfinity(currentError))
+                    return;
+
+                double observedFraction = 1 - currentError / _lastPulseTargetError;
+                _remoteEffectFraction = CourseCorrectionPulsePolicy.UpdateRemoteEffectFraction(
+                    _remoteEffectFraction, _lastPulseEffectFraction, observedFraction,
+                    ref _verifiedRemoteResponses);
             }
         }
 
@@ -214,17 +238,18 @@ namespace MuMech
         /// </summary>
         public static class CourseCorrectionPulsePolicy
         {
+            public const double InitialRemoteEffectFraction = 0.50;
+            public const double MaximumRemoteEffectFraction = 0.80;
+            private const double MinimumRemoteEffectFraction = 0.25;
+            private const double RemoteEffectFractionStep = 0.10;
+
             public static double SelectEffectFraction(double targetError, double nearTargetDistance,
-                bool reversesPreviousPulse)
+                bool reversesPreviousPulse, double remoteEffectFraction)
             {
                 if (!IsFinite(targetError) || !IsFinite(nearTargetDistance) ||
                     targetError <= 0 || nearTargetDistance <= 0)
                     return 0;
 
-                // At long range, a settled model may remove half of the present
-                // landing miss. As the target is approached, limit each command
-                // to a smaller fraction of its predicted surface effect. Every
-                // pulse still waits for two independent post-burn predictions.
                 double fraction;
                 if (targetError < nearTargetDistance)
                     fraction = 0.05;
@@ -233,13 +258,50 @@ namespace MuMech
                 else if (targetError < 10 * nearTargetDistance)
                     fraction = 0.25;
                 else
-                    fraction = 0.50;
+                    fraction = Clamp(remoteEffectFraction, MinimumRemoteEffectFraction, MaximumRemoteEffectFraction);
 
                 // A predicted reversal is treated as a fine trim even when its
                 // unscaled effect is large, preventing rapid branch-to-branch
                 // oscillation.
                 return reversesPreviousPulse ? Math.Min(fraction, 0.05) : fraction;
             }
+
+            public static double UpdateRemoteEffectFraction(double currentFraction, double commandedFraction,
+                double observedFraction, ref int verifiedResponses)
+            {
+                currentFraction = Clamp(currentFraction, MinimumRemoteEffectFraction, MaximumRemoteEffectFraction);
+                if (!IsFinite(commandedFraction) || !IsFinite(observedFraction) || commandedFraction <= 0)
+                {
+                    verifiedResponses = 0;
+                    return currentFraction;
+                }
+
+                // Raise gain only when the measured endpoint movement matches
+                // the predicted surface effect closely on two successive pulses.
+                if (observedFraction >= 0.75 * commandedFraction &&
+                    observedFraction <= 1.25 * commandedFraction)
+                {
+                    verifiedResponses++;
+                    if (verifiedResponses >= 2)
+                    {
+                        verifiedResponses = 0;
+                        return Math.Min(MaximumRemoteEffectFraction, currentFraction + RemoteEffectFractionStep);
+                    }
+
+                    return currentFraction;
+                }
+
+                verifiedResponses = 0;
+                // A weak or adverse measured response means the local model is
+                // not trustworthy enough for a large next correction.
+                if (observedFraction < 0.25 * commandedFraction)
+                    return Math.Max(MinimumRemoteEffectFraction, 0.5 * currentFraction);
+
+                return currentFraction;
+            }
+
+            private static double Clamp(double value, double minimum, double maximum) =>
+                Math.Max(minimum, Math.Min(maximum, value));
 
             private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
         }
