@@ -7,8 +7,11 @@ namespace MuMech
     {
         public class CourseCorrection : AutopilotStep
         {
+            private const double MaxCorrectionPulseDv = 1.0;
+            private const double PulseCompletionDv = 0.05;
             private const double MinimumUsefulCorrectionDv = 0.05;
             private const double PostBurnPredictionSettlingTime = 0.75;
+            private const double CandidateDirectionAgreementAngle = 20;
             private const int RequiredCandidatePredictions = 2;
 
             private bool _courseCorrectionBurning;
@@ -22,12 +25,6 @@ namespace MuMech
             private int _pendingPredictionCount;
             private bool _hasLastPulseDirection;
             private Vector3d _lastPulseDirection;
-            private double _remoteEffectFraction = CourseCorrectionPulsePolicy.InitialRemoteEffectFraction;
-            private int _verifiedRemoteResponses;
-            private bool _lastPulseWasRemote;
-            private bool _lastPulseReversed;
-            private double _lastPulseTargetError;
-            private double _lastPulseEffectFraction;
 
             public CourseCorrection(MechJebCore core) : base(core)
             {
@@ -44,7 +41,6 @@ namespace MuMech
                     double longBias = Core.Landing.LastCourseCorrectionLongBias;
                     return $" targetError={targetError:F1} downrangeError={downrangeError:F1} longBias={longBias:F1} " +
                         $"handoffLimit={Core.Landing.LastCourseCorrectionHandoffLimit:F1} pulseDv={_remainingPulseDv:F3} " +
-                        $"effectGain={_lastPulseEffectFraction:F3} remoteGain={_remoteEffectFraction:F3} " +
                         $"pulseDir=({_pulseDirection.x:F4},{_pulseDirection.y:F4},{_pulseDirection.z:F4}) " +
                         $"burning={_courseCorrectionBurning} waiting={_waitingForPostBurnPrediction} " +
                         $"waitForPredictionVersion={_predictionVersionAtPulseCompletion} " +
@@ -55,14 +51,7 @@ namespace MuMech
             public override AutopilotStep Drive(FlightCtrlState s)
             {
                 if (!Core.Landing.PredictionReady)
-                {
-                    // A correction burn is only valid while it is tied to a
-                    // current impact prediction. Never retain the previous
-                    // throttle command across a missing or invalid result.
-                    Core.Thrust.ThrustOff();
-                    _courseCorrectionBurning = false;
                     return this;
-                }
 
                 // If the atomospheric drag is at least 100mm/s2 then start trying to target the overshoot using the parachutes
                 if (Core.Landing.DeployChutes)
@@ -74,16 +63,6 @@ namespace MuMech
                 }
 
                 double currentError = Vector3d.Distance(Core.Target.GetPositionTargetPosition(), Core.Landing.LandingSite);
-
-                if (_waitingForPostBurnPrediction &&
-                    !CourseCorrectionFlightSafetyPolicy.IsPostBurnEndpointAcceptable(_lastPulseTargetError, currentError))
-                {
-                    Core.Thrust.ThrustOff();
-                    _waitingForPostBurnPrediction = false;
-                    _remainingPulseDv = 0;
-                    Status = "Course correction rejected: predicted endpoint worsened";
-                    return new CoastToDeceleration(Core);
-                }
 
                 if (currentError < CompletionError)
                 {
@@ -130,10 +109,10 @@ namespace MuMech
                         return new CoastToDeceleration(Core);
 
                     _predictionVersionAtPulseCompletion = Core.Landing.PredictionVersion;
-                    if (_hasPendingCorrection)
+                    if (_hasPendingCorrection &&
+                        Vector3d.Angle(_pendingCorrection, candidateCorrection) <= CandidateDirectionAgreementAngle)
                     {
-                        _pendingCorrection = CourseCorrectionPredictionConsensus.AddSample(_pendingCorrection,
-                            _pendingPredictionCount, candidateCorrection);
+                        _pendingCorrection = candidateCorrection;
                         _pendingPredictionCount++;
                     }
                     else
@@ -143,17 +122,12 @@ namespace MuMech
                         _hasPendingCorrection = true;
                     }
 
-                    // Require two independent post-burn snapshots. Their finite-difference
-                    // solutions can vary in direction even when the consensus predictor is
-                    // stable; use their mean rather than resetting this wait forever.
+                    // A single nonlinear prediction can legitimately choose the other
+                    // branch of the finite-difference solution. Require a second,
+                    // independent post-burn snapshot before aiming the vehicle at it.
                     if (_pendingPredictionCount < RequiredCandidatePredictions)
                         return this;
 
-                    if (!CourseCorrectionPredictionConsensus.IsUsable(_pendingCorrection,
-                            MinimumUsefulCorrectionDv))
-                        return new CoastToDeceleration(Core);
-
-                    UpdateRemoteEffectGain(currentError);
                     _waitingForPostBurnPrediction = false;
                     _courseCorrectionBurning = false;
                     _hasPendingCorrection = false;
@@ -178,24 +152,11 @@ namespace MuMech
 
                 if (_courseCorrectionBurning)
                 {
-                    if (!CourseCorrectionFlightSafetyPolicy.HasImpactMargin(Orbit.PeA, MinimumImpactDepth))
-                    {
-                        Core.Thrust.ThrustOff();
-                        _courseCorrectionBurning = false;
-                        _remainingPulseDv = 0;
-                        Status = "Course correction stopped: impact margin exhausted";
-                        return new CoastToDeceleration(Core);
-                    }
-
                     const double TIME_CONSTANT = 0.5;
                     Core.Thrust.ThrustForDv(_remainingPulseDv, TIME_CONSTANT);
-                    // This is a V1 Landing Guidance setting. A selected minimum
-                    // throttle must constrain correction pulses as it constrains
-                    // the other V1 burns.
-                    Core.Thrust.RequestActiveThrottle(Core.Thrust.TargetThrottle, enforceMinimum: true);
                     _remainingPulseDv -= VesselState.CurrentThrustAcceleration * TimeWarp.fixedDeltaTime;
 
-                    if (CourseCorrectionPulseExecutionPolicy.HasCompleted(_remainingPulseDv))
+                    if (_remainingPulseDv <= PulseCompletionDv)
                     {
                         Core.Thrust.TargetThrottle = 0;
                         _remainingPulseDv = 0;
@@ -217,8 +178,6 @@ namespace MuMech
 
             private double CompletionError => Math.Max(200, MainBody.Radius * 0.0005);
 
-            private double MinimumImpactDepth => Math.Max(1000, MainBody.Radius * 0.001);
-
             private double DownrangeCaptureDistance => Math.Max(100, MainBody.Radius * 0.005);
 
             private double MaximumDownrangeHandoffDistance
@@ -233,133 +192,25 @@ namespace MuMech
 
             private void BeginPulse(Vector3d deltaV, double targetError)
             {
+                double maximumPulseDv = MaxCorrectionPulseDv;
                 double nearTargetDistance = Math.Max(250, MainBody.Radius * 0.01);
-                Vector3d direction = deltaV.normalized;
-                bool reversesPreviousPulse = _hasLastPulseDirection &&
-                    Vector3d.Angle(_lastPulseDirection, direction) > 90;
 
-                _lastPulseWasRemote = targetError >= 10 * nearTargetDistance;
-                _lastPulseReversed = reversesPreviousPulse;
-                _lastPulseTargetError = targetError;
-                _lastPulseEffectFraction = CourseCorrectionPulsePolicy.SelectEffectFraction(
-                    targetError, nearTargetDistance, reversesPreviousPulse, _remoteEffectFraction);
-                _remainingPulseDv = deltaV.magnitude * _lastPulseEffectFraction;
+                if (targetError < nearTargetDistance)
+                    maximumPulseDv = 0.1;
+                else if (targetError < 4 * nearTargetDistance)
+                    maximumPulseDv = 0.25;
+
+                Vector3d direction = deltaV.normalized;
+                if (_hasLastPulseDirection && Vector3d.Angle(_lastPulseDirection, direction) > 90)
+                    maximumPulseDv = Math.Min(maximumPulseDv, 0.1);
+
+                _remainingPulseDv = Math.Min(deltaV.magnitude, maximumPulseDv);
                 _pulseDirection = direction;
                 _lastPulseDirection = direction;
                 _hasLastPulseDirection = true;
                 Status = Localizer.Format("#MechJeb_LandingGuidance_Status3",
                     deltaV.magnitude.ToString("F1")); //"Performing course correction of about " +  + " m/s"
             }
-
-            private void UpdateRemoteEffectGain(double currentError)
-            {
-                if (!_lastPulseWasRemote || _lastPulseReversed || _lastPulseEffectFraction <= 0 ||
-                    _lastPulseTargetError <= 0 || double.IsNaN(currentError) || double.IsInfinity(currentError))
-                    return;
-
-                double observedFraction = 1 - currentError / _lastPulseTargetError;
-                _remoteEffectFraction = CourseCorrectionPulsePolicy.UpdateRemoteEffectFraction(
-                    _remoteEffectFraction, _lastPulseEffectFraction, observedFraction,
-                    ref _verifiedRemoteResponses);
-            }
-        }
-
-        /// <summary>
-        /// Chooses the fraction of the predictor's requested impact movement
-        /// to apply in this pulse. The correction solver has already converted
-        /// the target miss into a delta-V vector; scaling the vector scales its
-        /// predicted surface effect without imposing a body-specific delta-V cap.
-        /// </summary>
-        public static class CourseCorrectionPulsePolicy
-        {
-            public const double InitialRemoteEffectFraction = 0.50;
-            public const double MaximumRemoteEffectFraction = 0.80;
-            private const double MinimumRemoteEffectFraction = 0.25;
-            private const double RemoteEffectFractionStep = 0.10;
-
-            public static double SelectEffectFraction(double targetError, double nearTargetDistance,
-                bool reversesPreviousPulse, double remoteEffectFraction)
-            {
-                if (!IsFinite(targetError) || !IsFinite(nearTargetDistance) ||
-                    targetError <= 0 || nearTargetDistance <= 0)
-                    return 0;
-
-                double fraction;
-                if (targetError < nearTargetDistance)
-                    fraction = 0.05;
-                else if (targetError < 4 * nearTargetDistance)
-                    fraction = 0.10;
-                else if (targetError < 10 * nearTargetDistance)
-                    fraction = 0.25;
-                else
-                    fraction = Clamp(remoteEffectFraction, MinimumRemoteEffectFraction, MaximumRemoteEffectFraction);
-
-                // A predicted reversal is treated as a fine trim even when its
-                // unscaled effect is large, preventing rapid branch-to-branch
-                // oscillation.
-                return reversesPreviousPulse ? Math.Min(fraction, 0.05) : fraction;
-            }
-
-            public static double UpdateRemoteEffectFraction(double currentFraction, double commandedFraction,
-                double observedFraction, ref int verifiedResponses)
-            {
-                currentFraction = Clamp(currentFraction, MinimumRemoteEffectFraction, MaximumRemoteEffectFraction);
-                if (!IsFinite(commandedFraction) || !IsFinite(observedFraction) || commandedFraction <= 0)
-                {
-                    verifiedResponses = 0;
-                    return currentFraction;
-                }
-
-                // Raise gain only when the measured endpoint movement matches
-                // the predicted surface effect closely on two successive pulses.
-                if (observedFraction >= 0.75 * commandedFraction &&
-                    observedFraction <= 1.25 * commandedFraction)
-                {
-                    verifiedResponses++;
-                    if (verifiedResponses >= 2)
-                    {
-                        verifiedResponses = 0;
-                        return Math.Min(MaximumRemoteEffectFraction, currentFraction + RemoteEffectFractionStep);
-                    }
-
-                    return currentFraction;
-                }
-
-                verifiedResponses = 0;
-                // A weak or adverse measured response means the local model is
-                // not trustworthy enough for a large next correction.
-                if (observedFraction < 0.25 * commandedFraction)
-                    return Math.Max(MinimumRemoteEffectFraction, 0.5 * currentFraction);
-
-                return currentFraction;
-            }
-
-            private static double Clamp(double value, double minimum, double maximum) =>
-                Math.Max(minimum, Math.Min(maximum, value));
-
-            private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
-        }
-
-        public static class CourseCorrectionFlightSafetyPolicy
-        {
-            public static bool HasImpactMargin(double periapsisAltitude, double minimumImpactDepth)
-            {
-                return IsFinite(periapsisAltitude) && IsFinite(minimumImpactDepth) && minimumImpactDepth > 0 &&
-                    periapsisAltitude <= -minimumImpactDepth;
-            }
-
-            public static bool IsPostBurnEndpointAcceptable(double preBurnError, double postBurnError)
-            {
-                if (!IsFinite(preBurnError) || !IsFinite(postBurnError) || preBurnError < 0 || postBurnError < 0)
-                    return false;
-
-                // The trajectory integration has a small endpoint uncertainty.
-                // Permit up to 500 m of movement, but reject a material loss of
-                // target accuracy before another correction can be commanded.
-                return postBurnError <= preBurnError + 500;
-            }
-
-            private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
         }
     }
 }
