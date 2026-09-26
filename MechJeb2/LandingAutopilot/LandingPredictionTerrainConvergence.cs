@@ -29,6 +29,19 @@ namespace MuMech.Landing
             return -1;
         }
 
+        /// <summary>
+        /// Maps a contact index from the final terrain-profile slice back to
+        /// the complete simulator trajectory. The profile lists use the local
+        /// index; the trajectory uses this mapped absolute index.
+        /// </summary>
+        public static int ToTrajectoryIndex(int firstProfileIndex, int localContactIndex, int trajectoryCount)
+        {
+            if (firstProfileIndex < 0 || localContactIndex < 0 || trajectoryCount <= 0)
+                return -1;
+
+            int index = firstProfileIndex + localContactIndex;
+            return index < trajectoryCount ? index : -1;
+        }
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
     }
 

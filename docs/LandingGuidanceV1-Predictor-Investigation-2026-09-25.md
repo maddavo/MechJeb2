@@ -92,3 +92,9 @@ Terminal translation now derives its lateral component from the negative measure
 ### User lower-throttle-limit correction
 
 The earlier terminal translation repair incorrectly bypassed **Keep limited throttle over X%** even when the user had enabled it. That was contrary to the Landing Guidance control's meaning. Terminal translation now sends its request through the ordinary minimum-throttle limiter. With the checkbox enabled, the configured lower limit is honoured; with it disabled, the controller can use the smaller throttle required for a low-gravity hover. The setting, its checkbox, and its value are never changed by V1.
+
+## Terrain-profile local-index correction
+
+The first live run after the terrain convergence work failed before publishing its first prediction. `Player.log` recorded an `ArgumentOutOfRangeException` from `ResolveAirlessTerrainProfileContact` on every fixed update. The final terrain profile is a slice of the full simulator trajectory, but the code used the absolute trajectory contact index when reading the sliced terrain-height list. That index is valid for the full trajectory and invalid for the short final-path list.
+
+The resolver now maps the local profile contact index back to the full trajectory only for the trajectory contact, and reads the terrain-height list with the local index. The mapping rejects invalid indexes before either list access. A focused test covers a nonzero profile start, an out-of-range mapping, and invalid input. This restores normal predictor publication and the landing reticle.

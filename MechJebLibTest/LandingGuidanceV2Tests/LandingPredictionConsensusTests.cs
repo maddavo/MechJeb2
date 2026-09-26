@@ -76,6 +76,13 @@ namespace MechJebLibTest.LandingGuidanceV2Tests
         }
 
         [Fact]
+        public void AirlessTerrainProfileMapsLocalContactBackToFullTrajectory()
+        {
+            Assert.Equal(7, AirlessTerrainProfileContact.ToTrajectoryIndex(5, 2, 10));
+            Assert.Equal(-1, AirlessTerrainProfileContact.ToTrajectoryIndex(5, 5, 10));
+            Assert.Equal(-1, AirlessTerrainProfileContact.ToTrajectoryIndex(-1, 0, 10));
+        }
+        [Fact]
         public void CloseBrakingTerrainBranchRequiresThreeSamplesAtTheMeasuredAcceptanceScale()
         {
             // Live Minmus braking showed two internally consistent terrain

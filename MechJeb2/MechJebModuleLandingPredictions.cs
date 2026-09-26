@@ -524,11 +524,16 @@ namespace MuMech
             if (localContactIndex < 0)
                 return;
 
-            int contactIndex = firstPossibleContact + localContactIndex;
+            int contactIndex = AirlessTerrainProfileContact.ToTrajectoryIndex(firstPossibleContact,
+                localContactIndex, simulationResult.Trajectory.Count);
+            if (contactIndex < 0)
+                return;
+
             AbsoluteVector contact = simulationResult.Trajectory[contactIndex];
             simulationResult.EndPosition = contact;
             simulationResult.EndUT = contact.UT;
-            simulationResult.EndASL = terrainASL[contactIndex];
+            // terrainASL is a final-path slice, so it is indexed locally.
+            simulationResult.EndASL = terrainASL[localContactIndex];
         }
 
         private double ResultAcceptanceDistance(ReentrySimulation.Result first, ReentrySimulation.Result second)
