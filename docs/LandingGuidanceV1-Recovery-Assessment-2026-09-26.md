@@ -4,7 +4,11 @@
 
 Do not install another V1 DLL until the last accepted V1 controller has been restored as the reference and each proposed correction has been checked against captured flight states. Do not rewrite V1’s strategic-deorbit method or continue adding gates, tolerance changes, or course-correction safeguards to the present angle-derived deorbit calculation.
 
-`v1-proven-c47337ff` remains the last user-confirmed complete V1 landing. The current installed controller is `e102ff6f` plus documentation commit `a8097529`. Its live run completed Plane Change but safely refused deorbit because every candidate was more than 121 km from the target. No source working after `a8097529` is part of an installed or committed DLL.
+`v1-proven-c47337ff` remains the last user-confirmed complete V1 landing. The current installed controller is `e102ff6f` plus documentation commit `a8097529`. Its live run completed Plane Change but safely refused deorbit because every candidate was more than 121 km from the target. No source work after `a8097529` has been installed in KSP.
+
+## Control recovery recorded
+
+`v1-control-recovery-20260926` restores `DeorbitBurn.cs` exactly to the source shared by the user-confirmed baseline and the successful terrain-profile landing build. The three strategic-deorbit commits are absent. The V1 predictor improvements remain: sea-level vacuum propagation, first real terrain contact, displaced-branch stability, effect-scaled course corrections, and fine-pulse completion. The focused information/control checks passed 27 of 27. This is a source recovery point only: no release DLL was built or installed, and no new live result is claimed.
 
 ## What changed after the confirmed landing
 
