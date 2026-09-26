@@ -66,11 +66,13 @@ namespace MuMech
                 _targetAheadAngle = Vector3d.Angle(currentRadial, futureRadial);
                 _planeChangeAngle = Vector3d.Angle(horizontalVelocity, horizontalToTarget);
 
-                // Being in the target plane is necessary, but it does not identify a
-                // deorbit opportunity. The former normal-angle shortcut could begin a
-                // burn anywhere in the orbit and was observed to start roughly 43
-                // degrees early. Require the same target-phase corridor for every
-                // deorbit burn so the initial endpoint is acquired near the target.
+                // The target-normal value describes the target's position around
+                // the orbital plane; it is near 90 degrees for an equatorial
+                // target in an equatorial orbit. It is diagnostic only, not a
+                // plane-alignment test. The old normal-angle shortcut could begin
+                // a burn anywhere in the orbit and was observed to start roughly
+                // 43 degrees early. Keep the original target-phase and in-plane
+                // velocity corridor as the sole ignition gate.
                 if (DeorbitBurnStartPolicy.IsInTargetingCorridor(_targetNormalAngle,
                         _targetAheadAngle, _planeChangeAngle))
                     _deorbitBurnTriggered = true;
@@ -120,7 +122,7 @@ namespace MuMech
                 double planeChangeAngle)
             {
                 return IsFinite(targetNormalAngle) && IsFinite(targetAheadAngle) && IsFinite(planeChangeAngle) &&
-                    targetNormalAngle < 10.0 && targetAheadAngle > 60.0 && targetAheadAngle < 90.0 &&
+                    targetAheadAngle > 60.0 && targetAheadAngle < 90.0 &&
                     planeChangeAngle < 90.0;
             }
 

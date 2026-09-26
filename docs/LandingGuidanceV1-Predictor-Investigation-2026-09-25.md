@@ -103,8 +103,13 @@ The resolver now maps the local profile contact index back to the full trajector
 
 A Minmus trace exposed a separate V1 initial-acquisition failure. The selected Farside Crater target was approximately 147 km from the first published post-deorbit endpoint. The deorbit step had started because the target plane was aligned, even though the target was only about 43 degrees ahead. Its source condition treated plane alignment as sufficient and bypassed the existing 60–90 degree target-phase corridor.
 
-V1 now requires all three conditions before starting the geometric deorbit burn: target-plane alignment below 10 degrees, target phase between 60 and 90 degrees ahead, and a viable in-plane velocity direction. The logged deorbit trace records each angle so a future flight can verify the gate.
+V1 retains the original target-phase condition before starting the geometric deorbit burn: target phase between 60 and 90 degrees ahead with a viable in-plane velocity direction. The target-normal angle is recorded for diagnosis only; in an equatorial orbit it is near 90 degrees for a target in the orbital plane, so it is not an alignment gate.
 
 The same trace also showed a 9.8 m/s first course-correction pulse moving the predicted endpoint from 148.7 km to 140.5 km while raising periapsis from −19.8 km to −8.2 km. Course Correction now cuts thrust whenever the predictor is unavailable, stops a pulse before it removes a 1 km-or-body-scaled ballistic impact margin, and rejects a material post-burn target regression before a subsequent pulse can be commanded. It also honours the user-selected V1 minimum-throttle setting during a correction pulse.
 
 Focused policy tests cover the deorbit phase corridor, predictor-invalid throttle cut conditions, impact margin, endpoint regression, and existing pulse execution behaviour. These are V1 controller repairs authorised after the runtime trace; V2 remains paused and the V1 window layout is untouched.
+
+
+## 2026-09-26 — correction to the deorbit gate
+
+The first implementation of the deorbit acquisition repair incorrectly treated the target-normal angle as a plane-alignment measure and required it to be below 10 degrees. A live run immediately demonstrated the error: an equatorial target in an equatorial orbit reports about 90 degrees for that metric, causing V1 to skip deorbit indefinitely without firing engines. The repaired gate removes only the faulty normal-angle shortcut. It keeps the original 60–90 degree target-phase and viable in-plane velocity requirements, and retains the normal angle solely as trace diagnostics.
