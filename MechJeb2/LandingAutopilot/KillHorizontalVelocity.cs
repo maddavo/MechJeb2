@@ -38,11 +38,10 @@ namespace MuMech
                 double requestedThrottle = TerminalTranslationThrottlePolicy.ComputeThrottle(controlledSpeed,
                     DESIRED_SPEED, VesselState.LocalGravity, verticalThrustAcceleration);
 
-                // The generic minimum-throttle setting is useful for ordinary
-                // manoeuvre burns, but it must not floor terminal translation.
-                // On Minmus a 5% floor can be more thrust than gravity and make
-                // a craft climb while this step is trying to remove drift.
-                Core.Thrust.RequestActiveThrottle((float)requestedThrottle, enforceMinimum: false, allowZero: true);
+                // This is a user-selected Landing Guidance control. When it is
+                // enabled, terminal translation must honour its configured
+                // lower throttle limit; zero still remains an explicit shutdown.
+                Core.Thrust.RequestActiveThrottle((float)requestedThrottle, enforceMinimum: true, allowZero: true);
 
                 // Tilt against the measured horizontal velocity. Deriving this
                 // direction from VesselState.Forward can accelerate a drifting
