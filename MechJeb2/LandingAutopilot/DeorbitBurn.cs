@@ -14,7 +14,10 @@ namespace MuMech
             private const double MaximumDeorbitTwr = 4.0;
             private const double DeorbitBurnTimeConstant = 0.5;
             private const double MinimumTerminalDeltaV = 0.05;
-            private const double CandidatePlanningInterval = 1.0;
+            // Each evaluation constructs several osculating orbits. Ten seconds of
+            // vessel time is much smaller than the 30 degree ignition window, while
+            // avoiding a simulation burst on every warp physics frame.
+            private const double CandidatePlanningInterval = 10.0;
             private const double CandidateSearchExtentDegrees = 90.0;
             private const double CandidateSearchStepDegrees = 15.0;
             private const int CandidateRefinementIterations = 5;
@@ -28,7 +31,8 @@ namespace MuMech
 
             public override string TraceDetails =>
                 $" candidateValid={_candidate.Valid} candidateEndpointError={_candidate.EndpointError:F1} " +
-                $"candidateAimRotation={_candidate.AimRotationDegrees:F2} deorbitTriggered={_deorbitBurnTriggered}";
+                $"candidateAimRotation={_candidate.AimRotationDegrees:F2} " +
+                $"deorbitTriggered={_deorbitBurnTriggered}";
 
             public override AutopilotStep Drive(FlightCtrlState s)
             {
@@ -127,28 +131,33 @@ namespace MuMech
                          offset += CandidateSearchStepDegrees)
                         ConsiderCandidate(ref best, EvaluateCandidate(nominalRotation + offset, periapsisChange,
                             targetRadial, horizontalVelocity));
-
-                    if (!best.Valid) return best;
-                    double low = best.AimRotationDegrees - CandidateSearchStepDegrees;
-                    double high = best.AimRotationDegrees + CandidateSearchStepDegrees;
-                    for (int iteration = 0; iteration < CandidateRefinementIterations; iteration++)
-                    {
-                        double left = (2 * low + high) / 3;
-                        double right = (low + 2 * high) / 3;
-                        DeorbitCandidate leftCandidate = EvaluateCandidate(left, periapsisChange, targetRadial, horizontalVelocity);
-                        DeorbitCandidate rightCandidate = EvaluateCandidate(right, periapsisChange, targetRadial, horizontalVelocity);
-                        ConsiderCandidate(ref best, leftCandidate);
-                        ConsiderCandidate(ref best, rightCandidate);
-                        if (!leftCandidate.Valid || rightCandidate.Valid && leftCandidate.EndpointError > rightCandidate.EndpointError)
-                            low = left;
-                        else
-                            high = right;
-                    }
+                    RefineCandidate(ref best, periapsisChange, targetRadial, horizontalVelocity);
                     return best;
                 }
                 catch (ArgumentException)
                 {
                     return default;
+                }
+            }
+
+            private void RefineCandidate(ref DeorbitCandidate best, Vector3d periapsisChange, Vector3d targetRadial,
+                Vector3d horizontalVelocity)
+            {
+                if (!best.Valid) return;
+                double low = best.AimRotationDegrees - CandidateSearchStepDegrees;
+                double high = best.AimRotationDegrees + CandidateSearchStepDegrees;
+                for (int iteration = 0; iteration < CandidateRefinementIterations; iteration++)
+                {
+                    double left = (2 * low + high) / 3;
+                    double right = (low + 2 * high) / 3;
+                    DeorbitCandidate leftCandidate = EvaluateCandidate(left, periapsisChange, targetRadial, horizontalVelocity);
+                    DeorbitCandidate rightCandidate = EvaluateCandidate(right, periapsisChange, targetRadial, horizontalVelocity);
+                    ConsiderCandidate(ref best, leftCandidate);
+                    ConsiderCandidate(ref best, rightCandidate);
+                    if (!leftCandidate.Valid || rightCandidate.Valid && leftCandidate.EndpointError > rightCandidate.EndpointError)
+                        low = left;
+                    else
+                        high = right;
                 }
             }
 
@@ -166,7 +175,11 @@ namespace MuMech
                     Orbit candidateOrbit = Orbit.PerturbedOrbit(VesselState.Time, burn);
                     double impactUT = candidateOrbit.NextTimeOfRadius(VesselState.Time, MainBody.Radius);
                     if (!IsFinite(impactUT) || impactUT <= VesselState.Time) return default;
-                    Vector3d endpoint = candidateOrbit.WorldBCIPositionAtUT(impactUT) - MainBody.position;
+                    // WorldBCIPositionAtUT is already body-centred. Subtracting
+                    // MainBody.position here shifts the endpoint by a second body
+                    // origin and makes an otherwise valid burn look hundreds of
+                    // kilometres off target.
+                    Vector3d endpoint = candidateOrbit.WorldBCIPositionAtUT(impactUT);
                     double targetRotation = 360.0 * (impactUT - VesselState.Time) / MainBody.rotationPeriod;
                     Vector3d actualTarget = Quaternion.AngleAxis((float)targetRotation, MainBody.angularVelocity) * targetRadial;
                     if (!IsFiniteVector(endpoint) || !IsFiniteVector(actualTarget)) return default;
