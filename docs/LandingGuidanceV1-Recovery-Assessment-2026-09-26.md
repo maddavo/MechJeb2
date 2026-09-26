@@ -10,6 +10,10 @@ Do not install another V1 DLL until the last accepted V1 controller has been res
 
 `v1-control-recovery-20260926` restores `DeorbitBurn.cs` exactly to the source shared by the user-confirmed baseline and the successful terrain-profile landing build. The three strategic-deorbit commits are absent. The V1 predictor improvements remain: sea-level vacuum propagation, first real terrain contact, displaced-branch stability, effect-scaled course corrections, and fine-pulse completion. The focused information/control checks passed 27 of 27. This is a source recovery point only: no release DLL was built or installed, and no new live result is claimed.
 
+## V1 Alpha plus narrowly scoped predictor repairs
+
+`v1-alpha-terrain-repairs-20260926` is the next V1 validation candidate. It is V1 Alpha in full except for two predictor-information repairs: correct local indexing into the final terrain-profile slice and require three compatible observations before a materially displaced terrain branch can replace the published endpoint. It deliberately excludes later strategic-deorbit, course-correction policy, and terminal-control work. The source composition was checked by file hash, its terrain predictor test suite passed 11 of 11, and its release build completed with no warnings or errors.
+
 ## What changed after the confirmed landing
 
 The confirmed landing was followed by 757 added lines and 75 removed lines in 11 V1 controller/predictor files. Most changes were response to real traces and several fixed their immediate defect. The problem was the integration method: a local repair was installed after focused policy tests, while the complete Plane Change → Deorbit → Correction → Coast → Braking → Terminal sequence had no captured-state replay harness.
