@@ -98,3 +98,13 @@ The earlier terminal translation repair incorrectly bypassed **Keep limited thro
 The first live run after the terrain convergence work failed before publishing its first prediction. `Player.log` recorded an `ArgumentOutOfRangeException` from `ResolveAirlessTerrainProfileContact` on every fixed update. The final terrain profile is a slice of the full simulator trajectory, but the code used the absolute trajectory contact index when reading the sliced terrain-height list. That index is valid for the full trajectory and invalid for the short final-path list.
 
 The resolver now maps the local profile contact index back to the full trajectory only for the trajectory contact, and reads the terrain-height list with the local index. The mapping rejects invalid indexes before either list access. A focused test covers a nonzero profile start, an out-of-range mapping, and invalid input. This restores normal predictor publication and the landing reticle.
+
+## 2026-09-26 — deorbit phase and correction safety
+
+A Minmus trace exposed a separate V1 initial-acquisition failure. The selected Farside Crater target was approximately 147 km from the first published post-deorbit endpoint. The deorbit step had started because the target plane was aligned, even though the target was only about 43 degrees ahead. Its source condition treated plane alignment as sufficient and bypassed the existing 60–90 degree target-phase corridor.
+
+V1 now requires all three conditions before starting the geometric deorbit burn: target-plane alignment below 10 degrees, target phase between 60 and 90 degrees ahead, and a viable in-plane velocity direction. The logged deorbit trace records each angle so a future flight can verify the gate.
+
+The same trace also showed a 9.8 m/s first course-correction pulse moving the predicted endpoint from 148.7 km to 140.5 km while raising periapsis from −19.8 km to −8.2 km. Course Correction now cuts thrust whenever the predictor is unavailable, stops a pulse before it removes a 1 km-or-body-scaled ballistic impact margin, and rejects a material post-burn target regression before a subsequent pulse can be commanded. It also honours the user-selected V1 minimum-throttle setting during a correction pulse.
+
+Focused policy tests cover the deorbit phase corridor, predictor-invalid throttle cut conditions, impact margin, endpoint regression, and existing pulse execution behaviour. These are V1 controller repairs authorised after the runtime trace; V2 remains paused and the V1 window layout is untouched.

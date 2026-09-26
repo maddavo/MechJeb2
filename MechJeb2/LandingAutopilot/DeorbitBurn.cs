@@ -17,8 +17,15 @@ namespace MuMech
 
             private bool _deorbitBurnTriggered;
             private double _deorbitThrottle;
+            private double _targetNormalAngle;
+            private double _targetAheadAngle;
+            private double _planeChangeAngle;
 
             public DeorbitBurn(MechJebCore core) : base(core) { }
+
+            public override string TraceDetails =>
+                $" targetNormalAngle={_targetNormalAngle:F2} targetAheadAngle={_targetAheadAngle:F2} " +
+                $"planeChangeAngle={_planeChangeAngle:F2} deorbitTriggered={_deorbitBurnTriggered}";
 
             public override AutopilotStep Drive(FlightCtrlState s)
             {
@@ -54,12 +61,18 @@ namespace MuMech
                 Vector3d finalVelocity = horizontalVelocity + periapsisChange;
                 Vector3d aimedVelocity = finalVelocity.magnitude * horizontalToTarget;
                 Vector3d currentRadial = VesselState.CoM - MainBody.position;
-                double targetNormalAngle = Vector3d.Angle(Orbit.OrbitNormal(), futureRadial);
-                targetNormalAngle = Math.Min(targetNormalAngle, 180.0 - targetNormalAngle);
-                double targetAheadAngle = Vector3d.Angle(currentRadial, futureRadial);
-                double planeChangeAngle = Vector3d.Angle(horizontalVelocity, horizontalToTarget);
+                _targetNormalAngle = Vector3d.Angle(Orbit.OrbitNormal(), futureRadial);
+                _targetNormalAngle = Math.Min(_targetNormalAngle, 180.0 - _targetNormalAngle);
+                _targetAheadAngle = Vector3d.Angle(currentRadial, futureRadial);
+                _planeChangeAngle = Vector3d.Angle(horizontalVelocity, horizontalToTarget);
 
-                if (targetNormalAngle < 10.0 || (targetAheadAngle < 90.0 && targetAheadAngle > 60.0 && planeChangeAngle < 90.0))
+                // Being in the target plane is necessary, but it does not identify a
+                // deorbit opportunity. The former normal-angle shortcut could begin a
+                // burn anywhere in the orbit and was observed to start roughly 43
+                // degrees early. Require the same target-phase corridor for every
+                // deorbit burn so the initial endpoint is acquired near the target.
+                if (DeorbitBurnStartPolicy.IsInTargetingCorridor(_targetNormalAngle,
+                        _targetAheadAngle, _planeChangeAngle))
                     _deorbitBurnTriggered = true;
 
                 if (_deorbitBurnTriggered)
@@ -99,6 +112,19 @@ namespace MuMech
 
                 return this;
             }
+        }
+
+        public static class DeorbitBurnStartPolicy
+        {
+            public static bool IsInTargetingCorridor(double targetNormalAngle, double targetAheadAngle,
+                double planeChangeAngle)
+            {
+                return IsFinite(targetNormalAngle) && IsFinite(targetAheadAngle) && IsFinite(planeChangeAngle) &&
+                    targetNormalAngle < 10.0 && targetAheadAngle > 60.0 && targetAheadAngle < 90.0 &&
+                    planeChangeAngle < 90.0;
+            }
+
+            private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
         }
     }
 }

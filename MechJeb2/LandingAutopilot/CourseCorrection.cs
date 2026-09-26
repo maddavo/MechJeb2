@@ -55,7 +55,14 @@ namespace MuMech
             public override AutopilotStep Drive(FlightCtrlState s)
             {
                 if (!Core.Landing.PredictionReady)
+                {
+                    // A correction burn is only valid while it is tied to a
+                    // current impact prediction. Never retain the previous
+                    // throttle command across a missing or invalid result.
+                    Core.Thrust.ThrustOff();
+                    _courseCorrectionBurning = false;
                     return this;
+                }
 
                 // If the atomospheric drag is at least 100mm/s2 then start trying to target the overshoot using the parachutes
                 if (Core.Landing.DeployChutes)
@@ -67,6 +74,16 @@ namespace MuMech
                 }
 
                 double currentError = Vector3d.Distance(Core.Target.GetPositionTargetPosition(), Core.Landing.LandingSite);
+
+                if (_waitingForPostBurnPrediction &&
+                    !CourseCorrectionFlightSafetyPolicy.IsPostBurnEndpointAcceptable(_lastPulseTargetError, currentError))
+                {
+                    Core.Thrust.ThrustOff();
+                    _waitingForPostBurnPrediction = false;
+                    _remainingPulseDv = 0;
+                    Status = "Course correction rejected: predicted endpoint worsened";
+                    return new CoastToDeceleration(Core);
+                }
 
                 if (currentError < CompletionError)
                 {
@@ -161,8 +178,21 @@ namespace MuMech
 
                 if (_courseCorrectionBurning)
                 {
+                    if (!CourseCorrectionFlightSafetyPolicy.HasImpactMargin(Orbit.PeA, MinimumImpactDepth))
+                    {
+                        Core.Thrust.ThrustOff();
+                        _courseCorrectionBurning = false;
+                        _remainingPulseDv = 0;
+                        Status = "Course correction stopped: impact margin exhausted";
+                        return new CoastToDeceleration(Core);
+                    }
+
                     const double TIME_CONSTANT = 0.5;
                     Core.Thrust.ThrustForDv(_remainingPulseDv, TIME_CONSTANT);
+                    // This is a V1 Landing Guidance setting. A selected minimum
+                    // throttle must constrain correction pulses as it constrains
+                    // the other V1 burns.
+                    Core.Thrust.RequestActiveThrottle(Core.Thrust.TargetThrottle, enforceMinimum: true);
                     _remainingPulseDv -= VesselState.CurrentThrustAcceleration * TimeWarp.fixedDeltaTime;
 
                     if (CourseCorrectionPulseExecutionPolicy.HasCompleted(_remainingPulseDv))
@@ -186,6 +216,8 @@ namespace MuMech
             }
 
             private double CompletionError => Math.Max(200, MainBody.Radius * 0.0005);
+
+            private double MinimumImpactDepth => Math.Max(1000, MainBody.Radius * 0.001);
 
             private double DownrangeCaptureDistance => Math.Max(100, MainBody.Radius * 0.005);
 
@@ -304,6 +336,28 @@ namespace MuMech
 
             private static double Clamp(double value, double minimum, double maximum) =>
                 Math.Max(minimum, Math.Min(maximum, value));
+
+            private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+        }
+
+        public static class CourseCorrectionFlightSafetyPolicy
+        {
+            public static bool HasImpactMargin(double periapsisAltitude, double minimumImpactDepth)
+            {
+                return IsFinite(periapsisAltitude) && IsFinite(minimumImpactDepth) && minimumImpactDepth > 0 &&
+                    periapsisAltitude <= -minimumImpactDepth;
+            }
+
+            public static bool IsPostBurnEndpointAcceptable(double preBurnError, double postBurnError)
+            {
+                if (!IsFinite(preBurnError) || !IsFinite(postBurnError) || preBurnError < 0 || postBurnError < 0)
+                    return false;
+
+                // The trajectory integration has a small endpoint uncertainty.
+                // Permit up to 500 m of movement, but reject a material loss of
+                // target accuracy before another correction can be commanded.
+                return postBurnError <= preBurnError + 500;
+            }
 
             private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
         }
