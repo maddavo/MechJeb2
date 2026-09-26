@@ -113,3 +113,13 @@ Focused policy tests cover the deorbit phase corridor, predictor-invalid throttl
 ## 2026-09-26 — correction to the deorbit gate
 
 The first implementation of the deorbit acquisition repair incorrectly treated the target-normal angle as a plane-alignment measure and required it to be below 10 degrees. A live run immediately demonstrated the error: an equatorial target in an equatorial orbit reports about 90 degrees for that metric, causing V1 to skip deorbit indefinitely without firing engines. The repaired gate removes only the faulty normal-angle shortcut. It keeps the original 60–90 degree target-phase and viable in-plane velocity requirements, and retains the normal angle solely as trace diagnostics.
+
+## 2026-09-26 — deorbit target-time consistency repair
+
+The next live run correctly entered the phase corridor at 88.7 degrees ahead, but its first published impact endpoint was about 185 km from the target. The trajectory later entered Deceleration Burn with an approximately 129 km miss. This proves the phase gate is necessary but cannot validate a deorbit burn by itself.
+
+The underlying calculation used the time of impact from a pure periapsis-lowering maneuver to rotate the target, then executed a different redirected velocity maneuver. Its actual impact time and endpoint were never recomputed. That discrepancy can grow into a large long- or short-side miss.
+
+V1 now performs a bounded five-iteration solve: it derives the rotated target from the candidate redirected burn's own impact time, recomputes the burn, and evaluates the resulting sea-level endpoint against that same rotated target. Ignition requires a finite impact endpoint inside a corridor of at least 1 km or one percent of the body radius. The candidate calculation runs at most once per simulated second before ignition; after acceptance, the burn retains the evaluated inertial aim point so it does not re-plan expensively every physics tick. Trace fields record candidate impact UT, endpoint error, and whether a valid candidate existed.
+
+This is a pre-ignition guard and targeting consistency repair. It does not move the V1 interface or involve V2. The 185 km trace is the live regression case; focused policy tests verify that a candidate with no impact or a 185 km endpoint miss cannot authorize ignition. A new KSP flight is still required to establish live convergence and landing performance.
