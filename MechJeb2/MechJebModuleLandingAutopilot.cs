@@ -154,6 +154,9 @@ namespace MuMech
 
         public void LandUntargeted(object controller)
         {
+            if (LandingTraceEnabled && LandAtTarget && MainBody != null && !MainBody.atmosphere)
+                LandingPredictorCapture.Lifecycle("switched_to_untargeted", 0, PredictionVersion,
+                    Prediction?.CaptureSubmissionId ?? 0);
             LandAtTarget = false;
             Users.Add(controller);
 
@@ -168,7 +171,11 @@ namespace MuMech
 
         public void StopLanding()
         {
+            if (LandingTraceEnabled && LandAtTarget && MainBody != null && !MainBody.atmosphere)
+                LandingPredictorCapture.Lifecycle("landing_stopped", 0, PredictionVersion,
+                    Prediction?.CaptureSubmissionId ?? 0);
             LandingPredictorTrace.Close();
+            LandingPredictorCapture.Close();
             Users.Clear();
             Core.Thrust.ThrustOff();
             Core.Thrust.Users.Remove(this);
@@ -288,7 +295,11 @@ namespace MuMech
 
         protected override void OnModuleDisabled()
         {
+            if (LandingTraceEnabled && LandAtTarget && MainBody != null && !MainBody.atmosphere)
+                LandingPredictorCapture.Lifecycle("landing_module_disabled", 0, PredictionVersion,
+                    Prediction?.CaptureSubmissionId ?? 0);
             LandingPredictorTrace.Close();
+            LandingPredictorCapture.Close();
             Core.Attitude.attitudeDeactivate();
             _predictor.Users.Remove(this);
             _predictor.descentSpeedPolicy = null;

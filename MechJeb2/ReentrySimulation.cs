@@ -816,6 +816,9 @@ namespace MuMech
             public double InputForcedBrakingStartUT;
             public double SimulatedBrakingStartUT;
 
+            // Passive capture correlation only; never used by simulation or control.
+            public long CaptureSubmissionId;
+
             public string DebugLog;
 
             private static readonly Pool<Result> _pool = new Pool<Result>(Create, Reset);

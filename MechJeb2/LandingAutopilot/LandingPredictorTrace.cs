@@ -15,6 +15,9 @@ namespace MuMech.Landing
         public int LocalContactIndex = -1;
         public int ContactIndex = -1;
         public double ContactTerrainASL = double.NaN;
+        public int TerrainQueryCount;
+        public double TerrainQueryElapsedMs;
+        public string CaptureSamples;
     }
 
     /// <summary>

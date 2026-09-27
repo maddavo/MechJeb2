@@ -3,6 +3,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text;
 using System.Threading;
 using Smooth.Dispose;
 using UnityEngine;
@@ -195,6 +196,10 @@ namespace MuMech
         protected override void OnModuleDisabled()
         {
             Interlocked.Increment(ref predictionGeneration);
+            if (Core.Landing.LandingTraceEnabled && Core.Landing.LandAtTarget &&
+                VesselState != null && VesselState.MainBody != null && !VesselState.MainBody.atmosphere)
+                LandingPredictorCapture.Lifecycle("predictor_disabled", Interlocked.Read(ref predictionGeneration),
+                    ResultVersion, result?.CaptureSubmissionId ?? 0);
             ReleaseQueuedBrakingPlanResults();
             stopwatch.Stop();
             stopwatch.Reset();
@@ -204,9 +209,12 @@ namespace MuMech
 
             if (candidateResult != null)
             {
+                LandingPredictorCapture.Discarded(candidateResult.CaptureSubmissionId,
+                    "candidate_cleared_on_predictor_disable");
                 candidateResult.Release();
                 candidateResult = null;
             }
+            LandingPredictorCapture.Close();
         }
 
         // A targeted V1 landing is a new predictor transaction. A result or
@@ -216,19 +224,29 @@ namespace MuMech
         public void ResetTargetedLandingPrediction()
         {
             Interlocked.Increment(ref predictionGeneration);
+            if (Core.Landing.LandingTraceEnabled && Core.Landing.LandAtTarget &&
+                VesselState != null && VesselState.MainBody != null && !VesselState.MainBody.atmosphere)
+                LandingPredictorCapture.Lifecycle("target_reset", Interlocked.Read(ref predictionGeneration),
+                    ResultVersion, result?.CaptureSubmissionId ?? 0);
             ReleaseQueuedBrakingPlanResults();
             if (candidateResult != null)
             {
+                LandingPredictorCapture.Discarded(candidateResult.CaptureSubmissionId,
+                    "candidate_cleared_on_target_reset");
                 candidateResult.Release();
                 candidateResult = null;
             }
             if (result != null)
             {
+                LandingPredictorCapture.Discarded(result.CaptureSubmissionId,
+                    "published_cleared_on_target_reset");
                 result.Release();
                 result = null;
             }
             if (errorResult != null)
             {
+                LandingPredictorCapture.Discarded(errorResult.CaptureSubmissionId,
+                    "error_result_cleared_on_target_reset");
                 errorResult.Release();
                 errorResult = null;
             }
@@ -285,6 +303,27 @@ namespace MuMech
 
         public override void OnUpdate() => MaintainAerobrakeNode();
 
+        private LandingPredictorCapture.Snapshot CaptureSnapshot(Orbit orbit, double inputUT, CelestialBody body)
+        {
+            if (!Core.Landing.LandingTraceEnabled || !Core.Landing.Enabled || !Core.Landing.LandAtTarget ||
+                !Core.Target.PositionTargetExists || Core.Target.targetBody != body || body.atmosphere)
+                return null;
+
+            try
+            {
+                return LandingPredictorCapture.Snapshot.Create(orbit, inputUT, body, VesselState,
+                    Core.Target.targetLatitude, Core.Target.targetLongitude,
+                    Core.Landing.CurrentStep?.GetType().Name, Interlocked.Read(ref predictionGeneration));
+            }
+            catch (Exception ex)
+            {
+                // Capture may fail without affecting the existing simulation or control path.
+                LandingPredictorCapture.CaptureError("snapshot", ex);
+                Debug.Log("[MechJebLandingTrace] passive capture snapshot failed: " + ex.Message);
+                return null;
+            }
+        }
+
         protected void StartSimulation(bool addParachuteError)
         {
             double altitudeOfPreviousPrediction = 0;
@@ -323,11 +362,18 @@ namespace MuMech
             var sim = ReentrySimulation.Borrow(patch, patch.StartUT, simVessel, simCurves, descentSpeedPolicy, decelEndAltitudeASL,
                 VesselState.LimitedMaxThrustAcceleration, parachuteMultiplierForThisSimulation, altitudeOfPreviousPrediction, addParachuteError, dt,
                 Time.fixedDeltaTime, maxOrbits, noSkipToFreefall);
+            long captureId = 0;
+            LandingPredictorCapture.Snapshot capture = CaptureSnapshot(patch, patch.StartUT, patch.referenceBody);
+            if (capture != null)
+                captureId = LandingPredictorCapture.Submit(capture, addParachuteError ? "parachute_error" : "ordinary",
+                    descentSpeedPolicy, decelEndAltitudeASL, altitudeOfPreviousPrediction,
+                    VesselState.LimitedMaxThrustAcceleration, parachuteMultiplierForThisSimulation,
+                    dt, Time.fixedDeltaTime, maxOrbits, noSkipToFreefall, double.NaN);
             //MechJebCore.print("Sim ran with dt=" + dt.ToString("F3"));
 
             //Run the simulation in a separate thread
             ThreadPool.QueueUserWorkItem(RunSimulation, new SimulationJob(sim,
-                Interlocked.Read(ref predictionGeneration)));
+                Interlocked.Read(ref predictionGeneration), captureId));
             //RunSimulation(sim);
         }
 
@@ -335,14 +381,23 @@ namespace MuMech
         {
             var job = (SimulationJob)o;
             ReentrySimulation sim = job.Simulation;
+            bool workerResultRecorded = false;
             try
             {
+                Stopwatch captureWorkerTimer = job.CaptureId != 0 ? Stopwatch.StartNew() : null;
                 ReentrySimulation.Result newResult = sim.RunSimulation();
+                captureWorkerTimer?.Stop();
+                newResult.CaptureSubmissionId = job.CaptureId;
+                LandingPredictorCapture.WorkerResult(job.CaptureId, newResult,
+                    job.Generation != Interlocked.Read(ref predictionGeneration),
+                    captureWorkerTimer?.Elapsed.TotalMilliseconds ?? 0);
+                workerResultRecorded = true;
 
                 // Never let an old target's predictor result or its timing
                 // state overwrite the current V1 landing transaction.
                 if (job.Generation != Interlocked.Read(ref predictionGeneration))
                 {
+                    LandingPredictorCapture.Discarded(job.CaptureId, "stale_worker_generation");
                     bool wasErrorSimulation = newResult.MultiplierHasError;
                     newResult.Release();
                     if (wasErrorSimulation)
@@ -426,6 +481,10 @@ namespace MuMech
             catch (Exception ex)
             {
                 //Debug.Log(string.Format("Exception in MechJebModuleLandingPredictions.RunSimulation\n{0}", ex.StackTrace));
+                if (!workerResultRecorded)
+                    LandingPredictorCapture.WorkerException(job.CaptureId, ex);
+                else
+                    LandingPredictorCapture.Discarded(job.CaptureId, "post_result_worker_exception");
                 //Debug.LogException(ex);
                 Dispatcher.InvokeAsync(() => Debug.LogException(ex));
             }
@@ -439,11 +498,13 @@ namespace MuMech
         {
             public readonly ReentrySimulation Simulation;
             public readonly long Generation;
+            public readonly long CaptureId;
 
-            public SimulationJob(ReentrySimulation simulation, long generation)
+            public SimulationJob(ReentrySimulation simulation, long generation, long captureId)
             {
                 Simulation = simulation;
                 Generation = generation;
+                CaptureId = captureId;
             }
         }
 
@@ -463,8 +524,15 @@ namespace MuMech
 
                         if (newResult.MultiplierHasError)
                         {
+                            LandingPredictorCapture.ResolvedResult(newResult.CaptureSubmissionId, newResult, null,
+                                "parachute_error", Interlocked.Read(ref predictionGeneration),
+                                Core.Landing.CurrentStep?.GetType().Name);
                             if (errorResult != null)
+                            {
+                                LandingPredictorCapture.Discarded(errorResult.CaptureSubmissionId,
+                                    "error_result_replaced");
                                 errorResult.Release();
+                            }
                             errorResult = newResult;
                         }
                         else
@@ -487,12 +555,18 @@ namespace MuMech
                             {
                                 ResolveAirlessTerrainProfileContact(newResult, terrainTrace);
                             }
+                            LandingPredictorCapture.ResolvedResult(newResult.CaptureSubmissionId, newResult,
+                                terrainTrace, "ordinary_processed", Interlocked.Read(ref predictionGeneration),
+                                Core.Landing.CurrentStep?.GetType().Name);
                             StartTargetAwareBrakingPlan(newResult);
                             AcceptNormalResult(newResult, terrainTrace);
                         }
                     }
                     else
                     {
+                        LandingPredictorCapture.ResolvedResult(newResult.CaptureSubmissionId, newResult, null,
+                            "simulation_error_discarded", Interlocked.Read(ref predictionGeneration),
+                            Core.Landing.CurrentStep?.GetType().Name);
                         if (newResult.Exception != null)
                             Print("Exception in the last simulation\n" + newResult.Exception.Message + "\n" + newResult.Exception.StackTrace);
                         newResult.Release();
@@ -529,11 +603,13 @@ namespace MuMech
                 return;
             }
 
+            var captureIds = new List<long>(BrakingPlanCandidateCount);
             try
             {
                 if (Core.Landing.LandingTraceEnabled)
                     Core.Landing.TraceLanding($"predictor target-aware window earliest={earliestUT:F2} ballisticImpact={ballisticImpactUT:F2} latest={latestUT:F2} candidates={BrakingPlanCandidateCount}");
                 var simulations = new List<ReentrySimulation>(BrakingPlanCandidateCount);
+                LandingPredictorCapture.Snapshot capture = CaptureSnapshot(source.InputInitialOrbit, source.InputUT, source.Body);
                 for (int i = 0; i < BrakingPlanCandidateCount; ++i)
                 {
                     double fraction = i / (double)(BrakingPlanCandidateCount - 1);
@@ -541,18 +617,25 @@ namespace MuMech
                     var simCurves = ReentrySimulation.SimCurves.Borrow(source.Body);
                     var simVessel = SimulatedVessel.Borrow(Vessel, simCurves, source.InputUT,
                         Core.Landing.Enabled && deployChutes ? limitChutesStage : -1);
+                    double probableLandingSiteASL = Core.Landing.PredictorLandingAltitudeASL();
                     simulations.Add(ReentrySimulation.Borrow(source.InputInitialOrbit, source.InputUT, simVessel,
                         simCurves, descentSpeedPolicy, decelEndAltitudeASL, VesselState.LimitedMaxThrustAcceleration,
-                        parachuteSemiDeployMultiplier, Core.Landing.PredictorLandingAltitudeASL(), false, dt,
+                        parachuteSemiDeployMultiplier, probableLandingSiteASL, false, dt,
                         Time.fixedDeltaTime, maxOrbits, noSkipToFreefall, forcedStartUT));
+                    captureIds.Add(LandingPredictorCapture.Submit(capture, "forced_candidate", descentSpeedPolicy,
+                        decelEndAltitudeASL, probableLandingSiteASL, VesselState.LimitedMaxThrustAcceleration,
+                        parachuteSemiDeployMultiplier, dt, Time.fixedDeltaTime, maxOrbits, noSkipToFreefall,
+                        forcedStartUT));
                 }
 
                 lastBrakingPlanInputUT = source.InputUT;
                 ThreadPool.QueueUserWorkItem(RunTargetAwareBrakingPlan,
-                    new BrakingPlanJob(simulations, Interlocked.Read(ref predictionGeneration)));
+                    new BrakingPlanJob(simulations, Interlocked.Read(ref predictionGeneration), captureIds));
             }
             catch (Exception ex)
             {
+                foreach (long id in captureIds)
+                    LandingPredictorCapture.Abandoned(id, "plan_submission_failed");
                 Interlocked.Exchange(ref brakingPlanRunning, 0);
                 Debug.LogException(ex);
             }
@@ -562,11 +645,23 @@ namespace MuMech
         {
             var job = (BrakingPlanJob)state;
             var results = new List<ReentrySimulation.Result>(job.Simulations.Count);
+            int completed = 0;
+            bool simulationRunning = false;
             try
             {
-                foreach (ReentrySimulation simulation in job.Simulations)
+                for (int i = 0; i < job.Simulations.Count; ++i)
                 {
+                    ReentrySimulation simulation = job.Simulations[i];
+                    Stopwatch captureWorkerTimer = job.CaptureIds[i] != 0 ? Stopwatch.StartNew() : null;
+                    simulationRunning = true;
                     ReentrySimulation.Result candidate = simulation.RunSimulation();
+                    captureWorkerTimer?.Stop();
+                    candidate.CaptureSubmissionId = job.CaptureIds[i];
+                    LandingPredictorCapture.WorkerResult(job.CaptureIds[i], candidate,
+                        job.Generation != Interlocked.Read(ref predictionGeneration),
+                        captureWorkerTimer?.Elapsed.TotalMilliseconds ?? 0);
+                    completed = i + 1;
+                    simulationRunning = false;
                     simulation.Release();
                     results.Add(candidate);
                 }
@@ -574,7 +669,11 @@ namespace MuMech
                 if (job.Generation != Interlocked.Read(ref predictionGeneration))
                 {
                     foreach (ReentrySimulation.Result candidate in results)
+                    {
+                        LandingPredictorCapture.Discarded(candidate.CaptureSubmissionId,
+                            "stale_plan_worker_generation");
                         candidate.Release();
+                    }
                     results = null;
                     return;
                 }
@@ -585,6 +684,16 @@ namespace MuMech
             }
             catch (Exception ex)
             {
+                if (results != null)
+                    foreach (ReentrySimulation.Result completedResult in results)
+                        LandingPredictorCapture.Discarded(completedResult.CaptureSubmissionId,
+                            "plan_worker_or_queue_exception");
+                if (simulationRunning && completed < job.CaptureIds.Count)
+                    LandingPredictorCapture.WorkerException(job.CaptureIds[completed], ex);
+                for (int i = completed + (simulationRunning ? 1 : 0); i < job.CaptureIds.Count; ++i)
+                {
+                    LandingPredictorCapture.Abandoned(job.CaptureIds[i], "plan_worker_stopped");
+                }
                 Dispatcher.InvokeAsync(() => Debug.LogException(ex));
             }
             finally
@@ -605,6 +714,10 @@ namespace MuMech
                     var set = (BrakingPlanResultSet)readyBrakingPlanResults.Dequeue();
                     if (set.Generation != Interlocked.Read(ref predictionGeneration) || !Core.Target.PositionTargetExists)
                     {
+                        foreach (ReentrySimulation.Result candidate in set.Results)
+                            LandingPredictorCapture.ResolvedResult(candidate.CaptureSubmissionId, candidate, null,
+                                "stale_plan_discarded", Interlocked.Read(ref predictionGeneration),
+                                Core.Landing.CurrentStep?.GetType().Name);
                         ReleaseBrakingPlanResults(set.Results);
                         continue;
                     }
@@ -628,6 +741,10 @@ namespace MuMech
 
                     if (!TargetAwareBrakingPlan.TrySelect(candidates, out TargetAwareBrakingPlan.Candidate selected))
                     {
+                        foreach (ReentrySimulation.Result candidate in set.Results)
+                            LandingPredictorCapture.ResolvedResult(candidate.CaptureSubmissionId, candidate, null,
+                                "plan_rejected", Interlocked.Read(ref predictionGeneration),
+                                Core.Landing.CurrentStep?.GetType().Name);
                         if (Core.Landing.LandingTraceEnabled)
                             Core.Landing.TraceLanding($"predictor target-aware rejected all candidates count={set.Results.Count}");
                         ReleaseBrakingPlanResults(set.Results);
@@ -645,6 +762,10 @@ namespace MuMech
                     }
                     if (selectedResult == null)
                     {
+                        foreach (ReentrySimulation.Result candidate in set.Results)
+                            LandingPredictorCapture.ResolvedResult(candidate.CaptureSubmissionId, candidate, null,
+                                "plan_selection_missing", Interlocked.Read(ref predictionGeneration),
+                                Core.Landing.CurrentStep?.GetType().Name);
                         ReleaseBrakingPlanResults(set.Results);
                         continue;
                     }
@@ -652,15 +773,25 @@ namespace MuMech
                     // Terrain is a Unity main-thread query. Resolve it only for the
                     // selected candidate so plan evaluation remains bounded and does
                     // not create the game pauses seen in earlier V2 experiments.
+                    TerrainProfileTrace selectedTerrain = selectedResult.CaptureSubmissionId != 0
+                        ? new TerrainProfileTrace() : null;
                     if (!selectedResult.Body.atmosphere)
-                        ResolveAirlessTerrainProfileContact(selectedResult, null);
+                        ResolveAirlessTerrainProfileContact(selectedResult, selectedTerrain);
+                    LandingPredictorCapture.ResolvedResult(selectedResult.CaptureSubmissionId, selectedResult,
+                        selectedTerrain, "selected_for_publication", Interlocked.Read(ref predictionGeneration),
+                        Core.Landing.CurrentStep?.GetType().Name);
                     PublishNormalResult(selectedResult);
                     if (Core.Landing.LandingTraceEnabled)
                         Core.Landing.TraceLanding($"predictor target-aware brakeStart={selected.StartUT:F2} targetError={selected.DownrangeError:F1} candidates={set.Results.Count}");
 
                     foreach (ReentrySimulation.Result candidate in set.Results)
                         if (candidate != selectedResult)
+                        {
+                            LandingPredictorCapture.ResolvedResult(candidate.CaptureSubmissionId, candidate, null,
+                                "candidate_not_selected", Interlocked.Read(ref predictionGeneration),
+                                Core.Landing.CurrentStep?.GetType().Name);
                             candidate.Release();
+                        }
                 }
             }
         }
@@ -698,7 +829,10 @@ namespace MuMech
         private static void ReleaseBrakingPlanResults(IEnumerable<ReentrySimulation.Result> results)
         {
             foreach (ReentrySimulation.Result candidate in results)
+            {
+                LandingPredictorCapture.Discarded(candidate.CaptureSubmissionId, "queued_plan_released");
                 candidate.Release();
+            }
         }
 
         private void ReleaseQueuedBrakingPlanResults()
@@ -714,11 +848,13 @@ namespace MuMech
         {
             public readonly List<ReentrySimulation> Simulations;
             public readonly long Generation;
+            public readonly List<long> CaptureIds;
 
-            public BrakingPlanJob(List<ReentrySimulation> simulations, long generation)
+            public BrakingPlanJob(List<ReentrySimulation> simulations, long generation, List<long> captureIds)
             {
                 Simulations = simulations;
                 Generation = generation;
+                CaptureIds = captureIds;
             }
         }
 
@@ -764,11 +900,46 @@ namespace MuMech
             }
             var altitudeASL = new List<double>(sampleCount);
             var terrainASL = new List<double>(sampleCount);
+            bool captureTerrain = trace != null && simulationResult.CaptureSubmissionId != 0;
+            StringBuilder captureSamples = null;
+            if (captureTerrain)
+            {
+                try { captureSamples = new StringBuilder().Append('['); }
+                catch (Exception) { /* Terrain resolution must proceed if capture allocation fails. */ }
+            }
+            long terrainQueryTicks = 0;
             for (int i = firstPossibleContact; i < simulationResult.Trajectory.Count; ++i)
             {
                 AbsoluteVector sample = simulationResult.Trajectory[i];
-                altitudeASL.Add(sample.Radius - simulationResult.Body.Radius);
-                terrainASL.Add(simulationResult.Body.TerrainAltitude(sample.Latitude, sample.Longitude));
+                double altitude = sample.Radius - simulationResult.Body.Radius;
+                long terrainQueryStart = captureTerrain ? Stopwatch.GetTimestamp() : 0;
+                double terrain = simulationResult.Body.TerrainAltitude(sample.Latitude, sample.Longitude);
+                if (captureTerrain)
+                    terrainQueryTicks += Stopwatch.GetTimestamp() - terrainQueryStart;
+                altitudeASL.Add(altitude);
+                terrainASL.Add(terrain);
+                if (captureSamples != null)
+                {
+                    try
+                    {
+                        if (i != firstPossibleContact) captureSamples.Append(',');
+                        captureSamples.Append('[').Append(LandingPredictorCapture.CaptureNumber(sample.Latitude))
+                            .Append(',').Append(LandingPredictorCapture.CaptureNumber(sample.Longitude))
+                            .Append(',').Append(LandingPredictorCapture.CaptureNumber(altitude))
+                            .Append(',').Append(LandingPredictorCapture.CaptureNumber(terrain)).Append(']');
+                    }
+                    catch (Exception)
+                    {
+                        captureSamples = null;
+                    }
+                }
+            }
+            if (captureTerrain)
+            {
+                trace.TerrainQueryCount = sampleCount;
+                trace.TerrainQueryElapsedMs = 1000d * terrainQueryTicks / Stopwatch.Frequency;
+                try { trace.CaptureSamples = captureSamples?.Append(']').ToString(); }
+                catch (Exception) { trace.CaptureSamples = null; }
             }
 
             int localContactIndex = AirlessTerrainProfileContact.FindFirstContactIndex(altitudeASL, terrainASL);
@@ -824,6 +995,9 @@ namespace MuMech
             if (!Core.Landing.LandingTraceEnabled || !Core.Landing.LandAtTarget)
                 return;
 
+            LandingPredictorCapture.Decision(newResult.CaptureSubmissionId, decision,
+                comparedResult?.CaptureSubmissionId ?? 0);
+
             double inputTimeDifference = comparedResult == null ? double.NaN :
                 Math.Abs(newResult.InputUT - comparedResult.InputUT);
             double expectedSnapshotMotion = VesselState.SpeedSurface * inputTimeDifference;
@@ -842,10 +1016,16 @@ namespace MuMech
         private void PublishNormalResult(ReentrySimulation.Result newResult)
         {
             if (result != null)
+            {
+                LandingPredictorCapture.Discarded(result.CaptureSubmissionId,
+                    "published_result_replaced");
                 result.Release();
+            }
 
             result = newResult;
             ResultVersion++;
+            LandingPredictorCapture.Published(newResult.CaptureSubmissionId, ResultVersion,
+                Interlocked.Read(ref predictionGeneration), Core.Landing.CurrentStep?.GetType().Name);
         }
 
         private void AcceptNormalResult(ReentrySimulation.Result newResult, TerrainProfileTrace terrainTrace)
