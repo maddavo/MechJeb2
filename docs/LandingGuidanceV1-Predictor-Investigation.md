@@ -122,3 +122,12 @@ r7 accepts a candidate terminal speed up to the gravity-only speed acquired
 through V1's existing 200 m final-descent buffer, plus a 5 m/s numerical
 allowance. It logs an explicit `predictor target-aware rejected all candidates`
 event if no candidate qualifies.
+
+## r7 build and installation
+
+- Source commit: `01066d16` (`fix: anchor V1 predictor braking at target terrain`).
+- Window build identity: `V1 Beta Predictor Diagnostics 2026-09-27 r7`.
+- Build succeeded and focused landing-prediction tests passed: 18/18.
+- Installed after confirming `KSP_x64` was not running.
+- Backup: `C:\Users\Dave\Documents\KSP Backups\MechJeb2-LandingGuidanceV2\MechJeb2-20260927-172040-pre-r7.dll`.
+- Installed DLL SHA-256: `6B1A5641A0FE4A3E5F2DDC3D6C4895C9EC2788917EA9CAEAEF8757EEC05E56A9`.
