@@ -43,4 +43,15 @@
 | `v1-alpha-predictor-diagnostics-20260927` / `8fb657c9` | Remove V2 runtime code and add an opt-in V1-only structured predictor trace. Preserve the V1 Alpha deorbit controller and retained terrain repairs. | Release build: 0 warnings, 0 errors. Retained predictor-consensus suite: 11 passed, 0 failed. V1 Alpha `DeorbitBurn.cs` has no diff from `ddb66b43`. Installed only after confirming KSP was closed; SHA-256 verified. | Awaiting the next KSP V1 diagnostic landing. | The trace is diagnostic only: it captures simulator versus resolved terrain endpoints, consensus decisions, predictor freshness, and same-input osculating impact. It does not change V1 commands. |
 | `v1-alpha-predictor-diagnostics-r2-20260927` / `cbb4b9d5` | Correct field ordering in the new `predictor_result` JSON trace. | Release build: 0 warnings, 0 errors. Retained predictor-consensus suite: 11 passed, 0 failed. V1 Alpha controller-phase files have no diff from `v1-alpha`. | Awaiting diagnostic rerun. | The r1 records were syntactically valid but semantically mislabelled; they cannot be used to diagnose the predictor. r2 changes trace formatting and displayed version only. |
 
+## Baseline identity correction — 2026-09-27
+
+The exact source of the 2026-09-25 Minmus target landing was
+`d8ac3dd5` (`v1-terrain-profile-contact-20260925`), whose installed DLL hash
+was `D817AC5E5C0B97A30C4E7AF5597B0A8516385E116452113B27D0AEF39E145A63`.
+`a8ff3530` is the documentation commit recording that flight; its parent
+`067ca75e` restores the same runtime source after an uninstalled experiment.
+The later recovery designated "V1 Alpha" retained two predictor changes that
+were absent from the proven DLL.  Do not describe that recovered composition as
+the exact Minmus target-landing baseline.
+
 The successful terrain-profile landing was documented at `a8ff3530`; its code was the post-revert terrain-profile path ending at `067ca75e`. Each table row states the level of evidence available for that exact version.
