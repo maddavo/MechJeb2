@@ -536,13 +536,19 @@ namespace MuMech
             if (trace != null)
                 trace.LocalContactIndex = localContactIndex;
 
-            int contactIndex = firstPossibleContact + localContactIndex;
+            int contactIndex = AirlessTerrainProfileContact.ToTrajectoryIndex(firstPossibleContact,
+                localContactIndex, simulationResult.Trajectory.Count);
+            if (contactIndex < 0)
+                return;
             if (trace != null)
                 trace.ContactIndex = contactIndex;
             AbsoluteVector contact = simulationResult.Trajectory[contactIndex];
             simulationResult.EndPosition = contact;
             simulationResult.EndUT = contact.UT;
-            simulationResult.EndASL = terrainASL[contactIndex];
+            // contactIndex addresses the complete simulator trajectory. The
+            // terrain profile is a slice beginning at firstPossibleContact,
+            // so it must be read with its local contact index.
+            simulationResult.EndASL = terrainASL[localContactIndex];
             if (trace != null)
             {
                 trace.ContactTerrainASL = simulationResult.EndASL;

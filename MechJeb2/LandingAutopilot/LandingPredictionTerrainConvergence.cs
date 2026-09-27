@@ -29,6 +29,15 @@ namespace MuMech.Landing
             return -1;
         }
 
+        public static int ToTrajectoryIndex(int firstProfileIndex, int localContactIndex, int trajectoryCount)
+        {
+            if (firstProfileIndex < 0 || localContactIndex < 0 || trajectoryCount <= 0)
+                return -1;
+
+            int index = firstProfileIndex + localContactIndex;
+            return index < trajectoryCount ? index : -1;
+        }
+
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
     }
 

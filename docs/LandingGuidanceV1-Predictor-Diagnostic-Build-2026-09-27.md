@@ -9,12 +9,14 @@ This is a V1-only diagnostic build. It restores the exact V1 Beta predictor and 
 - The V2 controller, planner, UI, trace writer, and V2-only tests are removed from the build.
 - The Landing Guidance window shows only V1 controls plus:
   - `Log trace data`
-  - `V1 Beta Predictor Diagnostics 2026-09-27`
+  - `V1 Beta Predictor Diagnostics 2026-09-27 r2`
 - Logging is disabled by default. It commands no actuator and changes no V1 guidance calculation.
 
 ## V1 Beta baseline
 
 The earlier Alpha-labelled diagnostic build retained two later predictor modifications. This build removes them: V1 Beta uses the exact two-sample predictor publication and terrain-profile contact behaviour from the proven Minmus DLL. Diagnostics observe that behaviour only. It also retains the correction for the original trace field-ordering defect; the generated JSONL records use the documented field names.
+
+Revision r2 applies the one narrowly justified V1 Beta repair: the terrain profile is a final-path slice, so its resolved terrain height must use the local profile contact index. The full trajectory still uses the corresponding absolute contact index. This prevents the out-of-range exception that otherwise suppresses predictor publication and the blue landing marker.
 
 ## Trace output
 
