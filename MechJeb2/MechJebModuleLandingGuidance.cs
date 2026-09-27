@@ -1,4 +1,4 @@
-extern alias JetBrainsAnnotations;
+﻿extern alias JetBrainsAnnotations;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -12,7 +12,6 @@ namespace MuMech
     public class MechJebModuleLandingGuidance : DisplayModule
     {
         private MechJebModuleLandingPredictions _predictor;
-        private MechJebModuleLandingGuidanceV2 _v2;
         public static List<LandingSite> LandingSites;
 
         [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
@@ -29,7 +28,6 @@ namespace MuMech
         public override void OnStart(PartModule.StartState state)
         {
             _predictor = Core.GetComputerModule<MechJebModuleLandingPredictions>();
-            _v2 = Core.GetComputerModule<MechJebModuleLandingGuidanceV2>();
 
             if (LandingSites == null && HighLogic.LoadedSceneIsFlight)
                 InitLandingSitesList();
@@ -173,129 +171,16 @@ namespace MuMech
                     //}
                 }
             }
-
-            // V2 is a separate controller panel.  Keep the restored V1 window
-            // layout and controls contiguous above this point.
-            DrawV2Preview();
+            if (HighLogic.LoadedSceneIsFlight && Core.Landing != null)
+            {
+                GUILayout.Space(4);
+                Core.Landing.LandingTraceEnabled = GUILayout.Toggle(Core.Landing.LandingTraceEnabled, "Log trace data");
+                GUILayout.Label(MechJebModuleLandingAutopilot.DiagnosticBuildVersion);
+            }
 
             GUILayout.EndVertical();
 
             base.WindowGUI(windowID);
-        }
-
-        private void DrawV2Preview()
-        {
-            if (_v2 == null || !HighLogic.LoadedSceneIsFlight)
-                return;
-
-            GUILayout.Space(4);
-            GUILayout.Label("Landing Guidance V2 — landing plan");
-            _v2.PreviewEnabled = GUILayout.Toggle(_v2.PreviewEnabled,
-                "Enable V2 estimator and preflight diagnostics");
-
-            GUILayout.Space(2);
-            GUILayout.Label("V2 landing controller: " + _v2.FlightPhase);
-            GUILayout.Label(_v2.ControllerStatus);
-            _v2.V2AutoWarp = GUILayout.Toggle(_v2.V2AutoWarp, "V2 auto-warp");
-            if (_v2.ControllerActive)
-            {
-                if (GUILayout.Button("Abort V2 landing")) _v2.AbortAirlessLanding();
-                GUILayout.Label("V2 active target: " + Coordinates.ToStringDMS(_v2.V2ActiveTargetLatitude, _v2.V2ActiveTargetLongitude));
-                if (_v2.FlightPhase == MechJebModuleLandingGuidanceV2.V2FlightPhase.VisualAssessment ||
-                    _v2.FlightPhase == MechJebModuleLandingGuidanceV2.V2FlightPhase.TerminalDivert)
-                {
-                    GUILayout.BeginHorizontal();
-                    if (GUILayout.Button("N 10m")) _v2.TryAdjustV2Target(10, 0);
-                    if (GUILayout.Button("S 10m")) _v2.TryAdjustV2Target(-10, 0);
-                    if (GUILayout.Button("E 10m")) _v2.TryAdjustV2Target(0, 10);
-                    if (GUILayout.Button("W 10m")) _v2.TryAdjustV2Target(0, -10);
-                    GUILayout.EndHorizontal();
-                    GUILayout.Label("V2 local site: " + _v2.SiteAssessmentStatus);
-                }
-            }
-            else if (GUILayout.Button("Start V2 landing")) _v2.StartLanding();
-
-            if (!_v2.PreviewEnabled)
-                return;
-
-            _v2.StructuredTraceEnabled = GUILayout.Toggle(_v2.StructuredTraceEnabled,
-                "Write V2 structured trace");
-
-            if (GUILayout.Button("Refresh V2 preflight"))
-                _v2.RefreshPreflight(true);
-
-            LandingGuidanceV2Preflight preflight = _v2.Preflight;
-            if (preflight == null)
-            {
-                GUILayout.Label("Waiting for a target and flight snapshot.");
-                return;
-            }
-
-            LandingGuidanceV2Estimate estimate = preflight.Estimate;
-            GUILayout.Label("V2 estimator: " + estimate.Outcome);
-            GUILayout.Label(estimate.Detail);
-            GUILayout.Label("V2 deterministic replay: " +
-                (preflight.EstimatorValidation != null && preflight.EstimatorValidation.IsDeterministic ? "pass" : "failed"));
-            GUILayout.Label("Available vacuum Delta-V: " + preflight.Snapshot.AvailableDeltaV.ToSI() + "m/s");
-
-            LandingGuidanceV2PreflightAssessment assessment = preflight.Assessment;
-            if (assessment != null)
-            {
-                GUILayout.Label("V2 snapshot check: " + assessment.State);
-                GUILayout.Label(assessment.Reason);
-                if (!double.IsNaN(assessment.LocalGravity))
-                    GUILayout.Label("Local gravity: " + assessment.LocalGravity.ToSI() + "m/s²");
-            }
-
-            AirlessLandingPlan airlessPlan = preflight.AirlessPlan;
-            if (airlessPlan != null)
-            {
-                string planState = airlessPlan.State == AirlessLandingPlanState.Candidate ? "FEASIBLE" :
-                    airlessPlan.State == AirlessLandingPlanState.Planning ? "SEARCHING" : "NOT FEASIBLE";
-                GUILayout.Label("LANDING PLAN: " + planState);
-                GUILayout.Label(airlessPlan.Reason);
-                if (!double.IsNaN(airlessPlan.StrategicDeorbitDeltaVMagnitude))
-                    GUILayout.Label("Strategic burn: " + airlessPlan.StrategicDeorbitDeltaVMagnitude.ToSI() + "m/s");
-                if (!double.IsNaN(airlessPlan.StrategicBurnUT))
-                    GUILayout.Label("Strategic burn in: " + Math.Max(0, airlessPlan.StrategicBurnUT - Planetarium.GetUniversalTime()).ToSI() + "s");
-                if (!double.IsNaN(airlessPlan.BrakingEntryUT))
-                    GUILayout.Label("Planned braking entry in: " + Math.Max(0, airlessPlan.BrakingEntryUT - Planetarium.GetUniversalTime()).ToSI() + "s");
-                GUILayout.Label("Planned landing Delta-V: " + airlessPlan.TotalLowerBound.ToSI() + "m/s");
-                GUILayout.Label("Protected terminal reserve: " + airlessPlan.TerminalDivertReserve.ToSI() + "m/s");
-                GUILayout.Label("Landing margin: " + airlessPlan.LowerBoundMargin.ToSI() + "m/s");
-            }
-
-            AtmosphericLandingPlan atmosphericPlan = preflight.AtmosphericPlan;
-            if (atmosphericPlan != null && atmosphericPlan.State != AtmosphericLandingPlanState.NotApplicable)
-            {
-                GUILayout.Label("ATMOSPHERIC ENTRY PLAN: " + atmosphericPlan.State);
-                GUILayout.Label(atmosphericPlan.Reason);
-                if (!double.IsNaN(atmosphericPlan.PredictedTargetError))
-                    GUILayout.Label("Predicted entry endpoint error: " + atmosphericPlan.PredictedTargetError.ToSI() + "m");
-                if (!double.IsNaN(atmosphericPlan.EntryCorridorRadius))
-                    GUILayout.Label("Robust entry corridor: " + atmosphericPlan.EntryCorridorRadius.ToSI() + "m");
-                if (!double.IsNaN(atmosphericPlan.EndpointUncertainty))
-                    GUILayout.Label("Atmospheric endpoint uncertainty: " + atmosphericPlan.EndpointUncertainty.ToSI() + "m");
-                if (!double.IsNaN(atmosphericPlan.StrategicEntryBurnUT))
-                {
-                    string entryPrefix = atmosphericPlan.State == AtmosphericLandingPlanState.Candidate
-                        ? "Strategic entry burn"
-                        : "Strategic entry candidate";
-                    GUILayout.Label(entryPrefix + ": " + atmosphericPlan.StrategicEntryDeltaV.magnitude.ToSI() + "m/s");
-                    GUILayout.Label(entryPrefix + " in: " + Math.Max(0, atmosphericPlan.StrategicEntryBurnUT - Planetarium.GetUniversalTime()).ToSI() + "s");
-                }
-            }
-
-            if (estimate.HasImpact)
-            {
-                GUILayout.Label("Sea-level target error: " + estimate.TargetError.ToSI() + "m");
-                if (!double.IsNaN(estimate.TerrainAltitude))
-                    GUILayout.Label("Estimated impact terrain: " + estimate.TerrainAltitude.ToSI() + "m ASL");
-                GUILayout.Label("Braking Delta-V lower bound: " + preflight.BrakingDeltaVLowerBound.ToSI() + "m/s");
-                GUILayout.Label("Delta-V above lower bound: " + preflight.DeltaVAboveLowerBound.ToSI() + "m/s");
-            }
-
-            GUILayout.Label("V2 owns its strategic burn, braking, local assessment, and terminal target tracking. V1 Landing Guidance remains separate.");
         }
 
         public void SetAndLandTargetKSC()
@@ -310,8 +195,6 @@ namespace MuMech
             Core.Landing.StopLanding();
             Core.Landing.LandUntargeted(this);
         }
-
-        [GeneralInfoItem("#MechJeb_LandingPredictions", InfoItem.Category.Misc)] //Landing predictions
         private void DrawGUITogglePredictions()
         {
             GUILayout.BeginVertical();

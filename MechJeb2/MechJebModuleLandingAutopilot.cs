@@ -19,7 +19,10 @@ namespace MuMech
         // Diagnostic build: retain a concise landing trace in KSP.log without changing
         // any control command.  It is deliberately rate-limited because the predictor
         // and autopilot both run far more often than a useful human-readable trace.
-        public bool LandingTraceEnabled = true;
+        [Persistent(pass = (int)(Pass.LOCAL | Pass.TYPE | Pass.GLOBAL))]
+        public bool LandingTraceEnabled;
+
+        public const string DiagnosticBuildVersion = "V1 Alpha Predictor Diagnostics 2026-09-27";
         private double _nextLandingTraceUT;
         private long _lastTracedPredictionVersion = -1;
         private string _lastTracedStep;
@@ -165,6 +168,7 @@ namespace MuMech
 
         public void StopLanding()
         {
+            LandingPredictorTrace.Close();
             Users.Clear();
             Core.Thrust.ThrustOff();
             Core.Thrust.Users.Remove(this);
@@ -242,12 +246,33 @@ namespace MuMech
                 $"throttle={Core.Thrust.TargetThrottle:F3} thrustAccel={VesselState.CurrentThrustAcceleration:F3} maxAccel={VesselState.LimitedMaxThrustAcceleration:F3} " +
                 $"apA={Orbit.ApA:F1} peA={Orbit.PeA:F1} attitudeError={Core.Attitude.attitudeAngleFromTarget():F2} " +
                 $"predictionVersion={PredictionVersion}{CurrentStep.TraceDetails}");
+            LandingPredictorTrace.WriteState(step, Status, VesselState.Time, TimeWarp.CurrentRate,
+                VesselState.CoM, VesselState.OrbitalVelocity, Core.Thrust.TargetThrottle,
+                VesselState.CurrentThrustAcceleration, PredictionVersion, Prediction);
         }
 
         public void TraceLanding(string message)
         {
             if (LandingTraceEnabled)
                 Debug.Log("[MechJebLandingTrace] " + message);
+        }
+
+        internal void TracePredictorDiagnostic(string decision, ReentrySimulation.Result result,
+            TerrainProfileTrace terrain, double simulationSeconds)
+        {
+            if (!LandingTraceEnabled || !LandAtTarget)
+            {
+                LandingPredictorTrace.Close();
+                return;
+            }
+
+            string targetBody = Core.Target.PositionTargetExists && Core.Target.targetBody != null
+                ? Core.Target.targetBody.bodyName
+                : null;
+            LandingPredictorTrace.Write(decision, result, terrain, CurrentStep?.GetType().Name,
+                Status, VesselState.Time, simulationSeconds, targetBody,
+                Core.Target.PositionTargetExists ? (double)Core.Target.targetLatitude : double.NaN,
+                Core.Target.PositionTargetExists ? (double)Core.Target.targetLongitude : double.NaN);
         }
 
         protected override void OnModuleEnabled()
@@ -258,6 +283,7 @@ namespace MuMech
 
         protected override void OnModuleDisabled()
         {
+            LandingPredictorTrace.Close();
             Core.Attitude.attitudeDeactivate();
             _predictor.Users.Remove(this);
             _predictor.descentSpeedPolicy = null;

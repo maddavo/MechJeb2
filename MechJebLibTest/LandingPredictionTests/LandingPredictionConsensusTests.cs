@@ -2,7 +2,7 @@ using MuMech;
 using MuMech.Landing;
 using Xunit;
 
-namespace MechJebLibTest.LandingGuidanceV2Tests
+namespace MechJebLibTest.LandingPredictionTests
 {
     public class LandingPredictionConsensusTests
     {

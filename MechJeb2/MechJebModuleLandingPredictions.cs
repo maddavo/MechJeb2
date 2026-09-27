@@ -464,6 +464,11 @@ namespace MuMech
                         }
                         else
                         {
+                            var terrainTrace = new TerrainProfileTrace
+                            {
+                                SimulatorEndpoint = newResult.EndPosition,
+                                SimulatorEndpointASL = newResult.EndASL
+                            };
                             // An airless trajectory is unaffected by terrain until first
                             // contact. Simulate to sea level, then on the flight thread
                             // resolve the first recorded path sample that reaches the
@@ -473,9 +478,9 @@ namespace MuMech
                             if (newResult.Outcome == ReentrySimulation.Outcome.LANDED &&
                                 newResult.Body != null && !newResult.Body.atmosphere)
                             {
-                                ResolveAirlessTerrainProfileContact(newResult);
+                                ResolveAirlessTerrainProfileContact(newResult, terrainTrace);
                             }
-                            AcceptNormalResult(newResult);
+                            AcceptNormalResult(newResult, terrainTrace);
                         }
                     }
                     else
@@ -488,7 +493,7 @@ namespace MuMech
             }
         }
 
-        private void ResolveAirlessTerrainProfileContact(ReentrySimulation.Result simulationResult)
+        private void ResolveAirlessTerrainProfileContact(ReentrySimulation.Result simulationResult, TerrainProfileTrace trace)
         {
             if (simulationResult.Trajectory == null || simulationResult.Trajectory.Count == 0)
                 return;
@@ -511,6 +516,8 @@ namespace MuMech
             }
 
             int sampleCount = simulationResult.Trajectory.Count - firstPossibleContact;
+            trace.FirstProfileIndex = firstPossibleContact;
+            trace.ProfileSampleCount = sampleCount;
             var altitudeASL = new List<double>(sampleCount);
             var terrainASL = new List<double>(sampleCount);
             for (int i = firstPossibleContact; i < simulationResult.Trajectory.Count; ++i)
@@ -524,16 +531,22 @@ namespace MuMech
             if (localContactIndex < 0)
                 return;
 
+            trace.LocalContactIndex = localContactIndex;
+
             int contactIndex = AirlessTerrainProfileContact.ToTrajectoryIndex(firstPossibleContact,
                 localContactIndex, simulationResult.Trajectory.Count);
             if (contactIndex < 0)
                 return;
+
+            trace.ContactIndex = contactIndex;
 
             AbsoluteVector contact = simulationResult.Trajectory[contactIndex];
             simulationResult.EndPosition = contact;
             simulationResult.EndUT = contact.UT;
             // terrainASL is a final-path slice, so it is indexed locally.
             simulationResult.EndASL = terrainASL[localContactIndex];
+            trace.ContactTerrainASL = simulationResult.EndASL;
+            trace.Applied = true;
         }
 
         private double ResultAcceptanceDistance(ReentrySimulation.Result first, ReentrySimulation.Result second)
@@ -563,7 +576,7 @@ namespace MuMech
 
         private void TraceNormalResultDecision(string decision, ReentrySimulation.Result comparedResult,
             ReentrySimulation.Result newResult, int candidateSamples = 0, int requiredSamples = 0,
-            double publishedDistance = double.NaN)
+            double publishedDistance = double.NaN, TerrainProfileTrace terrainTrace = null)
         {
             if (!Core.Landing.LandingTraceEnabled || !Core.Landing.LandAtTarget)
                 return;
@@ -581,6 +594,7 @@ namespace MuMech
                 $"newLat={newResult.EndPosition.Latitude:F6} newLon={newResult.EndPosition.Longitude:F6} " +
                 $"endUT={newResult.EndUT:F2} inputTerrain={newResult.InputProbableLandingSiteASL:F1} " +
                 $"endpointTerrain={newResult.EndASL:F1}");
+            Core.Landing.TracePredictorDiagnostic(decision, newResult, terrainTrace, lastSimTime);
         }
 
         private void PublishNormalResult(ReentrySimulation.Result newResult)
@@ -592,7 +606,7 @@ namespace MuMech
             ResultVersion++;
         }
 
-        private void AcceptNormalResult(ReentrySimulation.Result newResult)
+        private void AcceptNormalResult(ReentrySimulation.Result newResult, TerrainProfileTrace terrainTrace)
         {
             // A result controls both the map marker and V1 course corrections.
             // Publish only a consensus result. In particular, do not let the
@@ -609,7 +623,7 @@ namespace MuMech
             if (!candidateAgrees)
             {
                 TraceNormalResultDecision(candidateResult == null ? "initial_pending" : "replace", candidateResult, newResult,
-                    candidateResultSampleCount, LandingPredictionTerrainConvergence.NormalRequiredSamples);
+                    candidateResultSampleCount, LandingPredictionTerrainConvergence.NormalRequiredSamples, terrainTrace: terrainTrace);
                 if (candidateResult != null)
                     candidateResult.Release();
                 candidateResult = newResult;
@@ -625,7 +639,7 @@ namespace MuMech
             if (LandingPredictionTerrainConvergence.CanPublish(candidateResultSampleCount, requiredSamples))
             {
                 TraceNormalResultDecision(result == null ? "initial_accept" : "candidate_accept", candidateResult, newResult,
-                    candidateResultSampleCount, requiredSamples, publishedDistance);
+                    candidateResultSampleCount, requiredSamples, publishedDistance, terrainTrace);
                 candidateResult.Release();
                 candidateResult = null;
                 candidateResultSampleCount = 0;
@@ -634,7 +648,7 @@ namespace MuMech
             }
 
             TraceNormalResultDecision("branch_pending", candidateResult, newResult,
-                candidateResultSampleCount, requiredSamples, publishedDistance);
+                candidateResultSampleCount, requiredSamples, publishedDistance, terrainTrace);
             candidateResult.Release();
             candidateResult = newResult;
         }
