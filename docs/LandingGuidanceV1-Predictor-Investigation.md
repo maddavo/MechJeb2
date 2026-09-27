@@ -88,3 +88,17 @@ data** enabled. The trace should show `predictor target-aware` records with a
 braking start and target error. Compare the selected powered endpoint with the
 actual V1 phase and verify that its predicted braking point is later than the
 incorrect immediate virtual brake seen in the failing trace.
+
+## Build and installation record
+
+- Source commit: `057f5f3c` (`fix: make V1 powered prediction target-aware`).
+- Build identity shown in the Landing Guidance window: `V1 Beta Predictor
+  Diagnostics 2026-09-27 r6`.
+- Build: `dotnet build MechJeb2.sln -c Release --no-restore` succeeded.
+- Focused landing predictor tests: 16 passed, 0 failed.
+- The full repository test run completed with 8,405 passing and three existing,
+  unrelated failures: `StaticTests.ToSITest` expects the old Infinity glyph and
+  two PSG Kerbin ascent numeric baselines differ from their stored values.
+- Installed after confirming `KSP_x64` was not running. The prior DLL is backed
+  up as `C:\Users\Dave\Documents\KSP Backups\MechJeb2-LandingGuidanceV2\MechJeb2-20260927-170915-pre-r6.dll`.
+- Installed DLL SHA-256: `900AAA3509CEE689DF4C1489FD13D46D5494238C26712903E0993DE76A4F8F97`.
