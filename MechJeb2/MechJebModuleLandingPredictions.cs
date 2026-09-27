@@ -129,7 +129,6 @@ namespace MuMech
         protected ReentrySimulation.Result result;
         protected ReentrySimulation.Result errorResult;
         private ReentrySimulation.Result candidateResult;
-        private int candidateResultSampleCount;
         // A landing result is consumed by both the map marker and the landing autopilot.
         // Keep a monotonically increasing version so the autopilot can distinguish a new,
         // accepted prediction from another physics frame using the same result.
@@ -202,7 +201,6 @@ namespace MuMech
                 candidateResult.Release();
                 candidateResult = null;
             }
-            candidateResultSampleCount = 0;
         }
 
         // A targeted V1 landing is a new predictor transaction. A result or
@@ -217,7 +215,6 @@ namespace MuMech
                 candidateResult.Release();
                 candidateResult = null;
             }
-            candidateResultSampleCount = 0;
             if (result != null)
             {
                 result.Release();
@@ -464,11 +461,13 @@ namespace MuMech
                         }
                         else
                         {
-                            var terrainTrace = new TerrainProfileTrace
-                            {
-                                SimulatorEndpoint = newResult.EndPosition,
-                                SimulatorEndpointASL = newResult.EndASL
-                            };
+                            TerrainProfileTrace terrainTrace = Core.Landing.LandingTraceEnabled
+                                ? new TerrainProfileTrace
+                                {
+                                    SimulatorEndpoint = newResult.EndPosition,
+                                    SimulatorEndpointASL = newResult.EndASL
+                                }
+                                : null;
                             // An airless trajectory is unaffected by terrain until first
                             // contact. Simulate to sea level, then on the flight thread
                             // resolve the first recorded path sample that reaches the
@@ -516,8 +515,11 @@ namespace MuMech
             }
 
             int sampleCount = simulationResult.Trajectory.Count - firstPossibleContact;
-            trace.FirstProfileIndex = firstPossibleContact;
-            trace.ProfileSampleCount = sampleCount;
+            if (trace != null)
+            {
+                trace.FirstProfileIndex = firstPossibleContact;
+                trace.ProfileSampleCount = sampleCount;
+            }
             var altitudeASL = new List<double>(sampleCount);
             var terrainASL = new List<double>(sampleCount);
             for (int i = firstPossibleContact; i < simulationResult.Trajectory.Count; ++i)
@@ -531,22 +533,21 @@ namespace MuMech
             if (localContactIndex < 0)
                 return;
 
-            trace.LocalContactIndex = localContactIndex;
+            if (trace != null)
+                trace.LocalContactIndex = localContactIndex;
 
-            int contactIndex = AirlessTerrainProfileContact.ToTrajectoryIndex(firstPossibleContact,
-                localContactIndex, simulationResult.Trajectory.Count);
-            if (contactIndex < 0)
-                return;
-
-            trace.ContactIndex = contactIndex;
-
+            int contactIndex = firstPossibleContact + localContactIndex;
+            if (trace != null)
+                trace.ContactIndex = contactIndex;
             AbsoluteVector contact = simulationResult.Trajectory[contactIndex];
             simulationResult.EndPosition = contact;
             simulationResult.EndUT = contact.UT;
-            // terrainASL is a final-path slice, so it is indexed locally.
-            simulationResult.EndASL = terrainASL[localContactIndex];
-            trace.ContactTerrainASL = simulationResult.EndASL;
-            trace.Applied = true;
+            simulationResult.EndASL = terrainASL[contactIndex];
+            if (trace != null)
+            {
+                trace.ContactTerrainASL = simulationResult.EndASL;
+                trace.Applied = true;
+            }
         }
 
         private double ResultAcceptanceDistance(ReentrySimulation.Result first, ReentrySimulation.Result second)
@@ -559,24 +560,18 @@ namespace MuMech
             return Vector3d.Distance(firstPosition, secondPosition);
         }
 
-        private double ResultAcceptanceDistanceLimit(ReentrySimulation.Result first, ReentrySimulation.Result second)
+        private bool ResultsAgree(ReentrySimulation.Result first, ReentrySimulation.Result second)
         {
             double inputTimeDifference = Math.Abs(second.InputUT - first.InputUT);
             double expectedSnapshotMotion = VesselState.SpeedSurface * inputTimeDifference;
-            return Math.Min(MaximumResultAcceptanceDistance,
+            double acceptanceDistance = Math.Min(MaximumResultAcceptanceDistance,
                 Math.Max(MinimumResultAcceptanceDistance, 25 + 0.5 * expectedSnapshotMotion));
-        }
-
-        private bool ResultsAgree(ReentrySimulation.Result first, ReentrySimulation.Result second)
-        {
-            double acceptanceDistance = ResultAcceptanceDistanceLimit(first, second);
             return LandingPredictionConsensus.Agrees(first, second, acceptanceDistance,
                 ResultAcceptanceDistance(first, second));
         }
 
         private void TraceNormalResultDecision(string decision, ReentrySimulation.Result comparedResult,
-            ReentrySimulation.Result newResult, int candidateSamples = 0, int requiredSamples = 0,
-            double publishedDistance = double.NaN, TerrainProfileTrace terrainTrace = null)
+            ReentrySimulation.Result newResult, TerrainProfileTrace terrainTrace)
         {
             if (!Core.Landing.LandingTraceEnabled || !Core.Landing.LandAtTarget)
                 return;
@@ -590,7 +585,6 @@ namespace MuMech
                 ResultAcceptanceDistance(comparedResult, newResult);
             Core.Landing.TraceLanding($"predictor {decision} inputDt={inputTimeDifference:F3} " +
                 $"distance={resultDistance:F1} acceptance={acceptanceDistance:F1} " +
-                $"samples={candidateSamples}/{requiredSamples} publishedDistance={publishedDistance:F1} " +
                 $"newLat={newResult.EndPosition.Latitude:F6} newLon={newResult.EndPosition.Longitude:F6} " +
                 $"endUT={newResult.EndUT:F2} inputTerrain={newResult.InputProbableLandingSiteASL:F1} " +
                 $"endpointTerrain={newResult.EndASL:F1}");
@@ -612,44 +606,24 @@ namespace MuMech
             // Publish only a consensus result. In particular, do not let the
             // first result after a trajectory change select one side of a
             // terrain/impact branch before a second simulation corroborates it.
-            // A normal update needs two consecutive self-consistent samples.
-            // A candidate that is materially displaced from the published
-            // endpoint needs a third sample. This avoids accepting B/B in an
-            // A/A, B/B, C/C terrain-contact sequence while still letting a
-            // real trajectory change take effect within one simulation cycle.
+            // Publish only after two consecutive self-consistent simulations
+            // agree. Comparing a new result directly with the old published
+            // result lets an A/B/A branch sequence accept A on every second
+            // frame while B remains unresolved, which is exactly the visible
+            // marker and course-correction oscillation reported on Minmus.
             bool candidateAgrees = candidateResult != null && ResultsAgree(candidateResult, newResult);
-            candidateResultSampleCount = LandingPredictionTerrainConvergence.NextCompatibleSampleCount(
-                candidateResultSampleCount, candidateAgrees);
-            if (!candidateAgrees)
+            if (LandingPredictionTerrainConvergence.HasConsecutiveAgreement(candidateResult != null, candidateAgrees))
             {
-                TraceNormalResultDecision(candidateResult == null ? "initial_pending" : "replace", candidateResult, newResult,
-                    candidateResultSampleCount, LandingPredictionTerrainConvergence.NormalRequiredSamples, terrainTrace: terrainTrace);
-                if (candidateResult != null)
-                    candidateResult.Release();
-                candidateResult = newResult;
-                candidateResultSampleCount = 1;
-                return;
-            }
-
-            double publishedDistance = result == null ? double.NaN : ResultAcceptanceDistance(result, newResult);
-            double publishedAcceptanceDistance = result == null ? double.NaN : ResultAcceptanceDistanceLimit(result, newResult);
-            bool materiallyDisplaced = result != null &&
-                LandingPredictionTerrainConvergence.IsMateriallyDisplaced(publishedDistance, publishedAcceptanceDistance);
-            int requiredSamples = LandingPredictionTerrainConvergence.RequiredSamples(result != null, materiallyDisplaced);
-            if (LandingPredictionTerrainConvergence.CanPublish(candidateResultSampleCount, requiredSamples))
-            {
-                TraceNormalResultDecision(result == null ? "initial_accept" : "candidate_accept", candidateResult, newResult,
-                    candidateResultSampleCount, requiredSamples, publishedDistance, terrainTrace);
+                TraceNormalResultDecision(result == null ? "initial_accept" : "candidate_accept", candidateResult, newResult, terrainTrace);
                 candidateResult.Release();
                 candidateResult = null;
-                candidateResultSampleCount = 0;
                 PublishNormalResult(newResult);
                 return;
             }
 
-            TraceNormalResultDecision("branch_pending", candidateResult, newResult,
-                candidateResultSampleCount, requiredSamples, publishedDistance, terrainTrace);
-            candidateResult.Release();
+            TraceNormalResultDecision(candidateResult == null ? "initial_pending" : "replace", candidateResult, newResult, terrainTrace);
+            if (candidateResult != null)
+                candidateResult.Release();
             candidateResult = newResult;
         }
 

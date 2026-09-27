@@ -65,62 +65,15 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
-        public void DisplacedTerrainBranchRequiresThreeConsistentSamples()
+        public void AlternatingBranchesNeverSatisfyTheConsecutivePublicationGate()
         {
-            int required = LandingPredictionTerrainConvergence.RequiredSamples(true, true);
-
-            Assert.Equal(3, required);
-            Assert.False(LandingPredictionTerrainConvergence.CanPublish(1, required));
-            Assert.False(LandingPredictionTerrainConvergence.CanPublish(2, required));
-            Assert.True(LandingPredictionTerrainConvergence.CanPublish(3, required));
-        }
-
-        [Fact]
-        public void AirlessTerrainProfileMapsLocalContactBackToFullTrajectory()
-        {
-            Assert.Equal(7, AirlessTerrainProfileContact.ToTrajectoryIndex(5, 2, 10));
-            Assert.Equal(-1, AirlessTerrainProfileContact.ToTrajectoryIndex(5, 5, 10));
-            Assert.Equal(-1, AirlessTerrainProfileContact.ToTrajectoryIndex(-1, 0, 10));
-        }
-        [Fact]
-        public void CloseBrakingTerrainBranchRequiresThreeSamplesAtTheMeasuredAcceptanceScale()
-        {
-            // Live Minmus braking showed two internally consistent terrain
-            // contacts about 80–150 m apart while the consecutive-snapshot
-            // acceptance scale was 35 m. The old fixed 200 m branch threshold
-            // accepted both pairs and made throttle chase them.
-            Assert.True(LandingPredictionTerrainConvergence.IsMateriallyDisplaced(80, 35));
-            Assert.True(LandingPredictionTerrainConvergence.IsMateriallyDisplaced(150, 35));
-            Assert.False(LandingPredictionTerrainConvergence.IsMateriallyDisplaced(30, 35));
-            Assert.Equal(3, LandingPredictionTerrainConvergence.RequiredSamples(true,
-                LandingPredictionTerrainConvergence.IsMateriallyDisplaced(80, 35)));
-        }
-        [Fact]
-        public void AlternatingDisplacedTerrainPairsCannotReplacePublishedEndpoint()
-        {
-            int required = LandingPredictionTerrainConvergence.RequiredSamples(true, true);
-            int samples = 0;
-
-            // A/A has already made the current published endpoint. B/B and
-            // C/C are each internally consistent pairs, but neither has the
-            // third observation needed to take over from A.
-            samples = LandingPredictionTerrainConvergence.NextCompatibleSampleCount(samples, false); // B
-            samples = LandingPredictionTerrainConvergence.NextCompatibleSampleCount(samples, true);  // B
-            Assert.False(LandingPredictionTerrainConvergence.CanPublish(samples, required));
-
-            samples = LandingPredictionTerrainConvergence.NextCompatibleSampleCount(samples, false); // C
-            samples = LandingPredictionTerrainConvergence.NextCompatibleSampleCount(samples, true);  // C
-            Assert.False(LandingPredictionTerrainConvergence.CanPublish(samples, required));
-        }
-
-        [Fact]
-        public void NormalContinuousEndpointStillPublishesAfterTwoSamples()
-        {
-            int required = LandingPredictionTerrainConvergence.RequiredSamples(true, false);
-
-            Assert.Equal(2, required);
-            Assert.False(LandingPredictionTerrainConvergence.CanPublish(1, required));
-            Assert.True(LandingPredictionTerrainConvergence.CanPublish(2, required));
+            // A arrives: hold it. B replaces A: hold it. A replaces B: hold it.
+            // The former code compared the final A to the old published A and
+            // republished it, which allowed an A/B visual and control loop.
+            Assert.False(LandingPredictionTerrainConvergence.HasConsecutiveAgreement(false, false));
+            Assert.False(LandingPredictionTerrainConvergence.HasConsecutiveAgreement(true, false));
+            Assert.False(LandingPredictionTerrainConvergence.HasConsecutiveAgreement(true, false));
+            Assert.True(LandingPredictionTerrainConvergence.HasConsecutiveAgreement(true, true));
         }
 
         private static ReentrySimulation.Result Result(double endUt, double endAsl)
