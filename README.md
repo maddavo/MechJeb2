@@ -142,11 +142,8 @@ nuget restore
 make build
 ```
 
-4. (optional) Install the mod into your KSP directory
-
-```sh
-make install
-```
+`make install` is disabled in this branch. The only authorised installation is the
+Windows DLL operation described below.
 
 #### Windows
 
@@ -154,8 +151,7 @@ make install
 
 2. Configure your system environment variables and add:
 
-- KSPDIR set to where your KSP install is ( usually **C:\Program Files (x86)\Steam\SteamApps\Common\Kerbal Space Program
-  ** )
+- KSPDIR set to exactly **C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program**
 - MONO set to the path of Unity current mono.exe ( usually C:\Program
   Files\Unity\Hub\Editor\2019.2.2f1\Editor\Data\MonoBleedingEdge\bin\mono.exe )
 - PDB2MDB set to the path of pdb2mdb.exe ( usually **C:\Program
@@ -168,6 +164,22 @@ make install
 4. Repeat step 3 for the MechJebLib, MechJebLibBindings, and MechJebLibTest projects.
 
 5. Perform `nuget restore` to get external dependencies such as JetBrains.Annotations.
+
+Building writes to repository build-output directories only. It does not install
+files into KSP. After a Release build, close `KSP_x64` and run an explicit
+read-only validation, then install only `MechJeb2.dll`:
+
+```powershell
+$env:KSPDIR = 'C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program'
+./tools/Install-MechJeb2.ps1 -ValidateOnly
+./tools/Install-MechJeb2.ps1
+```
+
+The script refuses a missing or different `KSPDIR`, verifies KSP is closed,
+backs up the existing DLL with a timestamped manifest, and verifies the installed
+DLL by SHA-256. Companion DLLs are never included. Replacing any companion DLL
+requires a separate review of its identity, installed and source versions, and
+specific dependency need, followed by explicit approval.
 
 ## License
 

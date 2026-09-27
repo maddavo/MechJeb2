@@ -58,15 +58,4 @@
         <ProjectReference Include="..\MechJebLibBindings\MechJebLibBindings.csproj"/>
     </ItemGroup>
 
-    <Target Name="MechJebKosCopyBuild" AfterTargets="Build">
-        <ItemGroup>
-            <_MechJebKosArtifacts Include="$(TargetDir)$(TargetName).dll"/>
-            <_MechJebKosArtifacts Include="$(TargetDir)$(TargetName).pdb" Condition="Exists('$(TargetDir)$(TargetName).pdb')"/>
-        </ItemGroup>
-        <MakeDir Directories="$(KspDir)/GameData/MechJeb2/Plugins"/>
-        <Copy SourceFiles="@(_MechJebKosArtifacts)"
-              DestinationFolder="$(KspDir)/GameData/MechJeb2/Plugins"
-              SkipUnchangedFiles="true"/>
-    </Target>
-
 </Project>

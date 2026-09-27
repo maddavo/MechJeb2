@@ -139,18 +139,13 @@ clean:
 	@echo "Cleaning up build and package directories..."
 	rm -rf build/ package/
 
-install: build
-	mkdir -p "${KSPDIR}"/GameData/MechJeb2/Plugins
-	cp -r Parts "${KSPDIR}"/GameData/MechJeb2/
-	cp -r Icons "${KSPDIR}"/GameData/MechJeb2/
-	cp -r Bundles "${KSPDIR}"/GameData/MechJeb2/
-	cp -r Localization "${KSPDIR}"/GameData/MechJeb2/
-	cp build/MechJeb2.dll build/MechJebLib.dll build/MechJebLibBindings.dll build/alglib.dll "${KSPDIR}"/GameData/MechJeb2/Plugins/
+install:
+	@echo "Installation is disabled here. On the authorised Windows KSP installation, use tools/Install-MechJeb2.ps1 explicitly." >&2
+	@exit 1
 
-uninstall: info
-	rm -rf "${KSPDIR}"/GameData/MechJeb2/Plugins
-	rm -rf "${KSPDIR}"/GameData/MechJeb2/Parts
-	rm -rf "${KSPDIR}"/GameData/MechJeb2/Icons
+uninstall:
+	@echo "Uninstallation is disabled in this branch; it has no authorised deletion target." >&2
+	@exit 1
 
 
 .PHONY : all info build package tar.gz zip clean install uninstall
