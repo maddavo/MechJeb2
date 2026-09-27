@@ -70,6 +70,7 @@ namespace MuMech
         private double _maxOrbits;
 
         private bool _noSKiptoFreefall;
+        private double _forcedBrakingStartUT;
 
         private double _parachuteSemiDeployMultiplier;
         private bool _multiplierHasError;
@@ -112,17 +113,19 @@ namespace MuMech
 
         public static ReentrySimulation Borrow(Orbit initialOrbit, double ut, SimulatedVessel vessel, SimCurves simcurves,
             IDescentSpeedPolicy descentSpeedPolicy, double decelEndAltitudeASL, double maxThrustAccel, double parachuteSemiDeployMultiplier,
-            double probableLandingSiteASL, bool multiplierHasError, double dt, double minDT, double maxOrbits, bool noSKiptoFreefall)
+            double probableLandingSiteASL, bool multiplierHasError, double dt, double minDT, double maxOrbits, bool noSKiptoFreefall,
+            double forcedBrakingStartUT = double.NaN)
         {
             ReentrySimulation sim = _pool.Borrow();
             sim.Init(initialOrbit, ut, vessel, simcurves, descentSpeedPolicy, decelEndAltitudeASL, maxThrustAccel,
-                parachuteSemiDeployMultiplier, probableLandingSiteASL, multiplierHasError, dt, minDT, maxOrbits, noSKiptoFreefall);
+                parachuteSemiDeployMultiplier, probableLandingSiteASL, multiplierHasError, dt, minDT, maxOrbits, noSKiptoFreefall,
+                forcedBrakingStartUT);
             return sim;
         }
 
         private void Init(Orbit initialOrbit, double ut, SimulatedVessel vessel, SimCurves simcurves, IDescentSpeedPolicy descentSpeedPolicy,
             double decelEndAltitudeASL, double maxThrustAccel, double parachuteSemiDeployMultiplier, double probableLandingSiteASL,
-            bool multiplierHasError, double dt, double minDT, double maxOrbits, bool noSKiptoFreefall)
+            bool multiplierHasError, double dt, double minDT, double maxOrbits, bool noSKiptoFreefall, double forcedBrakingStartUT)
         {
             // Store all the input values as they were given
             _inputInitialOrbit = initialOrbit;
@@ -147,6 +150,7 @@ namespace MuMech
             _maxOrbits = maxOrbits;
 
             _noSKiptoFreefall = noSKiptoFreefall;
+            _forcedBrakingStartUT = forcedBrakingStartUT;
 
             // Get a copy of the original orbit, to be more thread safe
             //initialOrbit = new Orbit();
@@ -171,13 +175,18 @@ namespace MuMech
             _referenceFrame.UpdateAtCurrentTime(initialOrbit.referenceBody);
             _orbitReenters = OrbitReenters(initialOrbit);
 
-            _startX = _initialOrbit.WorldBCIPositionAtUT(_startUT);
+            _startUT = ut;
+            _t = _startUT;
             if (_orbitReenters)
             {
-                _startUT = ut;
-                _t = _startUT;
                 AdvanceToFreefallEnd(_initialOrbit);
             }
+
+            // The precision schedule is relative to the actual simulated
+            // starting state.  Set this after any analytic coast-to-braking
+            // advance; a pooled simulation can otherwise retain a previous
+            // run's start UT and lose its first kilometres of fine stepping.
+            _startX = _x;
 
             _maxDragGees = 0;
             _deltaVExpended = 0;
@@ -206,6 +215,9 @@ namespace MuMech
                 _result.InputProbableLandingSiteASL = _inputProbableLandingSiteASL;
                 _result.InputMultiplierHasError = _inputMultiplierHasError;
                 _result.InputDT = _inputDT;
+                _result.InputMaxOrbits = _maxOrbits;
+                _result.InputNoSkipToFreefall = _noSKiptoFreefall;
+                _result.InputForcedBrakingStartUT = _forcedBrakingStartUT;
 
                 //MechJebCore.print("Sim Start");
 
@@ -216,6 +228,7 @@ namespace MuMech
                 }
 
                 _result.StartPosition = _referenceFrame.ToAbsolute(_x, _t);
+                _result.SimulatedBrakingStartUT = _t;
 
                 // Simulate a maximum of maxOrbits periods of a circular orbit at the entry altitude
                 _maxSimulatedTime = _maxOrbits * 2.0 * Math.PI * Math.Sqrt(Math.Pow(Math.Abs(_x.magnitude), 3.0) / _gravParameter);
@@ -262,6 +275,7 @@ namespace MuMech
                 _result.DeltaVExpended = _deltaVExpended;
                 _result.EndPosition = _referenceFrame.ToAbsolute(_x, _t);
                 _result.EndVelocity = _referenceFrame.ToAbsolute(_v, _t);
+                _result.EndSurfaceSpeed = SurfaceVelocity(_x, _v).magnitude;
                 _result.Trajectory = _trajectory;
                 _result.ParachuteMultiplier = _parachuteSemiDeployMultiplier;
                 _result.MultiplierHasError = _multiplierHasError;
@@ -322,6 +336,14 @@ namespace MuMech
         //in the interval (lowerUT, upperUT) for which condition(UT, relative position, orbital velocity) is true
         private double FindFreefallEndTime(Orbit initialOrbit)
         {
+            if (!double.IsNaN(_forcedBrakingStartUT) && !double.IsInfinity(_forcedBrakingStartUT))
+            {
+                // Candidate planning deliberately evaluates a specified start. Clamp it to
+                // this orbital pass so a stale candidate cannot cross periapsis or begin in
+                // the past. The usual predictor keeps its existing speed-policy behavior.
+                return Math.Max(_t, Math.Min(_forcedBrakingStartUT, initialOrbit.NextPeriapsisTime(_t)));
+            }
+
             if (_noSKiptoFreefall || FreefallEnded(initialOrbit, _t))
             {
                 return _t;
@@ -759,6 +781,7 @@ namespace MuMech
             public AbsoluteVector StartPosition;
             public AbsoluteVector EndPosition;
             public AbsoluteVector EndVelocity;
+            public double EndSurfaceSpeed;
 
             public bool AeroBrake;
             public double AeroBrakeUT;
@@ -788,6 +811,10 @@ namespace MuMech
             public double InputProbableLandingSiteASL;
             public bool InputMultiplierHasError;
             public double InputDT;
+            public double InputMaxOrbits;
+            public bool InputNoSkipToFreefall;
+            public double InputForcedBrakingStartUT;
+            public double SimulatedBrakingStartUT;
 
             public string DebugLog;
 

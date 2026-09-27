@@ -1,4 +1,4 @@
-extern alias JetBrainsAnnotations;
+﻿extern alias JetBrainsAnnotations;
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -155,6 +155,12 @@ namespace MuMech
         public bool noSkipToFreefall = false;
 
         private readonly Queue readyResults = new Queue();
+        private readonly Queue readyBrakingPlanResults = new Queue();
+        private int brakingPlanRunning;
+        private double lastBrakingPlanInputUT = double.NegativeInfinity;
+        private const int BrakingPlanCandidateCount = 5;
+        private const double BrakingPlanRefreshSeconds = 5;
+        private const double MaximumCandidateTouchdownSpeed = 15;
         // Each V1 landing target owns a predictor transaction. A simulation
         // can finish after a new target has been selected, so its result must
         // be identified before it reaches the control-facing result queue.
@@ -190,6 +196,7 @@ namespace MuMech
         protected override void OnModuleDisabled()
         {
             Interlocked.Increment(ref predictionGeneration);
+            ReleaseQueuedBrakingPlanResults();
             stopwatch.Stop();
             stopwatch.Reset();
 
@@ -210,6 +217,7 @@ namespace MuMech
         public void ResetTargetedLandingPrediction()
         {
             Interlocked.Increment(ref predictionGeneration);
+            ReleaseQueuedBrakingPlanResults();
             if (candidateResult != null)
             {
                 candidateResult.Release();
@@ -230,6 +238,7 @@ namespace MuMech
         public override void OnFixedUpdate()
         {
             CheckForResult();
+            CheckForBrakingPlanResult();
 
             TryStartSimulation(true);
         }
@@ -479,6 +488,7 @@ namespace MuMech
                             {
                                 ResolveAirlessTerrainProfileContact(newResult, terrainTrace);
                             }
+                            StartTargetAwareBrakingPlan(newResult);
                             AcceptNormalResult(newResult, terrainTrace);
                         }
                     }
@@ -489,6 +499,204 @@ namespace MuMech
                         newResult.Release();
                     }
                 }
+            }
+        }
+
+        // The legacy predictor selected virtual braking from a scalar safe-speed
+        // rule.  In a shallow airless orbit that can be "now" even though a later
+        // powered endpoint reaches the selected site.  Evaluate a small, bounded
+        // set of starts using the same ReentrySimulation and select the safe
+        // powered endpoint nearest the target.  This only changes prediction data;
+        // V1's existing steps remain the actuator owner.
+        private void StartTargetAwareBrakingPlan(ReentrySimulation.Result source)
+        {
+            if (!Core.Landing.Enabled || !Core.Landing.LandAtTarget || !Core.Target.PositionTargetExists ||
+                source == null || source.Body == null || source.Body.atmosphere ||
+                source.Outcome != ReentrySimulation.Outcome.LANDED || descentSpeedPolicy == null ||
+                Interlocked.CompareExchange(ref brakingPlanRunning, 1, 0) != 0 ||
+                source.InputUT - lastBrakingPlanInputUT < BrakingPlanRefreshSeconds)
+                return;
+
+            double earliestUT = Math.Max(source.InputUT, source.SimulatedBrakingStartUT);
+            double latestUT = Math.Min(source.EndUT - 5, source.InputInitialOrbit.NextPeriapsisTime(source.InputUT));
+            if (double.IsNaN(earliestUT) || double.IsNaN(latestUT) || latestUT - earliestUT < 4)
+            {
+                Interlocked.Exchange(ref brakingPlanRunning, 0);
+                return;
+            }
+
+            try
+            {
+                var simulations = new List<ReentrySimulation>(BrakingPlanCandidateCount);
+                for (int i = 0; i < BrakingPlanCandidateCount; ++i)
+                {
+                    double fraction = i / (double)(BrakingPlanCandidateCount - 1);
+                    double forcedStartUT = earliestUT + fraction * (latestUT - earliestUT);
+                    var simCurves = ReentrySimulation.SimCurves.Borrow(source.Body);
+                    var simVessel = SimulatedVessel.Borrow(Vessel, simCurves, source.InputUT,
+                        Core.Landing.Enabled && deployChutes ? limitChutesStage : -1);
+                    simulations.Add(ReentrySimulation.Borrow(source.InputInitialOrbit, source.InputUT, simVessel,
+                        simCurves, descentSpeedPolicy, decelEndAltitudeASL, VesselState.LimitedMaxThrustAcceleration,
+                        parachuteSemiDeployMultiplier, source.InputProbableLandingSiteASL, false, dt,
+                        Time.fixedDeltaTime, maxOrbits, noSkipToFreefall, forcedStartUT));
+                }
+
+                lastBrakingPlanInputUT = source.InputUT;
+                ThreadPool.QueueUserWorkItem(RunTargetAwareBrakingPlan,
+                    new BrakingPlanJob(simulations, Interlocked.Read(ref predictionGeneration)));
+            }
+            catch (Exception ex)
+            {
+                Interlocked.Exchange(ref brakingPlanRunning, 0);
+                Debug.LogException(ex);
+            }
+        }
+
+        private void RunTargetAwareBrakingPlan(object state)
+        {
+            var job = (BrakingPlanJob)state;
+            var results = new List<ReentrySimulation.Result>(job.Simulations.Count);
+            try
+            {
+                foreach (ReentrySimulation simulation in job.Simulations)
+                {
+                    ReentrySimulation.Result candidate = simulation.RunSimulation();
+                    simulation.Release();
+                    results.Add(candidate);
+                }
+
+                if (job.Generation != Interlocked.Read(ref predictionGeneration))
+                {
+                    foreach (ReentrySimulation.Result candidate in results)
+                        candidate.Release();
+                    results = null;
+                    return;
+                }
+
+                lock (readyBrakingPlanResults)
+                    readyBrakingPlanResults.Enqueue(new BrakingPlanResultSet(job.Generation, results));
+                results = null;
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.InvokeAsync(() => Debug.LogException(ex));
+            }
+            finally
+            {
+                if (results != null)
+                    foreach (ReentrySimulation.Result candidate in results)
+                        candidate.Release();
+                Interlocked.Exchange(ref brakingPlanRunning, 0);
+            }
+        }
+
+        private void CheckForBrakingPlanResult()
+        {
+            lock (readyBrakingPlanResults)
+            {
+                while (readyBrakingPlanResults.Count > 0)
+                {
+                    var set = (BrakingPlanResultSet)readyBrakingPlanResults.Dequeue();
+                    if (set.Generation != Interlocked.Read(ref predictionGeneration) || !Core.Target.PositionTargetExists)
+                    {
+                        ReleaseBrakingPlanResults(set.Results);
+                        continue;
+                    }
+
+                    var candidates = new List<TargetAwareBrakingPlan.Candidate>(set.Results.Count);
+                    foreach (ReentrySimulation.Result candidate in set.Results)
+                    {
+                        double error = TargetDistance(candidate);
+                        bool safe = candidate.Outcome == ReentrySimulation.Outcome.LANDED &&
+                            candidate.EndSurfaceSpeed <= MaximumCandidateTouchdownSpeed &&
+                            !double.IsNaN(error) && !double.IsInfinity(error);
+                        candidates.Add(new TargetAwareBrakingPlan.Candidate(candidate.SimulatedBrakingStartUT, error, 0, safe));
+                    }
+
+                    if (!TargetAwareBrakingPlan.TrySelect(candidates, out TargetAwareBrakingPlan.Candidate selected))
+                    {
+                        ReleaseBrakingPlanResults(set.Results);
+                        continue;
+                    }
+
+                    ReentrySimulation.Result selectedResult = null;
+                    foreach (ReentrySimulation.Result candidate in set.Results)
+                    {
+                        if (candidate.SimulatedBrakingStartUT == selected.StartUT)
+                        {
+                            selectedResult = candidate;
+                            break;
+                        }
+                    }
+                    if (selectedResult == null)
+                    {
+                        ReleaseBrakingPlanResults(set.Results);
+                        continue;
+                    }
+
+                    // Terrain is a Unity main-thread query. Resolve it only for the
+                    // selected candidate so plan evaluation remains bounded and does
+                    // not create the game pauses seen in earlier V2 experiments.
+                    if (!selectedResult.Body.atmosphere)
+                        ResolveAirlessTerrainProfileContact(selectedResult, null);
+                    PublishNormalResult(selectedResult);
+                    if (Core.Landing.LandingTraceEnabled)
+                        Core.Landing.TraceLanding($"predictor target-aware brakeStart={selected.StartUT:F2} targetError={selected.DownrangeError:F1} candidates={set.Results.Count}");
+
+                    foreach (ReentrySimulation.Result candidate in set.Results)
+                        if (candidate != selectedResult)
+                            candidate.Release();
+                }
+            }
+        }
+
+        private double TargetDistance(ReentrySimulation.Result candidate)
+        {
+            if (candidate.Body == null || candidate.Body != Core.Target.targetBody)
+                return double.NaN;
+            Vector3d endpoint = candidate.Body.GetWorldSurfacePosition(candidate.EndPosition.Latitude,
+                candidate.EndPosition.Longitude, 0);
+            Vector3d target = candidate.Body.GetWorldSurfacePosition(Core.Target.targetLatitude,
+                Core.Target.targetLongitude, 0);
+            return Vector3d.Distance(endpoint, target);
+        }
+
+        private static void ReleaseBrakingPlanResults(IEnumerable<ReentrySimulation.Result> results)
+        {
+            foreach (ReentrySimulation.Result candidate in results)
+                candidate.Release();
+        }
+
+        private void ReleaseQueuedBrakingPlanResults()
+        {
+            lock (readyBrakingPlanResults)
+            {
+                while (readyBrakingPlanResults.Count > 0)
+                    ReleaseBrakingPlanResults(((BrakingPlanResultSet)readyBrakingPlanResults.Dequeue()).Results);
+            }
+        }
+
+        private sealed class BrakingPlanJob
+        {
+            public readonly List<ReentrySimulation> Simulations;
+            public readonly long Generation;
+
+            public BrakingPlanJob(List<ReentrySimulation> simulations, long generation)
+            {
+                Simulations = simulations;
+                Generation = generation;
+            }
+        }
+
+        private sealed class BrakingPlanResultSet
+        {
+            public readonly long Generation;
+            public readonly List<ReentrySimulation.Result> Results;
+
+            public BrakingPlanResultSet(long generation, List<ReentrySimulation.Result> results)
+            {
+                Generation = generation;
+                Results = results;
             }
         }
 
@@ -608,6 +816,19 @@ namespace MuMech
 
         private void AcceptNormalResult(ReentrySimulation.Result newResult, TerrainProfileTrace terrainTrace)
         {
+            // Once a target-aware candidate has been selected, retain it until
+            // the next bounded planning refresh. Ordinary five-per-second
+            // scalar-policy predictions are diagnostic input for that refresh;
+            // they must not briefly replace the target-aware endpoint used by
+            // V1's existing coast and braking steps.
+            if (result != null && !double.IsNaN(result.InputForcedBrakingStartUT) &&
+                newResult.InputUT - result.InputUT < BrakingPlanRefreshSeconds)
+            {
+                TraceNormalResultDecision("retain_target_aware_plan", result, newResult, terrainTrace);
+                newResult.Release();
+                return;
+            }
+
             // A retained LANDED result is an actuator input for V1.  Never let
             // the two-sample landing consensus conceal a fresh non-landing
             // result: Course Correction must not calculate another pulse from

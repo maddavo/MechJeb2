@@ -60,24 +60,30 @@ namespace MuMech.Landing
                     string line = string.Format(CultureInfo.InvariantCulture,
                         "{{\"recordType\":\"predictor_result\",\"decision\":{0},\"processUT\":{1},\"phase\":{2},\"status\":{3}," +
                         "\"body\":{4},\"targetLat\":{5},\"targetLon\":{6},\"outcome\":{7},\"inputUT\":{8},\"resultAgeSeconds\":{9},\"endUT\":{10},\"simulationSeconds\":{11},\"steps\":{12}," +
-                        "\"inputDecelerationEndASL\":{13},\"inputMaximumThrustAcceleration\":{14}," +
-                        "\"inputStart\":[{15},{16},{17},{18}],\"inputVelocity\":[{19},{20},{21}]," +
-                        "\"simulatorEndpoint\":[{22},{23},{24},{25}],\"resolvedEndpoint\":[{26},{27},{28},{29}]," +
-                        "\"terrainProfileApplied\":{30},\"terrainProfileStartIndex\":{31},\"terrainProfileSampleCount\":{32}," +
-                        "\"terrainProfileLocalContactIndex\":{33},\"terrainProfileContactIndex\":{34},\"terrainProfileContactASL\":{35}," +
-                        "\"trajectoryStart\":{36},\"osculatingImpact\":{37},\"osculatingImpactUT\":{38}}}",
+                        "\"inputDecelerationEndASL\":{13},\"inputMaximumThrustAcceleration\":{14},\"inputMaxOrbits\":{15}," +
+                        "\"inputNoSkipToFreefall\":{16},\"inputDescentSpeedPolicy\":{17},\"inputForcedBrakingStartUT\":{18}," +
+                        "\"simulatedBrakingStartUT\":{19},\"simulatedBrakingDeltaV\":{20},\"endSurfaceSpeed\":{21}," +
+                        "\"inputStart\":[{22},{23},{24},{25}],\"inputVelocity\":[{26},{27},{28}]," +
+                        "\"simulatorEndpoint\":[{29},{30},{31},{32}],\"simulatorTargetError\":{33}," +
+                        "\"resolvedEndpoint\":[{34},{35},{36},{37}],\"resolvedTargetError\":{38}," +
+                        "\"terrainProfileApplied\":{39},\"terrainProfileStartIndex\":{40},\"terrainProfileSampleCount\":{41}," +
+                        "\"terrainProfileLocalContactIndex\":{42},\"terrainProfileContactIndex\":{43},\"terrainProfileContactASL\":{44}," +
+                        "\"trajectoryStart\":{45},\"osculatingImpact\":{46},\"osculatingImpactUT\":{47}}}",
                         JsonString(decision), Number(processUT), JsonString(phase), JsonString(status), JsonString(targetBody),
                         Number(targetLatitude), Number(targetLongitude), JsonString(result.Outcome.ToString()),
                         Number(result.InputUT), Number(processUT - result.InputUT), Number(result.EndUT), Number(simulationSeconds), result.Steps,
-                        Number(result.InputDecelEndAltitudeASL), Number(result.InputMaxThrustAccel),
+                        Number(result.InputDecelEndAltitudeASL), Number(result.InputMaxThrustAccel), Number(result.InputMaxOrbits),
+                        result.InputNoSkipToFreefall ? "true" : "false", JsonString(result.InputDescentSpeedPolicy?.GetType().Name), Number(result.InputForcedBrakingStartUT),
+                        Number(result.SimulatedBrakingStartUT), Number(result.DeltaVExpended), Number(result.EndSurfaceSpeed),
                         Number(start.Latitude), Number(start.Longitude), Number(start.Radius), Number(start.UT),
                         Number(inputVelocity.x), Number(inputVelocity.y), Number(inputVelocity.z),
                         Number(simulatedEnd.Latitude), Number(simulatedEnd.Longitude), Number(simulatedEnd.Radius), Number(simulatedEndASL),
+                        Number(TargetDistance(result.Body, simulatedEnd, targetLatitude, targetLongitude)),
                         Number(result.EndPosition.Latitude), Number(result.EndPosition.Longitude), Number(result.EndPosition.Radius), Number(result.EndASL),
+                        Number(TargetDistance(result.Body, result.EndPosition, targetLatitude, targetLongitude)),
                         terrain != null && terrain.Applied ? "true" : "false", terrain?.FirstProfileIndex ?? -1, terrain?.ProfileSampleCount ?? 0,
                         terrain?.LocalContactIndex ?? -1, terrain?.ContactIndex ?? -1, Number(terrain?.ContactTerrainASL ?? double.NaN),
                         hasTrajectoryStart ? Vector(trajectoryStart) : "null", hasOsculatingImpact ? Vector(osculatingPosition) : "null", Number(osculatingImpactUT));
-
                     _writer.WriteLine(line);
                     _recordsSinceFlush++;
                     if (_recordsSinceFlush >= 5)
@@ -160,6 +166,15 @@ namespace MuMech.Landing
             _writer = new StreamWriter(new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read));
         }
 
+        private static double TargetDistance(CelestialBody body, AbsoluteVector endpoint, double targetLatitude, double targetLongitude)
+        {
+            if (body == null || double.IsNaN(targetLatitude) || double.IsNaN(targetLongitude))
+                return double.NaN;
+
+            Vector3d endpointPosition = body.GetWorldSurfacePosition(endpoint.Latitude, endpoint.Longitude, 0);
+            Vector3d targetPosition = body.GetWorldSurfacePosition(targetLatitude, targetLongitude, 0);
+            return Vector3d.Distance(endpointPosition, targetPosition);
+        }
         private static Vector3d OsculatingImpactPosition(ReentrySimulation.Result result, out double impactUT)
         {
             impactUT = double.NaN;
