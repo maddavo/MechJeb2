@@ -66,7 +66,7 @@ The final session ends during `CourseCorrection`, not at touchdown. Its later `N
 
 **Powered search.** Evaluate forced coast-to-brake continuations before first ballistic contact from that same snapshot. Coarse evaluations may use a bounded spherical approximation, but any candidate used to establish the final bracket or winner must have first-contact terrain resolution and a consistent contact state. Refine the signed downrange root with bounded iterations; check crossrange and contact quality independently. Record `NoBracket`, `CrossrangeOutOfBounds`, `TerrainUnresolved`, `SimulationError`, and `NoContact` explicitly. Model output remains a predictor estimate, not a V2 feasibility or fuel-reserve verdict.
 
-**Publish and refresh.** One flight-thread gate checks generation, captured target coordinates/body/ASL, mode, phase, and input UT; rechecks terrain before acceptance. It publishes one complete compatible `Result` plus immutable lineage/residual metadata and advances `ResultVersion` only when a complete new result replaces the committed one. Normal immediate-braking results cannot overwrite an active target-aware commitment. A failed, stale, incomplete, or invalid candidate is traced and released without changing the last committed valid result or invoking a new V1 response. On target edit, abort, or mode change, trace/cancel outstanding work; preserve V1's existing published-result and controller behavior until a separate change is approved. `Result`/`GetResult` remain the externally visible slot.
+**Publish and refresh.** In targeted airless mode, one flight-thread gate owns the control-facing result slot. Its committed result has target-aware provenance and immutable transaction lineage: landing/target generation, body, target coordinates and terrain ASL, input snapshot UT, transaction sequence, model, terrain contact, and residuals. `DeorbitBurn` to `CourseCorrection` is a phase transition within that same landing/target generation; it neither clears the committed result nor changes its provenance. A refresh captures newer vessel state and runs the **same target-aware ballistic/coast/brake/terrain model**. Ordinary immediate-braking results may be captured for diagnostics but never enter the active slot or advance `ResultVersion` in this mode, regardless of elapsed time or their agreement with each other. The gate checks current generation, unchanged mode/target/body/terrain, monotonic transaction lineage, bounded snapshot age, and a complete consistent first-terrain-contact result. It then atomically swaps the complete compatible `Result` and immutable sidecar, advances `ResultVersion` once, and releases the predecessor only after the new commitment is established. Out-of-order, failed, stale, incomplete, or terrain-unresolved work is traced and released without replacing the previous committed valid result. A phase label alone is not a strict equality key: a valid deorbit snapshot may finish during course correction if all lineage and freshness checks pass. On target edit, abort, or mode change, trace/cancel outstanding work and preserve V1's existing published-result and controller behavior; no new V1 response is introduced. `Result`/`GetResult` remain the externally visible slot.
 
 **Phase contract.** Preserve the exact current V1 phase transitions and its behavior when `PredictionReady` is false or a result is absent. In particular, `CourseCorrection.Drive` and `KillHorizontalVelocity.Drive` return without clearing prior commands; `CoastToDeceleration.Drive` returns without clearing prior RCS state, while its `OnFixedUpdate` still sets throttle to zero and can read `LandingSite`; `DecelerationBurn.OnFixedUpdate` assumes `Prediction.Trajectory`; dormant `LowDeorbitBurn` continues its existing burn logic when no result is ready. The predictor repair must avoid causing these paths through bad candidate publication. Improving those controller behaviors is explicitly outside this repair.
 
@@ -158,6 +158,45 @@ batch. By the end, V1 had published `NO_REENTRY` version 550 in
 near 0.19. This documents existing V1 behavior and does not authorise a new
 controller response.
 
+### Exact deorbit-to-correction publication sequence
+
+The newest completed capture session is
+`a398605cbd7942b0837d4fe4a3493229` (712 paired submissions, target reset
+through landing stop/module disable). Its publication records and the matching
+V1 `guidance_state` rows resolve the visual jump more precisely than the phase
+label alone:
+
+| Event | Input and processing UT | Published result / phase | Evidence |
+| --- | --- | --- | --- |
+| Near-target selection | Submission 177 input 24,603,456.768967; published 24,603,456.828967 | Version **261**, `DeorbitBurn`; forced brake UT 24,603,984.289534 | Endpoint 0.631151°, 23.186603°; about 1,011 m spherical target error. Worker `LANDED`/`complete:true`, but `terrainContactConfirmed:false`; it was not a complete terrain-resolved landing. `guidance_state` still displayed version 261 at UT 24,603,461.348967. |
+| Guard expires | Submission 205 input 24,603,461.728967 was retained; submission 206 input 24,603,461.888967, processed 24,603,461.928967 | No publication yet; ordinary candidate 206 replaces pending ordinary candidate 172 | The guard compares ordinary **input UT** with selected result **input UT**, not publication UT. Submission 206 was 5.12 s newer, so `retain_target_aware_plan` no longer applied. Its `replace` decision compared candidate 172, not the active 177. |
+| First overwrite | Submission 207 input 24,603,462.108967; published 24,603,462.148967 | Version **262**, still `DeorbitBurn`; ordinary immediate brake UT 24,603,462.108967 | Terrain contact confirmed at 1.029053°, −17.579287°; trace resolved target error about 140,243 m. Decision `candidate_accept` compared ordinary 206. `PublishNormalResult` discarded/released active 177. This is the actual near-to-far publication change, **before** the phase transition. |
+| Last deorbit publication | Submission 209 input 24,603,462.508967; published 24,603,462.568967 | Version **263**, `DeorbitBurn`; ordinary | It replaced 262 after agreement with ordinary 208; endpoint longitude −17.560244°. |
+| First correction publication and use | Submission 210 input 24,603,462.728967 was pending; submission 211 input 24,603,462.948967 published 24,603,462.988967 | Version **264**, `CourseCorrection`; ordinary | Contact at 1.031008°, −17.541998° after agreement with 210. First `CourseCorrection` state at UT 24,603,463.388967 consumed version 264 and logged target error about 141,210 m, downrange error about 131,291 m, status "correction of about 18.4 m/s," and a 1 m/s pulse. |
+
+The actual phase change is bounded by the last `DeorbitBurn` publication at UT
+24,603,462.568967 and the first `CourseCorrection` result processing at UT
+24,603,462.768967. The first sampled `CourseCorrection` guidance state is later.
+Thus the observed jump *at* the transition was the visible consequence of an
+ordinary overwrite that had already happened during deorbit. The phase did not
+invalidate version 261. Source `AcceptNormalResult` has only a five-second
+retention check; after it expires, ordinary two-result consensus can call
+`PublishNormalResult` on the same control-facing slot. Source
+`StartTargetAwareBrakingPlan` tests `CompareExchange(brakingPlanRunning,1,0)`
+before its cooldown and can leave the flag set on an early return. The capture
+shows no second forced batch, which is consistent with that path but does not
+record the flag itself.
+
+**Required invariant from this case:** while one targeted airless landing keeps
+the same target/body generation, phase transitions and refresh timers cannot
+change the active slot's target-aware provenance. Each refresh uses a newer
+snapshot with the same target-aware model; only a fully resolved newer
+target-aware transaction may atomically replace the committed result. Ordinary
+results have no route to that slot. A failed, stale, incomplete, or
+terrain-unresolved transaction cannot displace it. In particular, historical
+candidate 177 would **fail** the new terrain-contact gate: this rule protects a
+previous *valid* target-aware result, not that incomplete historical candidate.
+
 For the 348 `LANDED` worker results, captured simulation time had median
 0.632 ms and maximum 3.369 ms. The 340 resolutions that queried terrain had
 median 15 and maximum 17 queries, with measured query time median 0.101 ms
@@ -170,4 +209,4 @@ spherical candidate as confirmed contact.
 
 ## Readiness and remaining design issues
 
-**Passive capture has been exercised in KSP and its Mun session passes strict reader validation. Active predictor repair is not ready.** The remaining design work is a terrain-bounded offline simulator and lifecycle harness, added capture coverage for braking/hover/abort if needed for those gates, and calibrated downrange, crossrange, contact, timing, refresh-age, and performance limits from replay. V1 no-prediction behavior remains unchanged by decision.
+**Passive capture has been exercised in KSP and its Mun session passes strict reader validation. The capture resolves the ownership/overwrite mechanism and the deorbit-to-correction publication chronology, but active predictor implementation is not ready.** It does not supply confirmed contact for the selected target-aware candidate, terrain samples beyond its target-height stop or along the unpowered impact path, a refined signed-downrange/crossrange solution, final calibrated targeting and performance limits, or deterministic braking/hover/abort coverage. The remaining design work is a terrain-bounded offline simulator and production-path lifecycle harness, explicit treatment of unqueried terrain, and calibrated downrange, crossrange, contact, timing, refresh-age, and performance thresholds from replay. V1 no-prediction behavior remains unchanged by decision.
