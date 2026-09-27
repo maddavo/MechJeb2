@@ -145,3 +145,17 @@ diagnostic data; it is no longer a hard rejection gate. With trace logging
 enabled, each planning batch now writes five `target_aware_candidate` JSONL
 records containing the forced braking start, endpoint error, virtual Δv, and
 terminal speed before the selected plan is published.
+
+## r9 repair: braking search reaches ballistic impact
+
+The r7 trace showed the immediate virtual-burn endpoint near UT 24,603,891,
+while the unpowered target-height intersection was near UT 24,604,076. Earlier
+candidate code incorrectly capped its latest braking start at `source.EndUT -
+5`, so it excluded approximately 190 seconds of the later trajectory.
+
+r9 removes that cap. It computes the next unpowered intersection with the
+selected target's terrain radius and evaluates nine forced braking starts from
+the current point through two seconds before that intersection. This is a
+predictor-only change. The candidate trace records `earliest`,
+`ballisticImpact`, `latest`, and all nine forced starts so the selected later
+braking simulation is reviewable.

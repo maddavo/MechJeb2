@@ -158,7 +158,7 @@ namespace MuMech
         private readonly Queue readyBrakingPlanResults = new Queue();
         private int brakingPlanRunning;
         private double lastBrakingPlanInputUT = double.NegativeInfinity;
-        private const int BrakingPlanCandidateCount = 5;
+        private const int BrakingPlanCandidateCount = 9;
         private const double BrakingPlanRefreshSeconds = 5;
         // Each V1 landing target owns a predictor transaction. A simulation
         // can finish after a new target has been selected, so its result must
@@ -517,7 +517,12 @@ namespace MuMech
                 return;
 
             double earliestUT = Math.Max(source.InputUT, source.SimulatedBrakingStartUT);
-            double latestUT = Math.Min(source.EndUT - 5, source.InputInitialOrbit.NextPeriapsisTime(source.InputUT));
+            double ballisticImpactUT = BallisticTargetRadiusImpactUT(source);
+            // Do not use source.EndUT here. It is the endpoint of the very
+            // immediate virtual burn that this search is meant to replace. The
+            // search must extend along the unpowered trajectory almost to its
+            // target-height surface intersection.
+            double latestUT = ballisticImpactUT - 2;
             if (double.IsNaN(earliestUT) || double.IsNaN(latestUT) || latestUT - earliestUT < 4)
             {
                 Interlocked.Exchange(ref brakingPlanRunning, 0);
@@ -526,6 +531,8 @@ namespace MuMech
 
             try
             {
+                if (Core.Landing.LandingTraceEnabled)
+                    Core.Landing.TraceLanding($"predictor target-aware window earliest={earliestUT:F2} ballisticImpact={ballisticImpactUT:F2} latest={latestUT:F2} candidates={BrakingPlanCandidateCount}");
                 var simulations = new List<ReentrySimulation>(BrakingPlanCandidateCount);
                 for (int i = 0; i < BrakingPlanCandidateCount; ++i)
                 {
@@ -667,6 +674,25 @@ namespace MuMech
             Vector3d target = candidate.Body.GetWorldSurfacePosition(Core.Target.targetLatitude,
                 Core.Target.targetLongitude, 0);
             return Vector3d.Distance(endpoint, target);
+        }
+
+        private double BallisticTargetRadiusImpactUT(ReentrySimulation.Result source)
+        {
+            try
+            {
+                double targetRadius = source.Body.Radius + Core.Landing.PredictorLandingAltitudeASL();
+                if (source.InputInitialOrbit.PeR >= targetRadius)
+                    return double.NaN;
+
+                double impactUT = source.InputInitialOrbit.NextTimeOfRadius(source.InputUT, targetRadius);
+                return double.IsInfinity(impactUT) || double.IsNaN(impactUT) ? double.NaN : impactUT;
+            }
+            catch (Exception ex)
+            {
+                if (Core.Landing.LandingTraceEnabled)
+                    Core.Landing.TraceLanding("predictor target-aware ballistic impact unavailable: " + ex.Message);
+                return double.NaN;
+            }
         }
 
         private static void ReleaseBrakingPlanResults(IEnumerable<ReentrySimulation.Result> results)
