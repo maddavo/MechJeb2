@@ -159,3 +159,12 @@ the current point through two seconds before that intersection. This is a
 predictor-only change. The candidate trace records `earliest`,
 `ballisticImpact`, `latest`, and all nine forced starts so the selected later
 braking simulation is reviewable.
+
+## r9 build and installation
+
+- Source commit: `6e58696d` (`fix: extend V1 braking predictor search to ballistic impact`).
+- Window build identity: `V1 Beta Predictor Diagnostics 2026-09-27 r9`.
+- Build succeeded and focused landing-prediction tests passed: 16/16.
+- Installed after confirming `KSP_x64` was not running.
+- Backup: `C:\Users\Dave\Documents\KSP Backups\MechJeb2-LandingGuidanceV2\MechJeb2-20260927-180114-pre-r9.dll`.
+- Installed DLL SHA-256: `0FAC769EFD2BFD1F6ABC2C7FFCA8303371134B86C7610A8A513016A29D5E3225`.
