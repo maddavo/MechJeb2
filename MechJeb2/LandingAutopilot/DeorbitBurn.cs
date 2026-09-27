@@ -25,6 +25,7 @@ namespace MuMech
             private bool _deorbitBurnTriggered;
             private double _deorbitThrottle;
             private double _lastCandidatePlanUT = double.NaN;
+            private double _remainingBurnMagnitude = double.NaN;
             private DeorbitCandidate _candidate;
 
             public DeorbitBurn(MechJebCore core) : base(core) { }
@@ -32,6 +33,7 @@ namespace MuMech
             public override string TraceDetails =>
                 $" candidateValid={_candidate.Valid} candidateEndpointError={_candidate.EndpointError:F1} " +
                 $"candidateAimRotation={_candidate.AimRotationDegrees:F2} " +
+                $"remainingBurn={_remainingBurnMagnitude:F3} " +
                 $"deorbitTriggered={_deorbitBurnTriggered}";
 
             public override AutopilotStep Drive(FlightCtrlState s)
@@ -67,7 +69,15 @@ namespace MuMech
                 }
 
                 Vector3d futureRadial = _candidate.AimRadial;
-                Vector3d burn = _candidate.Burn;
+                // The selected candidate authorises ignition from its exact initial
+                // burn. After ignition, the target velocity remains fixed but the
+                // remaining delta-v must be recalculated from current vessel state.
+                // Holding _candidate.Burn here would keep the original delta-v
+                // forever and prevent the terminal threshold from ever being met.
+                Vector3d burn = _deorbitBurnTriggered
+                    ? _candidate.AimedHorizontalVelocity - horizontalVelocity
+                    : _candidate.Burn;
+                _remainingBurnMagnitude = burn.magnitude;
                 Vector3d currentRadial = VesselState.CoM - MainBody.position;
                 double targetNormalAngle = Vector3d.Angle(Orbit.OrbitNormal(), futureRadial);
                 targetNormalAngle = Math.Min(targetNormalAngle, 180.0 - targetNormalAngle);
@@ -171,7 +181,8 @@ namespace MuMech
                     Vector3d horizontalToTarget = Vector3d.Exclude(VesselState.Up, futureTarget - VesselState.CoM).normalized;
                     if (!IsFiniteVector(horizontalToTarget)) return default;
                     Vector3d finalVelocity = horizontalVelocity + periapsisChange;
-                    Vector3d burn = finalVelocity.magnitude * horizontalToTarget - horizontalVelocity;
+                    Vector3d aimedHorizontalVelocity = finalVelocity.magnitude * horizontalToTarget;
+                    Vector3d burn = aimedHorizontalVelocity - horizontalVelocity;
                     Orbit candidateOrbit = Orbit.PerturbedOrbit(VesselState.Time, burn);
                     double impactUT = candidateOrbit.NextTimeOfRadius(VesselState.Time, MainBody.Radius);
                     if (!IsFinite(impactUT) || impactUT <= VesselState.Time) return default;
@@ -184,7 +195,8 @@ namespace MuMech
                     Vector3d actualTarget = Quaternion.AngleAxis((float)targetRotation, MainBody.angularVelocity) * targetRadial;
                     if (!IsFiniteVector(endpoint) || !IsFiniteVector(actualTarget)) return default;
                     return new DeorbitCandidate { Valid = true, AimRotationDegrees = aimRotationDegrees, AimRadial = aimRadial,
-                        Burn = burn, EndpointError = Vector3d.Distance(endpoint, actualTarget) };
+                        AimedHorizontalVelocity = aimedHorizontalVelocity, Burn = burn,
+                        EndpointError = Vector3d.Distance(endpoint, actualTarget) };
                 }
                 catch (ArgumentException)
                 {
@@ -205,6 +217,7 @@ namespace MuMech
                 public bool Valid;
                 public double AimRotationDegrees;
                 public Vector3d AimRadial;
+                public Vector3d AimedHorizontalVelocity;
                 public Vector3d Burn;
                 public double EndpointError;
             }
