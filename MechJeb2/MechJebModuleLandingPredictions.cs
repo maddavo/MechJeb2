@@ -160,7 +160,6 @@ namespace MuMech
         private double lastBrakingPlanInputUT = double.NegativeInfinity;
         private const int BrakingPlanCandidateCount = 5;
         private const double BrakingPlanRefreshSeconds = 5;
-        private const double MaximumCandidateTouchdownSpeed = 15;
         // Each V1 landing target owns a predictor transaction. A simulation
         // can finish after a new target has been selected, so its result must
         // be identified before it reaches the control-facing result queue.
@@ -537,7 +536,7 @@ namespace MuMech
                         Core.Landing.Enabled && deployChutes ? limitChutesStage : -1);
                     simulations.Add(ReentrySimulation.Borrow(source.InputInitialOrbit, source.InputUT, simVessel,
                         simCurves, descentSpeedPolicy, decelEndAltitudeASL, VesselState.LimitedMaxThrustAcceleration,
-                        parachuteSemiDeployMultiplier, source.InputProbableLandingSiteASL, false, dt,
+                        parachuteSemiDeployMultiplier, Core.Landing.PredictorLandingAltitudeASL(), false, dt,
                         Time.fixedDeltaTime, maxOrbits, noSkipToFreefall, forcedStartUT));
                 }
 
@@ -608,13 +607,15 @@ namespace MuMech
                     {
                         double error = TargetDistance(candidate);
                         bool safe = candidate.Outcome == ReentrySimulation.Outcome.LANDED &&
-                            candidate.EndSurfaceSpeed <= MaximumCandidateTouchdownSpeed &&
+                            candidate.EndSurfaceSpeed <= CandidateTerminalSpeedLimit(candidate) &&
                             !double.IsNaN(error) && !double.IsInfinity(error);
                         candidates.Add(new TargetAwareBrakingPlan.Candidate(candidate.SimulatedBrakingStartUT, error, 0, safe));
                     }
 
                     if (!TargetAwareBrakingPlan.TrySelect(candidates, out TargetAwareBrakingPlan.Candidate selected))
                     {
+                        if (Core.Landing.LandingTraceEnabled)
+                            Core.Landing.TraceLanding($"predictor target-aware rejected all candidates count={set.Results.Count}");
                         ReleaseBrakingPlanResults(set.Results);
                         continue;
                     }
@@ -659,6 +660,17 @@ namespace MuMech
             Vector3d target = candidate.Body.GetWorldSurfacePosition(Core.Target.targetLatitude,
                 Core.Target.targetLongitude, 0);
             return Vector3d.Distance(endpoint, target);
+        }
+
+        private static double CandidateTerminalSpeedLimit(ReentrySimulation.Result candidate)
+        {
+            // V1 deliberately finishes its virtual braking envelope 200 m above
+            // the landing site, then uses its existing final-descent controller.
+            // A candidate can therefore carry the gravity-acquired speed for that
+            // 200 m buffer; requiring near-zero speed here rejects every valid
+            // airless candidate before target selection.
+            double gravity = candidate.Body == null ? 0 : candidate.Body.GeeASL * 9.81;
+            return TargetAwareBrakingPlan.TerminalSpeedLimit(gravity, 200);
         }
 
         private static void ReleaseBrakingPlanResults(IEnumerable<ReentrySimulation.Result> results)

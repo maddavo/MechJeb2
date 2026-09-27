@@ -102,3 +102,23 @@ incorrect immediate virtual brake seen in the failing trace.
 - Installed after confirming `KSP_x64` was not running. The prior DLL is backed
   up as `C:\Users\Dave\Documents\KSP Backups\MechJeb2-LandingGuidanceV2\MechJeb2-20260927-170915-pre-r6.dll`.
 - Installed DLL SHA-256: `900AAA3509CEE689DF4C1489FD13D46D5494238C26712903E0993DE76A4F8F97`.
+
+## r7 trace-backed correction
+
+The r6 Mun trace showed that no target-aware result was published: every
+record had `inputForcedBrakingStartUT: null`. The r6 terminal-speed gate was
+wrong because the airless simulator reaches sea level after V1's virtual
+braking envelope ends 200 m above the landing site; it rejected all candidate
+results before selection.
+
+The same trace exposed the circular terrain input. The selected target was
+492 m ASL, but active predictor records used a 3.9–4.3 km `inputDecelerationEndASL`
+from the short predicted endpoint. r7 gives the **predictor only** the selected
+target's terrain height, so its 200 m braking envelope is anchored at the
+landing target. V1's controller still uses its original control altitude and
+phases.
+
+r7 accepts a candidate terminal speed up to the gravity-only speed acquired
+through V1's existing 200 m final-descent buffer, plus a 5 m/s numerical
+allowance. It logs an explicit `predictor target-aware rejected all candidates`
+event if no candidate qualifies.

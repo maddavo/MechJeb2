@@ -22,7 +22,7 @@ namespace MuMech
         [Persistent(pass = (int)(Pass.LOCAL | Pass.TYPE | Pass.GLOBAL))]
         public bool LandingTraceEnabled;
 
-        public const string DiagnosticBuildVersion = "V1 Beta Predictor Diagnostics 2026-09-27 r6";
+        public const string DiagnosticBuildVersion = "V1 Beta Predictor Diagnostics 2026-09-27 r7";
         private double _nextLandingTraceUT;
         private long _lastTracedPredictionVersion = -1;
         private string _lastTracedStep;
@@ -184,8 +184,13 @@ namespace MuMech
 
             DescentSpeedPolicy = PickDescentSpeedPolicy();
 
-            _predictor.descentSpeedPolicy = PickDescentSpeedPolicy(); //create a separate IDescentSpeedPolicy object for the simulation
-            _predictor.decelEndAltitudeASL = DecelerationEndAltitude();
+            // The active predictor must use the selected target's terrain height.
+            // Feeding it the previous predicted endpoint height creates a circular
+            // error: a short prediction over a ridge raises the speed envelope,
+            // which makes the following prediction short again. V1's flight
+            // controller keeps its existing DecelerationEndAltitude behaviour.
+            _predictor.descentSpeedPolicy = PickPredictorDescentSpeedPolicy();
+            _predictor.decelEndAltitudeASL = PredictorDecelerationEndAltitude();
             _predictor.parachuteSemiDeployMultiplier = _parachutePlan.Multiplier;
 
             // Consider lowering the langing gear
@@ -532,6 +537,33 @@ namespace MuMech
             }
 
             return new SafeDescentSpeedPolicy(MainBody.Radius + DecelerationEndAltitude(), MainBody.GeeASL * 9.81, VesselState.LimitedMaxThrustAcceleration);
+        }
+
+        private IDescentSpeedPolicy PickPredictorDescentSpeedPolicy()
+        {
+            double endAltitude = PredictorDecelerationEndAltitude();
+            if (UseAtmosphereToBrake())
+                return new PoweredCoastDescentSpeedPolicy(MainBody.Radius + endAltitude, MainBody.GeeASL * 9.81,
+                    VesselState.LimitedMaxThrustAcceleration);
+
+            return new SafeDescentSpeedPolicy(MainBody.Radius + endAltitude, MainBody.GeeASL * 9.81,
+                VesselState.LimitedMaxThrustAcceleration);
+        }
+
+        internal double PredictorLandingAltitudeASL()
+        {
+            if (LandAtTarget && Core.Target.PositionTargetExists && Core.Target.targetBody == MainBody)
+                return MainBody.TerrainAltitude(Core.Target.targetLatitude, Core.Target.targetLongitude);
+
+            return _landingAltitude;
+        }
+
+        internal double PredictorDecelerationEndAltitude()
+        {
+            if (!UseAtmosphereToBrake())
+                return 200 + PredictorLandingAltitudeASL();
+
+            return DecelerationEndAltitude();
         }
 
         public double DecelerationEndAltitude()

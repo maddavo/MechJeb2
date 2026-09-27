@@ -55,6 +55,17 @@ namespace MuMech.Landing
             return haveSelection;
         }
 
+        public static double TerminalSpeedLimit(double gravity, double finalDescentHeight)
+        {
+            if (!Finite(gravity) || !Finite(finalDescentHeight) || gravity < 0 || finalDescentHeight < 0)
+                return double.NaN;
+
+            // The final V1 descent controller owns this remaining vertical
+            // distance. Add a small integration allowance to its gravity-only
+            // arrival speed rather than demanding an impossible zero speed.
+            return Math.Sqrt(2 * gravity * finalDescentHeight) + 5;
+        }
+
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
     }
 }

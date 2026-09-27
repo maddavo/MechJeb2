@@ -43,5 +43,18 @@ namespace MechJebLibTest.LandingPredictionTests
 
             Assert.False(TargetAwareBrakingPlan.TrySelect(candidates, out _));
         }
+
+        [Fact]
+        public void AllowsTheGravityAcquiredSpeedForV1FinalDescent()
+        {
+            Assert.Equal(30.534, TargetAwareBrakingPlan.TerminalSpeedLimit(1.63, 200), 3);
+        }
+
+        [Fact]
+        public void RejectsInvalidTerminalSpeedInputs()
+        {
+            Assert.True(double.IsNaN(TargetAwareBrakingPlan.TerminalSpeedLimit(-1, 200)));
+            Assert.True(double.IsNaN(TargetAwareBrakingPlan.TerminalSpeedLimit(1, -1)));
+        }
     }
 }
