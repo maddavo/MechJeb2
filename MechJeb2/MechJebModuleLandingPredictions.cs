@@ -608,6 +608,24 @@ namespace MuMech
 
         private void AcceptNormalResult(ReentrySimulation.Result newResult, TerrainProfileTrace terrainTrace)
         {
+            // A retained LANDED result is an actuator input for V1.  Never let
+            // the two-sample landing consensus conceal a fresh non-landing
+            // result: Course Correction must not calculate another pulse from
+            // an impact point after the real orbit has stopped intersecting the
+            // protected descent radius.
+            if (LandingPredictionConsensus.RequiresImmediatePublication(newResult.Outcome))
+            {
+                TraceNormalResultDecision("immediate_invalidate", candidateResult, newResult, terrainTrace);
+                if (candidateResult != null)
+                {
+                    candidateResult.Release();
+                    candidateResult = null;
+                }
+
+                PublishNormalResult(newResult);
+                return;
+            }
+
             // A result controls both the map marker and V1 course corrections.
             // Publish only a consensus result. In particular, do not let the
             // first result after a trajectory change select one side of a

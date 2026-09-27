@@ -11,6 +11,15 @@ namespace MuMech.Landing
     /// </summary>
     public static class LandingPredictionConsensus
     {
+        /// <summary>
+        /// A published landing result can drive V1 thrust.  A newer simulation
+        /// that says there is no landing must therefore invalidate it at once;
+        /// waiting for a second such result leaves the controller acting on a
+        /// trajectory that no longer exists.
+        /// </summary>
+        public static bool RequiresImmediatePublication(ReentrySimulation.Outcome outcome) =>
+            outcome != ReentrySimulation.Outcome.LANDED;
+
         public static bool Agrees(ReentrySimulation.Result first, ReentrySimulation.Result second,
             double positionTolerance, double bodySpaceDistance)
         {

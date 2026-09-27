@@ -112,7 +112,7 @@ namespace MuMech.Landing
 
         public static void WriteState(string phase, string status, double ut, double warpRate,
             Vector3d position, Vector3d velocity, double commandedThrottle, double thrustAcceleration,
-            long predictionVersion, ReentrySimulation.Result prediction)
+            long predictionVersion, ReentrySimulation.Result prediction, string controllerDetail)
         {
             try
             {
@@ -126,11 +126,12 @@ namespace MuMech.Landing
                         "{{\"recordType\":\"guidance_state\",\"ut\":{0},\"phase\":{1},\"status\":{2},\"warpRate\":{3}," +
                         "\"position\":{4},\"velocity\":{5},\"commandedThrottle\":{6},\"thrustAcceleration\":{7}," +
                         "\"predictionVersion\":{8},\"predictionInputUT\":{9},\"predictionEndUT\":{10}," +
-                        "\"predictionEndpoint\":{11},\"predictionEndASL\":{12}}}",
+                        "\"predictionEndpoint\":{11},\"predictionEndASL\":{12},\"controllerDetail\":{13}}}",
                         Number(ut), JsonString(phase), JsonString(status), Number(warpRate), Vector(position), Vector(velocity),
                         Number(commandedThrottle), Number(thrustAcceleration), predictionVersion,
                         Number(prediction?.InputUT ?? double.NaN), Number(prediction?.EndUT ?? double.NaN),
-                        prediction == null ? "null" : Vector(prediction.EndPosition), Number(prediction?.EndASL ?? double.NaN));
+                        prediction == null ? "null" : Vector(prediction.EndPosition), Number(prediction?.EndASL ?? double.NaN),
+                        JsonString(controllerDetail));
                     _writer.WriteLine(line);
                     _recordsSinceFlush++;
                     if (_recordsSinceFlush >= 5)

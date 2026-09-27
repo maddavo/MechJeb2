@@ -22,7 +22,7 @@ namespace MuMech
         [Persistent(pass = (int)(Pass.LOCAL | Pass.TYPE | Pass.GLOBAL))]
         public bool LandingTraceEnabled;
 
-        public const string DiagnosticBuildVersion = "V1 Beta Predictor Diagnostics 2026-09-27 r2";
+        public const string DiagnosticBuildVersion = "V1 Beta Predictor Diagnostics 2026-09-27 r3";
         private double _nextLandingTraceUT;
         private long _lastTracedPredictionVersion = -1;
         private string _lastTracedStep;
@@ -248,7 +248,7 @@ namespace MuMech
                 $"predictionVersion={PredictionVersion}{CurrentStep.TraceDetails}");
             LandingPredictorTrace.WriteState(step, Status, VesselState.Time, TimeWarp.CurrentRate,
                 VesselState.CoM, VesselState.OrbitalVelocity, Core.Thrust.TargetThrottle,
-                VesselState.CurrentThrustAcceleration, PredictionVersion, Prediction);
+                VesselState.CurrentThrustAcceleration, PredictionVersion, Prediction, CurrentStep.TraceDetails);
         }
 
         public void TraceLanding(string message)

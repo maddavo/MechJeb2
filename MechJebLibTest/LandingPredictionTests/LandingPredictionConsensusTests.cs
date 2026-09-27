@@ -7,6 +7,16 @@ namespace MechJebLibTest.LandingPredictionTests
     public class LandingPredictionConsensusTests
     {
         [Fact]
+        public void FreshNonLandingResultImmediatelyInvalidatesALandingResult()
+        {
+            Assert.True(LandingPredictionConsensus.RequiresImmediatePublication(ReentrySimulation.Outcome.NO_REENTRY));
+            Assert.True(LandingPredictionConsensus.RequiresImmediatePublication(ReentrySimulation.Outcome.TIMED_OUT));
+            Assert.True(LandingPredictionConsensus.RequiresImmediatePublication(ReentrySimulation.Outcome.ERROR));
+            Assert.True(LandingPredictionConsensus.RequiresImmediatePublication(ReentrySimulation.Outcome.AEROBRAKED));
+            Assert.False(LandingPredictionConsensus.RequiresImmediatePublication(ReentrySimulation.Outcome.LANDED));
+        }
+
+        [Fact]
         public void RejectsFlatAndMountainBranchesWithDifferentArrivalTimes()
         {
             var flat = Result(1000, 0);
