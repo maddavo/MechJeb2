@@ -131,3 +131,17 @@ event if no candidate qualifies.
 - Installed after confirming `KSP_x64` was not running.
 - Backup: `C:\Users\Dave\Documents\KSP Backups\MechJeb2-LandingGuidanceV2\MechJeb2-20260927-172040-pre-r7.dll`.
 - Installed DLL SHA-256: `6B1A5641A0FE4A3E5F2DDC3D6C4895C9EC2788917EA9CAEAEF8757EEC05E56A9`.
+
+## r8 correction: publish target-aware candidates
+
+The r7 KSP log proved that the target-aware planner ran but rejected all five
+candidates. Its terminal-speed test was inappropriate: `ReentrySimulation`
+ends virtual braking at the V1 final-descent handoff, while V1's existing
+final-descent controller owns the remaining vertical speed reduction.
+
+r8 selects from every finite `LANDED` candidate by powered endpoint distance to
+the selected target. Terminal surface speed remains in each candidate trace as
+diagnostic data; it is no longer a hard rejection gate. With trace logging
+enabled, each planning batch now writes five `target_aware_candidate` JSONL
+records containing the forced braking start, endpoint error, virtual Δv, and
+terminal speed before the selected plan is published.

@@ -606,8 +606,15 @@ namespace MuMech
                     foreach (ReentrySimulation.Result candidate in set.Results)
                     {
                         double error = TargetDistance(candidate);
+                        if (Core.Landing.LandingTraceEnabled)
+                            Core.Landing.TracePredictorDiagnostic("target_aware_candidate", candidate, null, lastSimTime);
+
+                        // The simulator's virtual-braking envelope ends at the
+                        // V1 final-descent handoff, not at touchdown. Its terminal
+                        // surface speed is diagnostic evidence, not a feasibility
+                        // gate. Treating it as a hard reject prevented every
+                        // target-aware candidate from ever being published.
                         bool safe = candidate.Outcome == ReentrySimulation.Outcome.LANDED &&
-                            candidate.EndSurfaceSpeed <= CandidateTerminalSpeedLimit(candidate) &&
                             !double.IsNaN(error) && !double.IsInfinity(error);
                         candidates.Add(new TargetAwareBrakingPlan.Candidate(candidate.SimulatedBrakingStartUT, error, 0, safe));
                     }
@@ -660,17 +667,6 @@ namespace MuMech
             Vector3d target = candidate.Body.GetWorldSurfacePosition(Core.Target.targetLatitude,
                 Core.Target.targetLongitude, 0);
             return Vector3d.Distance(endpoint, target);
-        }
-
-        private static double CandidateTerminalSpeedLimit(ReentrySimulation.Result candidate)
-        {
-            // V1 deliberately finishes its virtual braking envelope 200 m above
-            // the landing site, then uses its existing final-descent controller.
-            // A candidate can therefore carry the gravity-acquired speed for that
-            // 200 m buffer; requiring near-zero speed here rejects every valid
-            // airless candidate before target selection.
-            double gravity = candidate.Body == null ? 0 : candidate.Body.GeeASL * 9.81;
-            return TargetAwareBrakingPlan.TerminalSpeedLimit(gravity, 200);
         }
 
         private static void ReleaseBrakingPlanResults(IEnumerable<ReentrySimulation.Result> results)
