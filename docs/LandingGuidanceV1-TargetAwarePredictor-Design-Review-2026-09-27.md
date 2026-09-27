@@ -2,11 +2,13 @@
 
 **Reviewed:** 2026-09-27; `design/landing-guidance-v2` at `8db84cf3`
 **Reference only:** V1 Beta `d8ac3dd5` still has the Mun early-braking fault.
-**Status:** Passive deterministic-capture facility and offline reader added and built on 2026-09-28; active predictor repair and in-game DLL test remain deferred. Runtime Mun capture is still required.
+**Status:** Passive deterministic-capture facility and offline reader added and built on 2026-09-28. A Mun run now supplies a structurally complete predictor capture. Active predictor repair remains deferred.
 
 This review checks the earlier version of this document against the current V1 source, V1 Beta, `LandingGuidanceV1-Predictor-Investigation.md`, `LandingGuidanceV2.md`, `LandingGuidanceV2-Handoff-2026-09-20.md`, `LandingGuidanceV1.trace.jsonl`, and its matching `KSP.log` event. The V2 handoff is historical; the current branch is authoritative. The V2 architecture is a separate opt-in project, not an implementation path for this V1 repair.
 
 ## Evidence and limits
+
+The counts in the next paragraph describe the trace as it stood at the original 2026-09-27 review. The later Mun capture and appended trace session are analysed below.
 
 The current V1 JSONL trace is an append-only 8,917,536-byte file with four distinguishable UT-reset sessions. Of 9,162 physical lines, 9,160 parse as JSON and two are malformed at session boundaries (lines 4593 and 6689); analysis must segment by UT reset and not merge repeated UTs across sessions. Only the final session (lines 7474–9162) has the r9 later-braking planner: **one** batch of nine `target_aware_candidate` records at process UT 24,603,456.888 and 24 `retain_target_aware_plan` records. `KSP.log` records its window (earliest 24,603,456.83, target-radius intersection 24,604,573.95) and its selected forced start 24,604,014.39. Candidate longitude moves from −17.93° through 26.76° past the target longitude 23.473° while unsigned target distance falls from about 141 km to 11.5 km, then rises. The trace does not contain a signed approach-frame error; the closest grid point is **not** a converged target landing. Candidate records have `terrainProfileApplied:false`; their ranking used spherical endpoints.
 
@@ -108,6 +110,64 @@ Provisional active-repair criteria, to be calibrated from the captured Mun repla
 
 Before **active predictor implementation**, require the passive capture to produce a complete replayable Mun fixture, reader validation, calibrated thresholds, and a reviewed design against those data. Before **any KSP DLL test**, require production-path lifecycle harness gates, focused landing tests, a successful solution build, and a reviewed diff proving V1 controller/UI preservation. A build or plausible candidate endpoints alone is not a gate.
 
+## Mun runtime capture, 2026-09-28
+
+The installed passive-capture build produced `LandingGuidanceV1.capture.jsonl` at
+`C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program\GameData\MechJeb2\Plugins\PluginData\MechJeb2\`.
+Its 2,651,828 bytes have SHA-256
+`9F6E573C0E02183DC918F279D32A67ABB4C54E457B1C8229C85A6A3B8678BA44`.
+Strict `landing_predictor_capture_reader.py` validation finds **3,763 records,
+712 submissions, zero structural gaps, and 461 publications** in one capture
+session. There are 703 ordinary and nine forced-candidate submissions; every
+submission has a worker result and a flight-thread resolution. No capture error
+was recorded. The output is suitable as the versioned input to a future offline
+simulator and lifecycle harness; the reader does not itself replay trajectories.
+
+The matching appended V1 trace session is physical lines 9163–11250. Its final
+line 11251 is truncated; the separate capture file parses completely. The Mun
+run passed through `PlaneChange`, `DeorbitBurn`, and `CourseCorrection`, then
+logged `landing_stopped` and `landing_module_disabled` at UT 24,603,567.09.
+This captured run did **not** reach braking, hover, or touchdown. Earlier trace
+sessions have braking states, but lack this deterministic capture.
+
+At input UT 24,603,456.77, ordinary submission 172 started virtual braking
+immediately and resolved to longitude −18.479°, about 147 km short of target
+longitude 23.473°. Its terrain contact was confirmed. The nine forced candidates
+shared one captured input snapshot and ranged from immediate braking to UT
+24,604,511.81. Candidate 177 delayed braking to UT 24,603,984.29 and reached
+longitude 23.187°, about 1.01 km from the target by spherical surface distance.
+The bracket's next candidate passed to longitude 38.061°. Projecting the
+trace's unpowered osculating position through the captured body axes and
+rotation state gives an approximate target-height crossing near longitude 89°.
+That is evidence of a long ballistic path, **not** a terrain-resolved impact.
+
+Candidate 177 had no confirmed terrain contact. Its last recorded sample was
+about 492 m ASL over terrain about 450 m ASL, leaving roughly 42 m to local
+ground. The simulator stopped at the target-height radius; `resolvedEndASL`
+remained zero despite an endpoint radius implying about 492 m ASL. The earlier
+planner nevertheless published it as result version 261. This is an incomplete
+target-aware result, not a validated landing near the target. The capture has
+terrain samples only along paths V1 queried; it cannot establish unseen ground
+contact for the candidate or the ballistic arc.
+
+V1 retained 24 subsequent immediate-braking results for its five-second guard.
+Ordinary submission 207 replaced the selected result as version 262 at UT
+24,603,462.15, **5.32 seconds** after selection. There was no second forced
+batch. By the end, V1 had published `NO_REENTRY` version 550 in
+`CourseCorrection`; the last state still showed a previously commanded throttle
+near 0.19. This documents existing V1 behavior and does not authorise a new
+controller response.
+
+For the 348 `LANDED` worker results, captured simulation time had median
+0.632 ms and maximum 3.369 ms. The 340 resolutions that queried terrain had
+median 15 and maximum 17 queries, with measured query time median 0.101 ms
+and maximum 0.159 ms. These are observations from this run, not acceptance
+budgets. Main-thread snapshot/copy cost, unqueried terrain, and absent later phases
+prevent final numerical performance and targeting thresholds. The offline
+harness must use this fixture to test the one-snapshot transaction and repeated
+refresh, and must explicitly mark unknown terrain rather than treating the
+spherical candidate as confirmed contact.
+
 ## Readiness and remaining design issues
 
-**Passive capture and its reader are implemented; the Release build, 16 focused C# landing-prediction tests, and five reader tests passed. It has not been exercised in KSP. Active predictor repair is not ready.** Its remaining design work is to capture and validate the Mun replay, account for unqueried terrain, and calibrate downrange, crossrange, contact, timing, refresh-age, and performance limits from that evidence. V1 no-prediction behavior remains unchanged by decision.
+**Passive capture has been exercised in KSP and its Mun session passes strict reader validation. Active predictor repair is not ready.** The remaining design work is a terrain-bounded offline simulator and lifecycle harness, added capture coverage for braking/hover/abort if needed for those gates, and calibrated downrange, crossrange, contact, timing, refresh-age, and performance limits from replay. V1 no-prediction behavior remains unchanged by decision.
