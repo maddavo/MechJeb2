@@ -66,8 +66,8 @@ namespace MuMech.Landing
                         "\"terrainProfileApplied\":{30},\"terrainProfileStartIndex\":{31},\"terrainProfileSampleCount\":{32}," +
                         "\"terrainProfileLocalContactIndex\":{33},\"terrainProfileContactIndex\":{34},\"terrainProfileContactASL\":{35}," +
                         "\"trajectoryStart\":{36},\"osculatingImpact\":{37},\"osculatingImpactUT\":{38}}}",
-                        JsonString(decision), Number(processUT), JsonString(phase), JsonString(status), JsonString(result.Outcome.ToString()),
-                        JsonString(targetBody), Number(targetLatitude), Number(targetLongitude), JsonString(result.Outcome.ToString()),
+                        JsonString(decision), Number(processUT), JsonString(phase), JsonString(status), JsonString(targetBody),
+                        Number(targetLatitude), Number(targetLongitude), JsonString(result.Outcome.ToString()),
                         Number(result.InputUT), Number(processUT - result.InputUT), Number(result.EndUT), Number(simulationSeconds), result.Steps,
                         Number(result.InputDecelEndAltitudeASL), Number(result.InputMaxThrustAccel),
                         Number(start.Latitude), Number(start.Longitude), Number(start.Radius), Number(start.UT),

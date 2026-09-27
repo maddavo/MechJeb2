@@ -22,7 +22,7 @@ namespace MuMech
         [Persistent(pass = (int)(Pass.LOCAL | Pass.TYPE | Pass.GLOBAL))]
         public bool LandingTraceEnabled;
 
-        public const string DiagnosticBuildVersion = "V1 Alpha Predictor Diagnostics 2026-09-27";
+        public const string DiagnosticBuildVersion = "V1 Alpha Predictor Diagnostics 2026-09-27 r2";
         private double _nextLandingTraceUT;
         private long _lastTracedPredictionVersion = -1;
         private string _lastTracedStep;

@@ -9,10 +9,10 @@ This is a V1-only diagnostic build. It preserves the V1 Alpha deorbit controller
 - The V2 controller, planner, UI, trace writer, and V2-only tests are removed from the build.
 - The Landing Guidance window shows only V1 controls plus:
   - `Log trace data`
-  - `V1 Alpha Predictor Diagnostics 2026-09-27`
+  - `V1 Alpha Predictor Diagnostics 2026-09-27 r2`
 - Logging is disabled by default. It commands no actuator and changes no V1 guidance calculation.
 
-## Trace output
+## Revision r2`r`n`r`nRevision r2 corrects the JSON field order in `predictor_result`. The original diagnostic build wrote valid JSON but assigned several values to the wrong field names, so its predictor-result records cannot be used as evidence. This revision changes diagnostics only; the V1 controller source remains byte-for-byte V1 Alpha.`r`n`r`n## Trace output
 
 When `Log trace data` is enabled during a targeted V1 landing, the build writes:
 
