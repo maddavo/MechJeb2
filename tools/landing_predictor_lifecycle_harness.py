@@ -19,6 +19,7 @@ END_ACTIONS = {"landing_stopped", "landing_module_disabled",
                "predictor_disabled", "switched_to_untargeted"}
 INVALIDATION_ACTIONS = {"target_aware_target_changed",
                         "target_aware_target_terrain_changed"}
+TERMINAL_PHASES = {"DecelerationBurn", "KillHorizontalVelocity", "FinalDescent"}
 
 
 def audit_lifecycle(document, require_active=False):
@@ -58,6 +59,10 @@ def audit_lifecycle(document, require_active=False):
             continue
         if kind == "submission" and event.get("kind") == "target_aware_transaction":
             targeted_by_session[session] = True
+            if event.get("phase") in TERMINAL_PHASES and not (
+                    event.get("phase") == "DecelerationBurn" and
+                    event.get("modelProvenance") == "v1_live_braking_forecast"):
+                issues.append(f"line {line}: target-aware planning submitted during {event['phase']}")
             case = cases.get((session, event["submissionId"]))
             refresh = next((item for item in (case.get("decisions", []) if case else [])
                             if item.get("decision") == "target_aware_refresh_started"), None)
@@ -86,6 +91,10 @@ def audit_lifecycle(document, require_active=False):
             issues.append(f"line {line}: {model or 'unknown'} result published in target-aware mode")
         if model != "target_aware_transaction":
             continue
+        if event.get("phase") in TERMINAL_PHASES and not (
+                event.get("phase") == "DecelerationBurn" and
+                submission.get("modelProvenance") == "v1_live_braking_forecast"):
+            issues.append(f"line {line}: target-aware planning published during {event['phase']}")
         if not targeted_by_session.get(session):
             issues.append(f"line {line}: target-aware result published after landing stopped")
         active_publications += 1
@@ -111,10 +120,14 @@ def audit_lifecycle(document, require_active=False):
         age = event["processUT"] - submission["captureEpochUT"]
         if not (math.isfinite(age) and 0 <= age <= 10):
             issues.append(f"line {line}: target-aware snapshot exceeded provisional age gate")
-        if (abs(validation["signedDownrangeError"]) >= tolerance or
-                validation["timingDistanceEstimate"] >= tolerance or
-                validation["timingInterval"] <= 0):
-            issues.append(f"line {line}: signed refinement did not meet V1 distance gate")
+        if validation.get("brakeTimeBracketed", True):
+            if (abs(validation["signedDownrangeError"]) >= tolerance or
+                    validation["timingDistanceEstimate"] >= tolerance or
+                    validation["timingInterval"] <= 0):
+                issues.append(f"line {line}: signed refinement did not meet V1 distance gate")
+        elif not validation.get("directForecast", False) and not math.isfinite(
+                validation["signedDownrangeError"]):
+            issues.append(f"line {line}: unbracketed miss is not recorded")
         if (validation["terrainQueryCount"] > 1024 or
                 validation["minimumSampledClearance"] < 0 or
                 validation["handoffClearance"] < 0):

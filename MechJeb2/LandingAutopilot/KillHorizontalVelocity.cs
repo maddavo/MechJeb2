@@ -31,21 +31,11 @@ namespace MuMech
                 }
 
                 //control thrust to control vertical speed:
-                const double DESIRED_SPEED = 0; //hover until horizontal velocity is killed
                 double controlledSpeed = Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up);
-                double speedError = DESIRED_SPEED - controlledSpeed;
-                const double SPEED_CORRECTION_TIME_CONSTANT = 1.0;
-                double desiredAccel = speedError / SPEED_CORRECTION_TIME_CONSTANT;
-                double minAccel = -VesselState.LocalGravity;
-                double maxAccel = -VesselState.LocalGravity + Vector3d.Dot(VesselState.Forward, VesselState.Up) * VesselState.MaxThrustAcceleration;
-                if (maxAccel - minAccel > 0)
-                {
-                    Core.Thrust.RequestActiveThrottle(Mathf.Clamp((float)((desiredAccel - minAccel) / (maxAccel - minAccel)), 0.0f, 1.0f));
-                }
-                else
-                {
-                    Core.Thrust.RequestActiveThrottle(0.0f);
-                }
+                Core.Thrust.RequestActiveThrottle(V1LandingControlPolicy.HoverThrottle(
+                    controlledSpeed, VesselState.LocalGravity,
+                    Vector3d.Dot(VesselState.Forward, VesselState.Up),
+                    VesselState.MaxThrustAcceleration));
 
                 //angle up and slightly away from vertical:
                 Vector3d desiredThrustVector = (VesselState.Up + 0.2 * horizontalPointingDirection).normalized;

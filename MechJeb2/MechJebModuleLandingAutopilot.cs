@@ -22,7 +22,7 @@ namespace MuMech
         [Persistent(pass = (int)(Pass.LOCAL | Pass.TYPE | Pass.GLOBAL))]
         public bool LandingTraceEnabled;
 
-        public const string DiagnosticBuildVersion = "V1 Beta Predictor Diagnostics 2026-09-27 r9";
+        public const string DiagnosticBuildVersion = "V1 controller-policy predictor 2026-09-29";
         private double _nextLandingTraceUT;
         private long _lastTracedPredictionVersion = -1;
         private string _lastTracedStep;
@@ -228,6 +228,12 @@ namespace MuMech
             {
                 TraceLanding($"step={step} status=\"{Status}\"");
                 _lastTracedStep = step;
+                LandingPredictorTrace.WriteState(step, Status, VesselState.Time, TimeWarp.CurrentRate,
+                    VesselState.CoM, VesselState.OrbitalVelocity, Core.Thrust.TargetThrottle,
+                    VesselState.CurrentThrustAcceleration, PredictionVersion, Prediction,
+                    "phase transition", VesselState, Core.Attitude.attitudeAngleFromTarget(),
+                    Core.Thrust.Tmode.ToString(), Core.Thrust.TransSpdAct, Core.Thrust.TransKillH,
+                    "guidance_transition");
             }
 
             if (PredictionVersion != _lastTracedPredictionVersion)
@@ -260,7 +266,9 @@ namespace MuMech
                 $"predictionVersion={PredictionVersion}{CurrentStep.TraceDetails}");
             LandingPredictorTrace.WriteState(step, Status, VesselState.Time, TimeWarp.CurrentRate,
                 VesselState.CoM, VesselState.OrbitalVelocity, Core.Thrust.TargetThrottle,
-                VesselState.CurrentThrustAcceleration, PredictionVersion, Prediction, CurrentStep.TraceDetails);
+                VesselState.CurrentThrustAcceleration, PredictionVersion, Prediction,
+                CurrentStep.TraceDetails, VesselState, Core.Attitude.attitudeAngleFromTarget(),
+                Core.Thrust.Tmode.ToString(), Core.Thrust.TransSpdAct, Core.Thrust.TransKillH);
         }
 
         public void TraceLanding(string message)
@@ -710,6 +718,9 @@ namespace MuMech
         private readonly double _terrainRadius;
         private readonly double _g;
         private readonly double _thrust;
+        internal double TerrainRadius => _terrainRadius;
+        internal double Gravity => _g;
+        internal double Thrust => _thrust;
 
         public SafeDescentSpeedPolicy(double terrainRadius, double g, double thrust)
         {
@@ -720,8 +731,8 @@ namespace MuMech
 
         public double MaxAllowedSpeed(Vector3d pos, Vector3d vel)
         {
-            double altitude = pos.magnitude - _terrainRadius;
-            return 0.9 * Math.Sqrt(2 * (_thrust - _g) * altitude);
+            return V1LandingControlPolicy.SafeDescentMaximumSpeed(
+                pos.magnitude, _terrainRadius, _g, _thrust);
         }
     }
 

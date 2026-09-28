@@ -24,7 +24,8 @@ namespace MuMech.Landing
 
             private Snapshot(string fields) => Fields = fields;
 
-            internal static Snapshot Create(Orbit orbit, double inputUT, CelestialBody body, VesselState vesselState,
+            internal static Snapshot Create(Orbit orbit, double inputUT, CelestialBody body,
+                VesselState vesselState, MechJebCore core,
                 double targetLatitude, double targetLongitude, string phase, long generation,
                 AirlessTargetAwareSnapshot? activeSnapshot = null,
                 double? activeTargetTerrainQueryMs = null)
@@ -70,6 +71,27 @@ namespace MuMech.Landing
                 fields.Append(",\"throttleFixedLimit\":").Append(Number(vesselState.ThrottleFixedLimit));
                 fields.Append(",\"limitedMaxThrustAcceleration\":").Append(Number(vesselState.LimitedMaxThrustAcceleration));
                 fields.Append(",\"maxEngineResponseTime\":").Append(Number(vesselState.MaxEngineResponseTime));
+                fields.Append(",\"surfaceVelocity\":").Append(Vector(vesselState.SurfaceVelocity));
+                fields.Append(",\"orbitalVelocity\":").Append(Vector(vesselState.OrbitalVelocity));
+                fields.Append(",\"forward\":").Append(Vector(vesselState.Forward));
+                fields.Append(",\"up\":").Append(Vector(vesselState.Up));
+                fields.Append(",\"gravityForce\":").Append(Vector(vesselState.GravityForce));
+                fields.Append(",\"currentThrustAcceleration\":").Append(Number(vesselState.CurrentThrustAcceleration));
+                fields.Append(",\"maxThrustAccelerationAtSubmission\":").Append(Number(vesselState.MaxThrustAcceleration));
+                fields.Append(",\"localGravity\":").Append(Number(vesselState.LocalGravity));
+                fields.Append(",\"controllerDeltaT\":").Append(Number(vesselState.DeltaT));
+                fields.Append(",\"altitudeASL\":").Append(Number(vesselState.AltitudeASL));
+                fields.Append(",\"speedSurface\":").Append(Number(vesselState.SpeedSurface));
+                fields.Append(",\"speedSurfaceHorizontal\":").Append(Number(vesselState.SpeedSurfaceHorizontal));
+                fields.Append(",\"speedVertical\":").Append(Number(vesselState.SpeedVertical));
+                fields.Append(",\"attitudeErrorDegrees\":").Append(Number(core.Attitude.attitudeAngleFromTarget()));
+                fields.Append(",\"vesselAngularSpeed\":").Append(Number(core.vessel.angularVelocity.magnitude));
+                fields.Append(",\"commandedThrottle\":").Append(Number(core.Thrust.TargetThrottle));
+                fields.Append(",\"autoWarpEnabled\":").Append(core.Node.Autowarp ? "true" : "false");
+                fields.Append(",\"landingTouchdownSpeed\":").Append(Number(core.Landing.TouchdownSpeed));
+                fields.Append(",\"rcsAdjustmentEnabled\":").Append(core.Landing.RCSAdjustment ? "true" : "false");
+                fields.Append(",\"activePredictionVersion\":").Append(core.Landing.PredictionVersion);
+                fields.Append(",\"activePredictionInputUT\":").Append(Number(core.Landing.Prediction?.InputUT ?? double.NaN));
                 fields.Append(",\"targetLatitude\":").Append(Number(targetLatitude));
                 fields.Append(",\"targetLongitude\":").Append(Number(targetLongitude));
                 fields.Append(",\"targetTerrainASL\":").Append(Number(targetTerrainASL));
@@ -78,6 +100,27 @@ namespace MuMech.Landing
                 {
                     fields.Append(",\"minimumTerrainASL\":").Append(Number(activeSnapshot.Value.MinimumTerrainASL));
                     fields.Append(",\"maximumTerrainASL\":").Append(Number(activeSnapshot.Value.MaximumTerrainASL));
+                    if (activeSnapshot.Value.HasV1ControlModel)
+                    {
+                        fields.Append(",\"controllerInitialMass\":").Append(Number(activeSnapshot.Value.InitialMass));
+                        fields.Append(",\"controllerMaximumThrust\":").Append(Number(activeSnapshot.Value.MaximumThrust));
+                        fields.Append(",\"controllerMinimumThrust\":").Append(Number(activeSnapshot.Value.MinimumThrust));
+                        fields.Append(",\"controllerMaximumMassFlow\":").Append(Number(activeSnapshot.Value.MaximumMassFlow));
+                        fields.Append(",\"controllerMinimumMassFlow\":").Append(Number(activeSnapshot.Value.MinimumMassFlow));
+                        fields.Append(",\"controllerPolicyTerrainRadius\":").Append(Number(activeSnapshot.Value.PolicyTerrainRadius));
+                        fields.Append(",\"controllerPolicyGravity\":").Append(Number(activeSnapshot.Value.PolicyGravity));
+                        fields.Append(",\"controllerPolicyThrust\":").Append(Number(activeSnapshot.Value.PolicyThrust));
+                        fields.Append(",\"controllerMinimumCommandThrottle\":").Append(Number(activeSnapshot.Value.MinimumCommandThrottle));
+                        fields.Append(",\"controllerMaximumCommandThrottle\":").Append(Number(activeSnapshot.Value.MaximumCommandThrottle));
+                        fields.Append(",\"controllerThrottleSmoothingSeconds\":").Append(Number(activeSnapshot.Value.ThrottleSmoothingSeconds));
+                        fields.Append(",\"controllerInitialAppliedThrottle\":").Append(Number(activeSnapshot.Value.InitialAppliedThrottle));
+                        if (core.Landing.DescentSpeedPolicy is SafeDescentSpeedPolicy livePolicy)
+                        {
+                            fields.Append(",\"livePolicyTerrainRadius\":").Append(Number(livePolicy.TerrainRadius));
+                            fields.Append(",\"livePolicyGravity\":").Append(Number(livePolicy.Gravity));
+                            fields.Append(",\"livePolicyThrust\":").Append(Number(livePolicy.Thrust));
+                        }
+                    }
                 }
                 return new Snapshot(fields.ToString());
             }
@@ -86,7 +129,7 @@ namespace MuMech.Landing
         internal static long Submit(Snapshot snapshot, string kind, IDescentSpeedPolicy policy,
             double decelEndASL, double probableLandingSiteASL, double maxThrustAcceleration,
             double parachuteMultiplier, double dt, double minDt, double maxOrbits, bool noSkipToFreefall,
-            double forcedBrakingStartUT)
+            double forcedBrakingStartUT, string modelProvenance = null)
         {
             if (snapshot == null) return 0;
             try
@@ -98,6 +141,7 @@ namespace MuMech.Landing
                 .Append(",\"wallTimestamp\":").Append(Stopwatch.GetTimestamp())
                 .Append(",\"wallTimestampFrequency\":").Append(Stopwatch.Frequency)
                 .Append(",\"kind\":").Append(Quote(kind)).Append(snapshot.Fields)
+                .Append(",\"modelProvenance\":").Append(Quote(modelProvenance))
                 .Append(",\"policy\":").Append(Quote(policy?.GetType().Name))
                 .Append(",\"decelEndASL\":").Append(Number(decelEndASL))
                 .Append(",\"probableLandingSiteASL\":").Append(Number(probableLandingSiteASL))
@@ -141,6 +185,10 @@ namespace MuMech.Landing
                 .Append(",\"inputUT\":").Append(Number(result.InputUT))
                 .Append(",\"endUT\":").Append(hasEndpoint ? Number(result.EndUT) : "null")
                 .Append(",\"virtualBrakeUT\":").Append(hasEndpoint ? Number(result.SimulatedBrakingStartUT) : "null")
+                .Append(",\"controllerBrakeReferenceUT\":").Append(
+                    result.HasControllerBrakeReferenceUT ? Number(result.ControllerBrakeReferenceUT) : "null")
+                .Append(",\"controllerBrakeReferencePosition\":").Append(
+                    result.HasControllerBrakeReferenceUT ? Absolute(result.ControllerBrakeReferencePosition) : "null")
                 .Append(",\"forcedBrakeUT\":").Append(Number(result.InputForcedBrakingStartUT))
                 .Append(",\"start\":").Append(hasEndpoint ? Absolute(result.StartPosition) : "null")
                 .Append(",\"simulatorEnd\":").Append(hasEndpoint ? Absolute(result.EndPosition) : "null")
@@ -206,6 +254,9 @@ namespace MuMech.Landing
                     .Append(",\"sequence\":").Append(planner.Sequence)
                     .Append(",\"stage\":").Append(Quote(planner.Stage.ToString()))
                     .Append(",\"failure\":").Append(Quote(planner.Failure))
+                    .Append(",\"directForecast\":").Append(planner.IsDirectForecast ? "true" : "false")
+                    .Append(",\"brakeTimeBracketed\":").Append(
+                        selected != null && !double.IsNaN(planner.TimingInterval) ? "true" : "false")
                     .Append(",\"ballisticContactUT\":").Append(Number(planner.BallisticContactUT))
                     .Append(",\"ballisticContact\":").Append(planner.BallisticContactUT > 0 ?
                         Absolute(planner.BallisticContact) : "null")

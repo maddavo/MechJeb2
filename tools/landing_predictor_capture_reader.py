@@ -29,6 +29,12 @@ INPUT_NUMBERS = (
 )
 INPUT_VECTORS = ("angularVelocity", "bodyAxis0", "bodyAxis90", "bodyAxisNorth",
                  "positionBCI", "velocityBCI")
+CONTROL_NUMBERS = ("currentThrustAcceleration", "maxThrustAccelerationAtSubmission",
+                   "localGravity", "controllerDeltaT", "altitudeASL", "speedSurface",
+                   "speedSurfaceHorizontal", "speedVertical",
+                   "vesselAngularSpeed", "commandedThrottle", "landingTouchdownSpeed")
+CONTROL_VECTORS = ("surfaceVelocity", "orbitalVelocity", "forward", "up",
+                   "gravityForce")
 
 
 class CaptureError(ValueError):
@@ -51,8 +57,42 @@ def _validate_submission(record, line_number):
         vector = record.get(name)
         if not isinstance(vector, list) or len(vector) != 3 or not all(map(_finite, vector)):
             raise CaptureError(f"line {line_number}: invalid three-component vector {name}")
+    if any(name in record for name in CONTROL_NUMBERS + CONTROL_VECTORS):
+        for name in CONTROL_NUMBERS:
+            if not _finite(record.get(name)):
+                raise CaptureError(f"line {line_number}: missing or invalid control field {name}")
+        for name in CONTROL_VECTORS:
+            vector = record.get(name)
+            if not isinstance(vector, list) or len(vector) != 3 or \
+                    not all(map(_finite, vector)):
+                raise CaptureError(f"line {line_number}: missing or invalid control vector {name}")
+        angle = record.get("attitudeErrorDegrees")
+        if angle is not None and not _finite(angle):
+            raise CaptureError(f"line {line_number}: invalid attitude error")
+        for name in ("autoWarpEnabled", "rcsAdjustmentEnabled"):
+            if not isinstance(record.get(name), bool):
+                raise CaptureError(f"line {line_number}: missing or invalid control flag {name}")
+        if type(record.get("activePredictionVersion")) is not int:
+            raise CaptureError(f"line {line_number}: invalid active prediction version")
+        active_ut = record.get("activePredictionInputUT")
+        if active_ut is not None and not _finite(active_ut):
+            raise CaptureError(f"line {line_number}: invalid active prediction input UT")
     if not record.get("body") or not record.get("kind"):
         raise CaptureError(f"line {line_number}: missing body or submission kind")
+    provenance = record.get("modelProvenance")
+    if provenance is not None and (not isinstance(provenance, str) or not provenance):
+        raise CaptureError(f"line {line_number}: invalid model provenance")
+    if provenance in ("v1_controller_policy_forecast", "v1_live_braking_forecast"):
+        for name in ("controllerInitialMass", "controllerMaximumThrust",
+                     "controllerMinimumThrust", "controllerMaximumMassFlow",
+                     "controllerMinimumMassFlow", "controllerPolicyTerrainRadius",
+                     "controllerPolicyGravity", "controllerPolicyThrust",
+                     "controllerMinimumCommandThrottle", "controllerMaximumCommandThrottle",
+                     "controllerThrottleSmoothingSeconds", "controllerInitialAppliedThrottle",
+                     "livePolicyTerrainRadius", "livePolicyGravity",
+                     "livePolicyThrust"):
+            if not _finite(record.get(name)):
+                raise CaptureError(f"line {line_number}: incomplete V1 control model field {name}")
     if "phase" not in record or type(record.get("wallTimestamp")) is not int or \
             type(record.get("wallTimestampFrequency")) is not int:
         raise CaptureError(f"line {line_number}: missing phase or wall-clock fields")
@@ -73,6 +113,14 @@ def _validate_submission(record, line_number):
 
 def _validate_result(record, line_number):
     if record["recordType"] == "worker_result":
+        brake_reference = record.get("controllerBrakeReferenceUT")
+        if brake_reference is not None and not _finite(brake_reference):
+            raise CaptureError(f"line {line_number}: invalid controller brake reference UT")
+        if brake_reference is not None:
+            position = record.get("controllerBrakeReferencePosition")
+            if not isinstance(position, list) or len(position) != 4 or \
+                    not all(map(_finite, position)):
+                raise CaptureError(f"line {line_number}: missing controller brake reference position")
         if not isinstance(record.get("complete"), bool) or not record.get("outcome"):
             raise CaptureError(f"line {line_number}: missing worker outcome or completeness")
         if type(record.get("wallTimestamp")) is not int or not _finite(record.get("simulationElapsedMs")):
@@ -121,13 +169,24 @@ def _validate_target_aware(record, line_number):
         if not _finite(record.get(name)) or record[name] < 0:
             raise CaptureError(f"line {line_number}: invalid target-aware {name}")
     if record["stage"] == "Complete":
-        for name in ("ballisticContactUT", "virtualBrakeUT", "signedDownrangeError",
-                     "crossrangeError", "timingInterval", "timingDistanceEstimate",
+        for name in ("ballisticContactUT", "virtualBrakeUT",
                      "minimumSampledClearance", "handoffClearance", "localTerrainASL",
                      "endVerticalSpeed", "endSurfaceSpeed", "transitionVerticalSpeed",
                      "transitionSurfaceSpeed", "optimisticStoppingDistance"):
             if not _finite(record.get(name)):
                 raise CaptureError(f"line {line_number}: complete target-aware result lacks {name}")
+        direct = record.get("directForecast", False)
+        bracketed = record.get("brakeTimeBracketed", True)
+        if not isinstance(direct, bool) or not isinstance(bracketed, bool):
+            raise CaptureError(f"line {line_number}: invalid forecast mode")
+        if not direct:
+            for name in ("signedDownrangeError", "crossrangeError"):
+                if not _finite(record.get(name)):
+                    raise CaptureError(f"line {line_number}: target forecast lacks {name}")
+        if bracketed:
+            for name in ("timingInterval", "timingDistanceEstimate"):
+                if not _finite(record.get(name)):
+                    raise CaptureError(f"line {line_number}: refined forecast lacks {name}")
         if not (record["terrainResolved"] and record["clearPath"] and
                 record["terminalNecessaryBoundPasses"]):
             raise CaptureError(f"line {line_number}: complete target-aware result is not validated")

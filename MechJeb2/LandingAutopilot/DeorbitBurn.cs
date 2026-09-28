@@ -10,11 +10,6 @@ namespace MuMech
         // geometric controller, not the later experimental deorbit planner.
         public class DeorbitBurn : AutopilotStep
         {
-            private const double MinimumDeorbitAcceleration = 3.0;
-            private const double MaximumDeorbitTwr = 4.0;
-            private const double DeorbitBurnTimeConstant = 0.5;
-            private const double MinimumTerminalDeltaV = 0.05;
-
             private bool _deorbitBurnTriggered;
             private double _deorbitThrottle;
 
@@ -59,7 +54,8 @@ namespace MuMech
                 double targetAheadAngle = Vector3d.Angle(currentRadial, futureRadial);
                 double planeChangeAngle = Vector3d.Angle(horizontalVelocity, horizontalToTarget);
 
-                if (targetNormalAngle < 10.0 || (targetAheadAngle < 90.0 && targetAheadAngle > 60.0 && planeChangeAngle < 90.0))
+                if (V1LandingControlPolicy.ShouldTriggerGeometricDeorbit(
+                        targetNormalAngle, targetAheadAngle, planeChangeAngle))
                     _deorbitBurnTriggered = true;
 
                 if (_deorbitBurnTriggered)
@@ -75,14 +71,13 @@ namespace MuMech
                         return this;
                     }
 
-                    double bodyAwareMaximum = Math.Max(MinimumDeorbitAcceleration, MaximumDeorbitTwr * MainBody.GeeASL * 9.81);
-                    double cappedAcceleration = Math.Min(maxThrustAcceleration, bodyAwareMaximum);
-                    double responseDeltaV = VesselState.CurrentThrustAcceleration * VesselState.MaxEngineResponseTime;
-                    double desiredAcceleration = Math.Max(0.0, (burn.magnitude - responseDeltaV) / DeorbitBurnTimeConstant);
-                    _deorbitThrottle = Math.Min(desiredAcceleration / maxThrustAcceleration, cappedAcceleration / maxThrustAcceleration);
-                    double terminalDeltaV = Math.Max(MinimumTerminalDeltaV,
-                        cappedAcceleration * (TimeWarp.fixedDeltaTime + VesselState.MaxEngineResponseTime));
-                    if (burn.magnitude <= terminalDeltaV)
+                    _deorbitThrottle = V1LandingControlPolicy.GeometricDeorbitThrottle(
+                        burn.magnitude, maxThrustAcceleration,
+                        VesselState.CurrentThrustAcceleration,
+                        VesselState.MaxEngineResponseTime, MainBody.GeeASL);
+                    if (V1LandingControlPolicy.GeometricDeorbitComplete(
+                            burn.magnitude, maxThrustAcceleration, MainBody.GeeASL,
+                            TimeWarp.fixedDeltaTime, VesselState.MaxEngineResponseTime))
                     {
                         Core.Thrust.ThrustOff();
                         return new CourseCorrection(Core);

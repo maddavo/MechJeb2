@@ -7,10 +7,8 @@ namespace MuMech
     {
         public class CourseCorrection : AutopilotStep
         {
-            private const double MaxCorrectionPulseDv = 1.0;
             private const double PulseCompletionDv = 0.05;
             private const double MinimumUsefulCorrectionDv = 0.05;
-            private const double PostBurnPredictionSettlingTime = 0.75;
             private const double CandidateDirectionAgreementAngle = 20;
             private const int RequiredCandidatePredictions = 2;
 
@@ -28,6 +26,15 @@ namespace MuMech
             private double _requestedPulseDv;
             private double _impactApprovedPulseDv;
             private double _impactSafetyRadius;
+            private double _lastPulseStartedUT = double.NegativeInfinity;
+
+            // Predictor snapshots taken during a pulse, or before post-burn
+            // settling, cannot describe the orbit used by the next decision.
+            internal bool PredictionSnapshotSafe(double inputUT) =>
+                !_courseCorrectionBurning &&
+                inputUT >= _lastPulseStartedUT &&
+                (!_waitingForPostBurnPrediction ||
+                 inputUT >= _postBurnCompletionUT + 0.75);
 
             public CourseCorrection(MechJebCore core) : base(core)
             {
@@ -103,8 +110,9 @@ namespace MuMech
                     // Do not turn a prediction made during, or immediately after, a burn into
                     // the next command. A result version only says when a simulation completed;
                     // its input snapshot can still predate the engine cut-off.
-                    if (Core.Landing.PredictionVersion <= _predictionVersionAtPulseCompletion ||
-                        Core.Landing.Prediction.InputUT < _postBurnCompletionUT + PostBurnPredictionSettlingTime)
+                    if (!V1LandingControlPolicy.PostPulsePredictionSettled(
+                            Core.Landing.PredictionVersion, _predictionVersionAtPulseCompletion,
+                            Core.Landing.Prediction.InputUT, _postBurnCompletionUT))
                         return this;
 
                     Vector3d candidateCorrection = Core.Landing.ComputeCourseCorrection(true, DownrangeCaptureDistance,
@@ -186,29 +194,16 @@ namespace MuMech
 
             private double DownrangeCaptureDistance => Math.Max(100, MainBody.Radius * 0.005);
 
-            private double MaximumDownrangeHandoffDistance
-            {
-                get
-                {
-                    double availableAcceleration = Math.Max(0.1, VesselState.LimitedMaxThrustAcceleration);
-                    double brakingDistance = VesselState.SpeedSurface * VesselState.SpeedSurface / (2 * availableAcceleration);
-                    return Math.Max(DownrangeCaptureDistance, Math.Min(MainBody.Radius * 0.01, brakingDistance));
-                }
-            }
+            private double MaximumDownrangeHandoffDistance =>
+                V1LandingControlPolicy.CourseCorrectionHandoffDistance(MainBody.Radius,
+                    VesselState.SpeedSurface, VesselState.LimitedMaxThrustAcceleration);
 
             private bool BeginPulse(Vector3d deltaV, double targetError)
             {
-                double maximumPulseDv = MaxCorrectionPulseDv;
-                double nearTargetDistance = Math.Max(250, MainBody.Radius * 0.01);
-
-                if (targetError < nearTargetDistance)
-                    maximumPulseDv = 0.1;
-                else if (targetError < 4 * nearTargetDistance)
-                    maximumPulseDv = 0.25;
-
                 Vector3d direction = deltaV.normalized;
-                if (_hasLastPulseDirection && Vector3d.Angle(_lastPulseDirection, direction) > 90)
-                    maximumPulseDv = Math.Min(maximumPulseDv, 0.1);
+                double maximumPulseDv = V1LandingControlPolicy.MaximumCourseCorrectionPulse(
+                    targetError, MainBody.Radius, _hasLastPulseDirection,
+                    _hasLastPulseDirection ? Vector3d.Angle(_lastPulseDirection, direction) : 0);
 
                 _requestedPulseDv = Math.Min(deltaV.magnitude, maximumPulseDv);
                 double protectedDescentRadius = MainBody.Radius + Core.Landing.DecelerationEndAltitude() - 100;
@@ -230,6 +225,7 @@ namespace MuMech
                 }
 
                 _pulseDirection = direction;
+                _lastPulseStartedUT = VesselState.Time;
                 _lastPulseDirection = direction;
                 _hasLastPulseDirection = true;
                 Status = Localizer.Format("#MechJeb_LandingGuidance_Status3",

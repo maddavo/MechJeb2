@@ -421,6 +421,8 @@ namespace MuMech
         // Thrust in the forward direction (for historical reasons).
         public double ThrustAvailable => Vector3d.Dot(ThrustVectorMaxThrottle, Forward);
         public double ThrustMinimum   => Vector3d.Dot(ThrustVectorMinThrottle, Forward);
+        public double MaximumEngineMassFlow => _einfo.MaximumMassFlow;
+        public double MinimumEngineMassFlow => _einfo.MinimumMassFlow;
         public double ThrustCurrent   => Vector3d.Dot(ThrustVectorLastFrame, Forward);
 
         // Acceleration in the forward direction, for when dividing by mass is too complicated.
@@ -1270,12 +1272,16 @@ namespace MuMech
             public Vector3d ThrustCurrent; // thrust at throttle achieved last frame
             public Vector3d ThrustMax; // thrust at full throttle
             public Vector3d ThrustMin; // thrust at zero throttle
+            public double MaximumMassFlow;
+            public double MinimumMassFlow;
 
             public void Update(Vector3d c, Vessel vessel)
             {
                 ThrustCurrent = Vector3d.zero;
                 ThrustMax = Vector3d.zero;
                 ThrustMin = Vector3d.zero;
+                MaximumMassFlow = 0;
+                MinimumMassFlow = 0;
                 MaxResponseTime = 0;
 
                 TorqueDifferentialThrottle.Reset();
@@ -1366,6 +1372,11 @@ namespace MuMech
                 double eMaxThrust = minThrust + (maxThrust - minThrust) * thrustLimiter;
                 double eMinThrust = e.throttleLocked ? eMaxThrust : minThrust;
                 double eCurrentThrust = e.finalThrust;
+                double eMaxFlow = (e.minFuelFlow +
+                    (e.maxFuelFlow - e.minFuelFlow) * thrustLimiter) * e.flowMultiplier;
+                MaximumMassFlow += eMaxFlow;
+                MinimumMassFlow += (e.throttleLocked ? eMaxFlow :
+                    e.minFuelFlow * e.flowMultiplier);
 
                 _rotSave.Clear();
 

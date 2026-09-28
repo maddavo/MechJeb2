@@ -816,6 +816,14 @@ namespace MuMech
             public double InputForcedBrakingStartUT;
             public double SimulatedBrakingStartUT;
 
+            // A controller-equivalent result may include the preceding coast in
+            // Trajectory. Its control timing must therefore be independent of
+            // the first point drawn on the map. Legacy results keep using the
+            // original Trajectory.First().UT rule.
+            public bool HasControllerBrakeReferenceUT;
+            public double ControllerBrakeReferenceUT;
+            public AbsoluteVector ControllerBrakeReferencePosition;
+
             // Passive capture correlation only; never used by simulation or control.
             public long CaptureSubmissionId;
 
@@ -833,7 +841,17 @@ namespace MuMech
                 _pool.Release(this);
             }
 
-            private static void Reset(Result obj) => obj.AeroBrake = false;
+            private static void Reset(Result obj)
+            {
+                obj.AeroBrake = false;
+                obj.HasControllerBrakeReferenceUT = false;
+                obj.ControllerBrakeReferenceUT = 0;
+                obj.ControllerBrakeReferencePosition = default(AbsoluteVector);
+            }
+
+            public double BrakeReferenceUT(double currentUT) =>
+                HasControllerBrakeReferenceUT ? ControllerBrakeReferenceUT :
+                Trajectory.Count > 0 ? Trajectory[0].UT : currentUT;
 
             public static Result Borrow()
             {

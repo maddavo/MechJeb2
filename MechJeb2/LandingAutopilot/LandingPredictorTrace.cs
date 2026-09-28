@@ -121,7 +121,10 @@ namespace MuMech.Landing
 
         public static void WriteState(string phase, string status, double ut, double warpRate,
             Vector3d position, Vector3d velocity, double commandedThrottle, double thrustAcceleration,
-            long predictionVersion, ReentrySimulation.Result prediction, string controllerDetail)
+            long predictionVersion, ReentrySimulation.Result prediction, string controllerDetail,
+            VesselState vesselState, double attitudeError, string thrustMode,
+            double thrustSpeedSetpoint, bool thrustKillHorizontal,
+            string recordType = "guidance_state")
         {
             try
             {
@@ -132,15 +135,26 @@ namespace MuMech.Landing
                         return;
 
                     string line = string.Format(CultureInfo.InvariantCulture,
-                        "{{\"recordType\":\"guidance_state\",\"ut\":{0},\"phase\":{1},\"status\":{2},\"warpRate\":{3}," +
+                        "{{\"recordType\":" + JsonString(recordType) + ",\"ut\":{0},\"phase\":{1},\"status\":{2},\"warpRate\":{3}," +
                         "\"position\":{4},\"velocity\":{5},\"commandedThrottle\":{6},\"thrustAcceleration\":{7}," +
                         "\"predictionVersion\":{8},\"predictionInputUT\":{9},\"predictionEndUT\":{10}," +
-                        "\"predictionEndpoint\":{11},\"predictionEndASL\":{12},\"controllerDetail\":{13}}}",
+                        "\"predictionEndpoint\":{11},\"predictionEndASL\":{12},\"controllerDetail\":{13}," +
+                        "\"altitudeASL\":{14},\"altitudeTrue\":{15},\"altitudeBottom\":{16}," +
+                        "\"mass\":{17},\"limitedMaxThrustAcceleration\":{18},\"maxThrustAcceleration\":{19}," +
+                        "\"localGravity\":{20},\"forward\":{21},\"up\":{22},\"surfaceVelocity\":{23}," +
+                        "\"gravityForce\":{24},\"attitudeErrorDegrees\":{25}," +
+                        "\"thrustMode\":{26},\"thrustSpeedSetpoint\":{27},\"thrustKillHorizontal\":{28}}}",
                         Number(ut), JsonString(phase), JsonString(status), Number(warpRate), Vector(position), Vector(velocity),
                         Number(commandedThrottle), Number(thrustAcceleration), predictionVersion,
                         Number(prediction?.InputUT ?? double.NaN), Number(prediction?.EndUT ?? double.NaN),
                         prediction == null ? "null" : Vector(prediction.EndPosition), Number(prediction?.EndASL ?? double.NaN),
-                        JsonString(controllerDetail));
+                        JsonString(controllerDetail), Number(vesselState.AltitudeASL),
+                        Number(vesselState.AltitudeTrue), Number(vesselState.AltitudeBottom),
+                        Number(vesselState.Mass), Number(vesselState.LimitedMaxThrustAcceleration),
+                        Number(vesselState.MaxThrustAcceleration), Number(vesselState.LocalGravity),
+                        Vector(vesselState.Forward), Vector(vesselState.Up), Vector(vesselState.SurfaceVelocity),
+                        Vector(vesselState.GravityForce), Number(attitudeError), JsonString(thrustMode),
+                        Number(thrustSpeedSetpoint), thrustKillHorizontal ? "true" : "false");
                     _writer.WriteLine(line);
                     _recordsSinceFlush++;
                     if (_recordsSinceFlush >= 5)

@@ -154,6 +154,47 @@ class CaptureReaderTests(unittest.TestCase):
                                                 terrainContactConfirmed=False,
                                                 terrainProfileApplied=False), publication])
 
+    def test_optional_controller_lineage_requires_a_complete_brake_reference(self):
+        active = submission(modelProvenance="v1_controller_equivalent")
+        result = worker(controllerBrakeReferenceUT=150.0,
+                        controllerBrakeReferencePosition=[0, 10, 205000, 150])
+        self.assertEqual(self.read([active, result])["gaps"], [])
+        with self.assertRaisesRegex(reader.CaptureError, "controller brake reference position"):
+            self.read([active, worker(controllerBrakeReferenceUT=150.0)])
+        with self.assertRaisesRegex(reader.CaptureError, "model provenance"):
+            self.read([submission(modelProvenance=5), worker()])
+
+    def test_optional_controller_snapshot_is_atomic(self):
+        fields = {name: 1.0 for name in reader.CONTROL_NUMBERS}
+        fields.update({name: [1.0, 0.0, 0.0] for name in reader.CONTROL_VECTORS})
+        fields.update(attitudeErrorDegrees=None, autoWarpEnabled=True,
+                      rcsAdjustmentEnabled=False, activePredictionVersion=5,
+                      activePredictionInputUT=99.0)
+        self.assertEqual(self.read([submission(**fields), worker()])["gaps"], [])
+        del fields["forward"]
+        with self.assertRaisesRegex(reader.CaptureError, "control vector forward"):
+            self.read([submission(**fields), worker()])
+
+    def test_live_controller_model_requires_complete_inputs(self):
+        control = {name: 1.0 for name in (
+            "controllerInitialMass", "controllerMaximumThrust",
+            "controllerMinimumThrust", "controllerMaximumMassFlow",
+            "controllerMinimumMassFlow", "controllerPolicyTerrainRadius",
+            "controllerPolicyGravity", "controllerPolicyThrust",
+            "controllerMinimumCommandThrottle", "controllerMaximumCommandThrottle",
+            "controllerThrottleSmoothingSeconds", "controllerInitialAppliedThrottle",
+            "livePolicyTerrainRadius", "livePolicyGravity",
+            "livePolicyThrust")}
+        active = submission(kind="target_aware_transaction",
+                            modelProvenance="v1_live_braking_forecast",
+                            minimumTerrainASL=-1000,
+                            maximumTerrainASL=10000, **control)
+        self.assertEqual(self.read([active, worker()], True)["cases"][0]["submission"][
+            "controllerMaximumMassFlow"], 1.0)
+        del active["controllerMaximumMassFlow"]
+        with self.assertRaisesRegex(reader.CaptureError, "controllerMaximumMassFlow"):
+            self.read([active, worker()])
+
 
 if __name__ == "__main__":
     unittest.main()

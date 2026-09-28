@@ -60,15 +60,15 @@ class LifecycleHarnessTests(unittest.TestCase):
                         processUT=111,
                         phase="CourseCorrection"),
                   event(7, "submission", 4, kind="target_aware_transaction",
-                        phase="DecelerationBurn"),
+                        phase="CoastToDeceleration"),
                   event(8, "submission_abandoned", 4),
                   event(9, "target_aware_worker_stage", 4, stage="Refinement"),
                   event(10, "lifecycle", action="target_aware_target_terrain_changed"),
                   event(11, "submission", 5, kind="target_aware_transaction",
-                        phase="KillHorizontalVelocity"),
+                        phase="CoastToDeceleration"),
                   event(12, "published", 5, resultVersion=12, currentGeneration=1,
                         processUT=121,
-                        phase="KillHorizontalVelocity"),
+                        phase="CoastToDeceleration"),
                   event(13, "lifecycle", action="landing_stopped"),
                   event(14, "target_aware_worker_stage", 4, stage="Refinement")]
         return {"cases": cases, "events": events}
@@ -109,6 +109,37 @@ class LifecycleHarnessTests(unittest.TestCase):
         document["events"][5]["currentGeneration"] = 2
         report = audit_lifecycle(document)
         self.assertTrue(any("generation changed" in issue for issue in report["issues"]))
+
+    def test_terminal_phase_never_starts_or_publishes_search(self):
+        for phase in ("DecelerationBurn", "KillHorizontalVelocity", "FinalDescent"):
+            with self.subTest(phase=phase):
+                document = self.document()
+                document["events"][10]["phase"] = phase
+                document["events"][11]["phase"] = phase
+                report = audit_lifecycle(document)
+                self.assertTrue(any(f"planning submitted during {phase}" in issue
+                                    for issue in report["issues"]))
+                self.assertTrue(any(f"planning published during {phase}" in issue
+                                    for issue in report["issues"]))
+
+    def test_live_braking_forecast_refreshes_without_terminal_search(self):
+        direct = case(1, 0, 1)
+        direct["submission"]["modelProvenance"] = "v1_live_braking_forecast"
+        direct["validation"].update(directForecast=True, brakeTimeBracketed=False,
+                                    signedDownrangeError=None,
+                                    timingInterval=None,
+                                    timingDistanceEstimate=None)
+        document = {"cases": [direct], "events": [
+            event(1, "lifecycle", action="target_reset"),
+            event(2, "submission", 1, kind="target_aware_transaction",
+                  modelProvenance="v1_live_braking_forecast",
+                  phase="DecelerationBurn"),
+            event(3, "published", 1, resultVersion=10,
+                  currentGeneration=1, processUT=106,
+                  phase="DecelerationBurn"),
+        ]}
+        report = audit_lifecycle(document, require_active=True)
+        self.assertTrue(report["passed"], report["issues"])
 
 
 if __name__ == "__main__":

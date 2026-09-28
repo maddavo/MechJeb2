@@ -7,6 +7,7 @@ from pathlib import Path
 
 from landing_predictor_replay import (refine_spherical_brake_time, replay_forced_candidate,
                                       sampled_terrain_clearance)
+from v1_controller_forecast_replay import replay_controller_braking
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mun_forced_candidates_2026-09-28.json"
@@ -54,6 +55,18 @@ class MunReplayTests(unittest.TestCase):
         self.assertLess(max(map(abs, result["bracketDownrangeErrors"])), 200)
         self.assertLess(result["timingDistanceEstimate"], 200)
         self.assertGreater(abs(result["crossrangeError"]), 0)
+
+    def test_v1_control_law_replay_matches_independent_csharp_forecast(self):
+        case = next(item for item in self.fixture["cases"] if item["submissionId"] == 177)
+        result = replay_controller_braking(case["submission"], 24603984.289533857,
+                                           79.0, 640.0, 0.27,
+                                           case["submission"]["targetTerrainASL"],
+                                           case["submission"]["maxThrustAcceleration"])
+        self.assertAlmostEqual(24603979.289533857, result["burnStartUT"], places=5)
+        self.assertAlmostEqual(0.6314121594, result["end"][0], places=5)
+        self.assertAlmostEqual(23.167681749, result["end"][1], places=5)
+        self.assertAlmostEqual(24604188.582177, result["end"][3], places=3)
+        self.assertAlmostEqual(8.32001319, result["endSurfaceSpeed"], places=2)
 
 
 if __name__ == "__main__":

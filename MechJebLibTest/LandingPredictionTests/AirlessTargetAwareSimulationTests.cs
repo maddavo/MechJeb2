@@ -1,10 +1,14 @@
 using MuMech.Landing;
+using System;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace MechJebLibTest.LandingPredictionTests
 {
     public class AirlessTargetAwareSimulationTests
     {
+        private readonly ITestOutputHelper _output;
+        public AirlessTargetAwareSimulationTests(ITestOutputHelper output) => _output = output;
         // Captured Mun submission 177, session a398605cbd7942b0837d4fe4a3493229.
         // The fixture is immutable numerical evidence from the installed passive logger.
         internal static AirlessTargetAwareSnapshot MunSnapshot(double maximumTerrainASL = 10000) =>
@@ -48,6 +52,64 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.True(terminal.OptimisticVerticalStoppingDistance >
                         terminal.ControllerTransitionClearance);
             Assert.False(terminal.NecessaryControlBoundPasses);
+        }
+
+        [Fact]
+        public void V1ForecastUsesFiveSecondGuardAndActualThrottleLaw()
+        {
+            var source = MunSnapshot();
+            var snapshot = new AirlessTargetAwareSnapshot(source, 79.0, 640.0, 0,
+                0.27, 0, source.BodyRadius + source.DecelEndASL,
+                source.BodyGeeASL * 9.81, source.MaximumThrustAcceleration);
+            var output = AirlessTargetAwareSimulation.Run(snapshot, 24603984.289533857, true);
+            var endpoint = AirlessTargetAwareSimulation.ToAbsolute(output.End.Position,
+                output.End.UT, snapshot);
+            _output.WriteLine($"V1 brake reference={output.BrakeUT:F2} burnStart={output.Trajectory[0].UT:F2} " +
+                $"endUT={output.End.UT:F2} latitude={endpoint.Latitude:F4} longitude={endpoint.Longitude:F4} " +
+                $"endASL={endpoint.Radius - snapshot.BodyRadius:F1} surfaceSpeed={output.EndSurfaceSpeed:F1} " +
+                $"reached={output.ReachedHandoff}");
+            Assert.True(output.UsesV1ControlModel);
+            Assert.InRange(output.Trajectory[0].UT, 24603979.28, 24603979.30);
+            Assert.True(output.VirtualDeltaV > 0);
+            Assert.True(output.Steps > 0);
+            // Independent Python replay of the same captured Mun state.
+            Assert.InRange(endpoint.Latitude, 0.63140, 0.63143);
+            Assert.InRange(endpoint.Longitude, 23.1676, 23.1678);
+            Assert.InRange(output.End.UT, 24604188.53, 24604188.63);
+            Assert.InRange(output.EndSurfaceSpeed, 8.22, 8.42);
+        }
+
+        [Fact]
+        public void MunV1ControllerBrakeWindowHasReachableTarget()
+        {
+            var source = MunSnapshot();
+            var snapshot = new AirlessTargetAwareSnapshot(source, 79.0, 640.0, 0,
+                0.27, 0, source.BodyRadius + source.DecelEndASL,
+                source.BodyGeeASL * 9.81, source.MaximumThrustAcceleration);
+            double first = double.NaN, last = double.NaN;
+            for (double brake = 24603960; brake <= 24604080; brake += 20)
+            {
+                var output = AirlessTargetAwareSimulation.Run(snapshot, brake, true);
+                var endpoint = AirlessTargetAwareSimulation.ToAbsolute(output.End.Position,
+                    output.End.UT, snapshot);
+                _output.WriteLine($"brake={brake:F1} reached={output.ReachedHandoff} " +
+                    $"longitude={endpoint.Longitude:F4} speed={output.EndSurfaceSpeed:F1}");
+                if (double.IsNaN(first)) first = endpoint.Longitude;
+                last = endpoint.Longitude;
+            }
+            Assert.True(first < snapshot.TargetLongitude && last > snapshot.TargetLongitude);
+        }
+
+        [Fact]
+        public void LiveForecastRejectsUnresolvedAttitudeInsteadOfInventingImmediateThrust()
+        {
+            var source = MunSnapshot();
+            var snapshot = new AirlessTargetAwareSnapshot(source, 79, 640, 0,
+                0.27, 0, source.BodyRadius + source.DecelEndASL,
+                source.BodyGeeASL * 9.81, source.MaximumThrustAcceleration,
+                true, source.Velocity.normalized);
+            Assert.Throws<InvalidOperationException>(() =>
+                AirlessTargetAwareSimulation.Run(snapshot, snapshot.InputUT, true));
         }
     }
 }
