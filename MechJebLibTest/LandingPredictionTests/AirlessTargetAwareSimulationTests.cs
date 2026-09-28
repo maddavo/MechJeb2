@@ -76,7 +76,7 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.InRange(endpoint.Latitude, 0.63140, 0.63143);
             Assert.InRange(endpoint.Longitude, 23.1676, 23.1678);
             Assert.InRange(output.End.UT, 24604188.53, 24604188.63);
-            Assert.InRange(output.EndSurfaceSpeed, 8.22, 8.42);
+            Assert.InRange(output.EndSurfaceSpeed, 8.6, 8.8);
         }
 
         [Fact]

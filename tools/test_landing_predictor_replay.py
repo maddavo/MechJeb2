@@ -65,8 +65,8 @@ class MunReplayTests(unittest.TestCase):
         self.assertAlmostEqual(24603979.289533857, result["burnStartUT"], places=5)
         self.assertAlmostEqual(0.6314121594, result["end"][0], places=5)
         self.assertAlmostEqual(23.167681749, result["end"][1], places=5)
-        self.assertAlmostEqual(24604188.582177, result["end"][3], places=3)
-        self.assertAlmostEqual(8.32001319, result["endSurfaceSpeed"], places=2)
+        self.assertAlmostEqual(24604188.577811, result["end"][3], places=3)
+        self.assertAlmostEqual(8.71108708, result["endSurfaceSpeed"], places=2)
 
 
 if __name__ == "__main__":

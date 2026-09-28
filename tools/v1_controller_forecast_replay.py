@@ -77,7 +77,10 @@ def replay_controller_braking(submission, brake_reference_ut, initial_mass,
         if speed < 1e-8:
             raise ValueError("velocity direction unresolved")
         allowed = speed_limit(position, mass)
-        next_allowed = speed_limit(add(position, scale(velocity, step)), mass)
+        next_position = add(position, scale(velocity, step))
+        if norm(next_position) < stop_radius:
+            next_position = scale(_unit(next_position), stop_radius)
+        next_allowed = speed_limit(next_position, mass)
         local_gravity = norm(gravity(position, mu))
         radial = dot(surface, up)
         radial_fraction = abs(radial / speed)

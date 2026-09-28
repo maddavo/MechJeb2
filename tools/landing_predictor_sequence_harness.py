@@ -272,8 +272,10 @@ def main():
     parser.add_argument("trace", type=Path)
     parser.add_argument("ksp_log", type=Path)
     parser.add_argument("--session")
+    parser.add_argument("--allow-incomplete", action="store_true",
+                        help="audit a truncated capture while reporting its gaps")
     args = parser.parse_args()
-    document = read_capture(args.capture)
+    document = read_capture(args.capture, args.allow_incomplete)
     submissions = [case for case in document["cases"] if case["submission"] and
                    case["submission"].get("kind") == "target_aware_transaction"]
     session = args.session or submissions[-1]["captureSession"]
@@ -287,6 +289,10 @@ def main():
     ksp_states = read_ksp_states(args.ksp_log, start_ut, end_ut)
     report = audit_sequence(document, guidance_states, ksp_states, terrain, session,
                             malformed)
+    session_gaps = [gap for gap in document["gaps"] if session in gap]
+    if session_gaps:
+        report["unknowns"].extend(session_gaps)
+        report["passed"] = False
     print(json.dumps(report, indent=2, allow_nan=False))
     if not report["passed"]:
         parser.exit(1)

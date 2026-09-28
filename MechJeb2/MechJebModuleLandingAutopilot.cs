@@ -590,7 +590,17 @@ namespace MuMech
             //if the atmosphere is thin, the deceleration burn should end
             //500 meters above the landing site to allow for a controlled final descent
             //MechJebCore.print("DecelerationEndAltitude Vacum " + (200 + LandingAltitude).ToString("F2"));
-            if (!UseAtmosphereToBrake()) return 200 + _landingAltitude;
+            if (!UseAtmosphereToBrake())
+            {
+                // Targeted airless braking must use the target's fixed terrain
+                // reference. Feeding the previous prediction's endpoint height
+                // back into this controller changes its speed policy after
+                // every publication and can oscillate across rugged terrain.
+                if (LandAtTarget && !MainBody.atmosphere &&
+                    Core.Target.PositionTargetExists && Core.Target.targetBody == MainBody)
+                    return 200 + PredictorLandingAltitudeASL();
+                return 200 + _landingAltitude;
+            }
 
             // if the atmosphere is thick, deceleration (meaning freefall through the atmosphere)
             // should end a safe height above the landing site in order to allow braking from terminal velocity

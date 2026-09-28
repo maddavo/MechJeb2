@@ -340,8 +340,13 @@ namespace MuMech.Landing
                 if (speed < 1e-8) break;
                 double allowed = V1AllowedSpeed(snapshot, state.Position, mass);
                 Vector3d gravity = Gravity(state.Position, snapshot.BodyMu);
-                double nextAllowed = V1AllowedSpeed(snapshot,
-                    state.Position + step * state.Velocity, mass);
+                // The next position can cross the 205 m handoff within this
+                // step. V1 hands over there; querying its speed envelope
+                // below the policy radius creates a false timeout.
+                Vector3d nextPosition = state.Position + step * state.Velocity;
+                if (nextPosition.magnitude < stopRadius)
+                    nextPosition *= stopRadius / nextPosition.magnitude;
+                double nextAllowed = V1AllowedSpeed(snapshot, nextPosition, mass);
                 if (!Finite(allowed) || !Finite(nextAllowed)) break;
                 double radialFraction = Math.Abs(Vector3d.Dot(surface.normalized, up));
                 double minAccel = -gravity.magnitude * radialFraction;

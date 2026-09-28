@@ -237,7 +237,8 @@ def read_capture(path, allow_incomplete=False):
                 case["decisions"].append(record)
                 continue
             if kind == "target_aware_worker_stage":
-                if record.get("stage") not in ("Ballistic", "Coarse", "Refinement") or \
+                if record.get("stage") not in ("Ballistic", "Coarse", "Refinement",
+                                               "PolicyRevalidation", "DirectForecast") or \
                         not _finite(record.get("processUT")) or \
                         not _finite(record.get("elapsedMs")) or record["elapsedMs"] < 0 or \
                         type(record.get("outputCount")) is not int or record["outputCount"] < 0:

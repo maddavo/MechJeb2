@@ -900,6 +900,28 @@ namespace MuMech
                 return ret;
             }
 
+            public Disposable<List<Vector3d>> WorldTrajectorySegment(double timeStep,
+                bool world, double fromUT, double toUT)
+            {
+                Disposable<List<Vector3d>> ret = ListPool<Vector3d>.Instance.BorrowDisposable();
+                double lastTime = double.NegativeInfinity;
+                for (int i = 0; i < Trajectory.Count; ++i)
+                {
+                    AbsoluteVector absolute = Trajectory[i];
+                    if (absolute.UT < fromUT || absolute.UT > toUT)
+                        continue;
+                    if (ret.value.Count == 0 || absolute.UT >= lastTime + timeStep ||
+                        i == Trajectory.Count - 1 || absolute.UT == toUT)
+                    {
+                        ret.value.Add(world ?
+                            ReferenceFrame.WorldPositionAtCurrentTime(absolute) :
+                            ReferenceFrame.BodyPositionAtCurrentTime(absolute));
+                        lastTime = absolute.UT;
+                    }
+                }
+                return ret;
+            }
+
             // A method to calculate the overshoot (length of the component of the vector from the target to the actual landing position that is parallel to the vector from the start position to the target site.)
             public double GetOvershoot(EditableAngle targetLatitude, EditableAngle targetLongitude)
             {

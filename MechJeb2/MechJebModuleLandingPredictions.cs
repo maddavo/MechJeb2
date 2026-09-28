@@ -601,7 +601,7 @@ namespace MuMech
             }
         }
 
-        private enum TargetAwareWorkKind { Ballistic, Coarse, Refinement, PolicyRevalidation, DirectForecast }
+        private enum TargetAwareWorkKind { Ballistic, Coarse, Refinement, DirectForecast }
 
         private sealed class TargetAwareWorkItem
         {
@@ -775,9 +775,6 @@ namespace MuMech
                     case TargetAwareWorkKind.Refinement:
                         completion.Refinement = item.Planner.RunRefinement();
                         break;
-                    case TargetAwareWorkKind.PolicyRevalidation:
-                        completion.Revalidated = item.Planner.RunPolicyRevalidation();
-                        break;
                     case TargetAwareWorkKind.DirectForecast:
                         completion.Revalidated = AirlessTargetAwareSimulation.Run(
                             item.Planner.Snapshot, item.Planner.Snapshot.InputUT, true);
@@ -804,8 +801,7 @@ namespace MuMech
                 while (readyTargetAwareWork.Count > 0)
                 {
                     TargetAwareWorkCompletion work = readyTargetAwareWork.Dequeue();
-                    int outputCount = work.Kind == TargetAwareWorkKind.PolicyRevalidation ||
-                                      work.Kind == TargetAwareWorkKind.DirectForecast ?
+                    int outputCount = work.Kind == TargetAwareWorkKind.DirectForecast ?
                         (work.Revalidated == null ? 0 : 1) :
                         work.Kind == TargetAwareWorkKind.Ballistic ?
                         work.Ballistic?.Count ?? 0 : work.Kind == TargetAwareWorkKind.Coarse ?
@@ -836,9 +832,6 @@ namespace MuMech
                                 break;
                             case TargetAwareWorkKind.Refinement:
                                 work.Planner.SetRefinement(work.Refinement);
-                                break;
-                            case TargetAwareWorkKind.PolicyRevalidation:
-                                work.Planner.SetPolicyRevalidation(work.Revalidated);
                                 break;
                             case TargetAwareWorkKind.DirectForecast:
                                 work.Planner.SetDirectOutput(work.Revalidated);
@@ -875,7 +868,7 @@ namespace MuMech
             if (planner.Stage == TargetAwarePlannerStage.ResolveBallistic ||
                 planner.Stage == TargetAwarePlannerStage.ResolveCoarse ||
                 planner.Stage == TargetAwarePlannerStage.ResolveRefinement ||
-                planner.Stage == TargetAwarePlannerStage.ResolvePolicyRevalidation ||
+                planner.Stage == TargetAwarePlannerStage.ResolveDirectForecast ||
                 planner.Stage == TargetAwarePlannerStage.ResolveSelectedCoast)
                 planner.AdvanceTerrain();
 
@@ -888,11 +881,6 @@ namespace MuMech
             {
                 planner.BeginRefinementWorker();
                 QueueTargetAwareWork(planner, TargetAwareWorkKind.Refinement);
-            }
-            else if (planner.Stage == TargetAwarePlannerStage.ReadyPolicyRevalidation)
-            {
-                planner.BeginPolicyRevalidation();
-                QueueTargetAwareWork(planner, TargetAwareWorkKind.PolicyRevalidation);
             }
             else if (planner.Stage == TargetAwarePlannerStage.Complete)
             {
@@ -1024,10 +1012,10 @@ namespace MuMech
                 published.InputInitialOrbit = activeTargetAwareOrbit;
                 published.InputUT = snapshot.InputUT;
                 published.InputDescentSpeedPolicy = new SafeDescentSpeedPolicy(
-                    body.Radius + planner.SelectedTerrain.LocalTerrainASL + 200,
+                    body.Radius + snapshot.TargetTerrainASL + 200,
                     snapshot.BodyGeeASL * 9.81, snapshot.MaximumThrustAcceleration);
                 published.InputDecelEndAltitudeASL =
-                    planner.SelectedTerrain.LocalTerrainASL + 200;
+                    snapshot.TargetTerrainASL + 200;
                 published.InputMaxThrustAccel = snapshot.MaximumThrustAcceleration;
                 published.InputProbableLandingSiteASL = snapshot.TargetTerrainASL;
                 published.InputParachuteSemiDeployMultiplier = 0;
@@ -1811,8 +1799,26 @@ namespace MuMech
                         drawnResult.Outcome != ReentrySimulation.Outcome.NO_REENTRY)
                     {
                         double interval = Math.Max(Math.Min((drawnResult.EndUT - drawnResult.InputUT) / 1000, 10), 0.1);
-                        //using (var list = drawnResult.WorldTrajectory(interval, worldTrajectory && MapView.MapIsEnabled))
-                        using (Disposable<List<Vector3d>> list = drawnResult.WorldTrajectory(interval, worldTrajectory))
+                        if (drawnResult.HasControllerBrakeReferenceUT)
+                        {
+                            // A target-aware result includes a long coast. Draw
+                            // that separately so the red path means actual
+                            // predicted braking, not the entire flight.
+                            using (Disposable<List<Vector3d>> coast = drawnResult.WorldTrajectorySegment(
+                                interval, worldTrajectory, drawnResult.InputUT,
+                                drawnResult.SimulatedBrakingStartUT))
+                                if (coast.value.Count > 1)
+                                    GLUtils.DrawPath(drawnResult.Body, coast.value, Color.cyan,
+                                        MapView.MapIsEnabled);
+                            using (Disposable<List<Vector3d>> burn = drawnResult.WorldTrajectorySegment(
+                                interval, worldTrajectory, drawnResult.SimulatedBrakingStartUT,
+                                drawnResult.EndUT))
+                                if (burn.value.Count > 1)
+                                    GLUtils.DrawPath(drawnResult.Body, burn.value, Color.red,
+                                        MapView.MapIsEnabled);
+                        }
+                        else using (Disposable<List<Vector3d>> list = drawnResult.WorldTrajectory(
+                            interval, worldTrajectory))
                         {
                             if (!MapView.MapIsEnabled && (noSkipToFreefall || Vessel.staticPressurekPa > 0))
                                 list.value[0] = VesselState.CoM;

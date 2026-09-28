@@ -8,8 +8,7 @@ namespace MuMech.Landing
     {
         AwaitBallistic, ResolveBallistic, ReadyCoarse, AwaitCoarse,
         ResolveCoarse, ReadyRefinement, AwaitRefinement, ResolveRefinement,
-        ReadyPolicyRevalidation, AwaitPolicyRevalidation,
-        ResolvePolicyRevalidation, ResolveSelectedCoast, Complete, Failed
+        ResolveDirectForecast, ResolveSelectedCoast, Complete, Failed
     }
 
     internal sealed class TargetAwareTerrainCandidate
@@ -116,9 +115,6 @@ namespace MuMech.Landing
         private bool _fallbackSelection;
         private List<TargetAwareTerrainCandidate> _fallbackOptions;
         private int _fallbackIndex;
-        private AirlessTargetAwareOutput _preRevalidationOutput;
-        private double _revalidationTerrainASL;
-        private int _policyRevalidations;
         private int _nextSelectedCoast;
 
         internal TargetAwareAirlessPlanner(AirlessTargetAwareSnapshot snapshot, long generation,
@@ -158,11 +154,10 @@ namespace MuMech.Landing
                 throw new InvalidOperationException("Incomplete live V1 forecast");
             IsDirectForecast = true;
             _fallbackSelection = true;
-            _revalidationTerrainASL = Snapshot.PolicyTerrainRadius - Snapshot.BodyRadius - 200;
             _candidates = new List<TargetAwareTerrainCandidate> {
                 new TargetAwareTerrainCandidate(output, Snapshot) };
             _nextCandidate = 0;
-            Stage = TargetAwarePlannerStage.ResolvePolicyRevalidation;
+            Stage = TargetAwarePlannerStage.ResolveDirectForecast;
         }
 
         internal void SetCoarseOutputs(List<AirlessTargetAwareOutput> outputs)
@@ -184,7 +179,11 @@ namespace MuMech.Landing
                 refinement.BracketEarlier == null || refinement.BracketLater == null ||
                 refinement.Outputs == null)
             {
-                Fail("RefinementDidNotConverge");
+                // A geometric sign change may straddle a branch that cannot
+                // reach a safe handoff. Keep a real, validated miss available
+                // for V1's post-burn CourseCorrection rather than freezing
+                // the prior result.
+                PrepareFallbackFromCoarse();
                 return;
             }
             _refinement = refinement;
@@ -197,28 +196,6 @@ namespace MuMech.Landing
                     _candidates.Add(new TargetAwareTerrainCandidate(output, Snapshot));
             _nextCandidate = 0;
             Stage = TargetAwarePlannerStage.ResolveRefinement;
-        }
-
-        internal AirlessTargetAwareOutput RunPolicyRevalidation() =>
-            AirlessTargetAwareSimulation.Run(Snapshot.WithV1LandingTerrain(
-                _revalidationTerrainASL), _preRevalidationOutput.BrakeUT, true);
-
-        internal void BeginPolicyRevalidation()
-        {
-            if (Stage != TargetAwarePlannerStage.ReadyPolicyRevalidation)
-                throw new InvalidOperationException();
-            Stage = TargetAwarePlannerStage.AwaitPolicyRevalidation;
-        }
-
-        internal void SetPolicyRevalidation(AirlessTargetAwareOutput output)
-        {
-            if (Stage != TargetAwarePlannerStage.AwaitPolicyRevalidation ||
-                output == null || !output.UsesV1ControlModel)
-                throw new InvalidOperationException("Incomplete policy revalidation");
-            _candidates = new List<TargetAwareTerrainCandidate> {
-                new TargetAwareTerrainCandidate(output, Snapshot) };
-            _nextCandidate = 0;
-            Stage = TargetAwarePlannerStage.ResolvePolicyRevalidation;
         }
 
         internal void WorkerFailed(string reason) => Fail(reason);
@@ -264,7 +241,7 @@ namespace MuMech.Landing
                 }
                 else if (Stage == TargetAwarePlannerStage.ResolveCoarse ||
                          Stage == TargetAwarePlannerStage.ResolveRefinement ||
-                         Stage == TargetAwarePlannerStage.ResolvePolicyRevalidation)
+                         Stage == TargetAwarePlannerStage.ResolveDirectForecast)
                 {
                     while (remaining > 0 &&
                            (remaining == _queriesPerTick || WithinTickBudget(tickStart)) &&
@@ -312,7 +289,7 @@ namespace MuMech.Landing
                     {
                         if (Stage == TargetAwarePlannerStage.ResolveCoarse) FinishCoarse();
                         else if (Stage == TargetAwarePlannerStage.ResolveRefinement) FinishRefinement();
-                        else FinishPolicyRevalidation();
+                        else FinishDirectForecast();
                     }
                 }
                 else if (Stage == TargetAwarePlannerStage.ResolveSelectedCoast)
@@ -332,7 +309,14 @@ namespace MuMech.Landing
                         remaining--;
                         if (state.Position.magnitude - Snapshot.BodyRadius <= terrain)
                         {
-                            Fail("SelectedCoastTerrainIntersection");
+                            if (_fallbackSelection && !IsDirectForecast)
+                            {
+                                _fallbackIndex++;
+                                PrepareFallbackCandidate();
+                            }
+                            else if (!IsDirectForecast && _coarseCandidates != null)
+                                PrepareFallbackFromCoarse();
+                            else Fail("SelectedCoastTerrainIntersection");
                             return;
                         }
                     }
@@ -405,10 +389,15 @@ namespace MuMech.Landing
                     break;
                 double midpoint = (low.StartUT + high.StartUT) / 2;
                 AirlessTargetAwareOutput output = AirlessTargetAwareSimulation.Run(Snapshot, midpoint, true);
-                if (!output.ReachedHandoff) throw new InvalidOperationException("RefinedCandidateTimedOut");
+                if (!output.ReachedHandoff)
+                    return new TargetAwareRefinementBatch(outputs, bestOutput,
+                        lowOutput, highOutput, false, interval,
+                        double.NaN, bestDown, bestCross);
                 outputs.Add(output);
                 if (!TryProject(output, out double down, out double across))
-                    throw new InvalidOperationException("RefinedCandidateInvalidGeometry");
+                    return new TargetAwareRefinementBatch(outputs, bestOutput,
+                        lowOutput, highOutput, false, interval,
+                        double.NaN, bestDown, bestCross);
                 if (Math.Abs(down) < Math.Abs(bestDown))
                 {
                     bestOutput = output;
@@ -495,10 +484,17 @@ namespace MuMech.Landing
             // orbit. A brake-time root need not exist on the current orbit.
             // Publish the nearest terrain-clear controller forecast, not an
             // invented near-target endpoint or an old result from deorbit.
+            PrepareFallbackFromCoarse();
+        }
+
+        private void PrepareFallbackFromCoarse()
+        {
+            List<TargetAwareTerrainCandidate> source = _coarseCandidates ?? _candidates;
             _fallbackOptions = new List<TargetAwareTerrainCandidate>();
-            foreach (TargetAwareTerrainCandidate candidate in _candidates)
+            foreach (TargetAwareTerrainCandidate candidate in source)
             {
-                if (!candidate.Resolved || !candidate.Output.UsesV1ControlModel ||
+                if (!candidate.Resolved || !candidate.Output.ReachedHandoff ||
+                    !candidate.Output.UsesV1ControlModel ||
                     !TryProject(candidate.Output, out double down, out _))
                     continue;
                 _fallbackOptions.Add(candidate);
@@ -532,7 +528,6 @@ namespace MuMech.Landing
             TryProject(output, out double down, out double across);
             SignedDownrangeError = down;
             CrossrangeError = across;
-            _policyRevalidations = 0;
             _candidates = new List<TargetAwareTerrainCandidate> {
                 new TargetAwareTerrainCandidate(output, Snapshot) };
             _nextCandidate = 0;
@@ -546,7 +541,8 @@ namespace MuMech.Landing
                 TargetAwareTerrainCandidate candidate = _candidates[0];
                 if (!candidate.Resolved)
                 {
-                    Fail("NearestControllerPathTerrainUnresolved");
+                    _fallbackIndex++;
+                    PrepareFallbackCandidate();
                     return;
                 }
                 SelectedOutput = candidate.Output;
@@ -559,7 +555,7 @@ namespace MuMech.Landing
             TargetAwareTerrainCandidate later = FindTerrain(_refinement.BracketLater);
             if (SelectedTerrain == null || earlier == null || later == null)
             {
-                Fail("RefinedBracketOrSelectionMissing");
+                PrepareFallbackFromCoarse();
                 return;
             }
             double firstUT = Math.Min(_refinement.BracketEarlier.BrakeUT,
@@ -569,7 +565,7 @@ namespace MuMech.Landing
             if (_refinement.Selected.BrakeUT < firstUT ||
                 _refinement.Selected.BrakeUT > lastUT)
             {
-                Fail("SelectedRefinementOutsideFinalBracket");
+                PrepareFallbackFromCoarse();
                 return;
             }
             foreach (TargetAwareTerrainCandidate candidate in
@@ -577,12 +573,11 @@ namespace MuMech.Landing
             {
                 if (!candidate.Resolved)
                 {
-                    Fail("RefinedPathTerrainUnresolved");
+                    PrepareFallbackFromCoarse();
                     return;
                 }
-                // The selected controller path is revalidated against its
-                // observed local terrain below. Bracket paths only establish
-                // the timing sign and are never published.
+                // Bracket paths establish only the timing sign. Local terrain
+                // tests the selected path for clearance before publication.
             }
             SelectedOutput = _refinement.Selected;
             SignedDownrangeError = _refinement.SignedDownrangeError;
@@ -592,58 +587,26 @@ namespace MuMech.Landing
             CompleteOrRevalidateSelected();
         }
 
-        private void FinishPolicyRevalidation()
+        private void FinishDirectForecast()
         {
             TargetAwareTerrainCandidate candidate = _candidates[0];
             if (!candidate.Resolved)
             {
-                Fail("RevalidatedControllerPathTerrainUnresolved");
+                Fail("DirectControllerPathTerrainUnresolved");
                 return;
             }
-            _policyRevalidations++;
             SelectedOutput = candidate.Output;
             SelectedTerrain = candidate;
-            if (IsDirectForecast)
-            {
-                SignedDownrangeError = double.NaN;
-                CrossrangeError = double.NaN;
-            }
-            else if (!TryProject(SelectedOutput, out double down, out double across))
-            {
-                Fail("RevalidatedControllerEndpointInvalid");
-                return;
-            }
-            else
-            {
-                SignedDownrangeError = down;
-                CrossrangeError = across;
-                if (Math.Abs(down) >= _targetTolerance)
-                {
-                    TimingInterval = double.NaN;
-                    TimingDistanceEstimate = double.NaN;
-                }
-            }
+            SignedDownrangeError = double.NaN;
+            CrossrangeError = double.NaN;
             CompleteOrRevalidateSelected();
         }
 
         private void CompleteOrRevalidateSelected()
         {
-            double modeledTerrain = _policyRevalidations == 0 ?
-                Snapshot.PolicyTerrainRadius - Snapshot.BodyRadius - 200 :
-                _revalidationTerrainASL;
-            if (SelectedOutput.UsesV1ControlModel &&
-                Math.Abs(SelectedTerrain.LocalTerrainASL - modeledTerrain) > 5)
-            {
-                if (_policyRevalidations >= 2)
-                {
-                    Fail("ControllerPolicyTerrainNotConverged");
-                    return;
-                }
-                _preRevalidationOutput = SelectedOutput;
-                _revalidationTerrainASL = SelectedTerrain.LocalTerrainASL;
-                Stage = TargetAwarePlannerStage.ReadyPolicyRevalidation;
-                return;
-            }
+            // Targeted airless V1 now keeps its speed-policy reference at the
+            // selected target terrain. Local terrain is a clearance test; it
+            // must not change the controller's policy or re-start the worker.
             if (!SelectedTerrain.ClearPath)
             {
                 if (_fallbackSelection && !IsDirectForecast)
@@ -651,16 +614,26 @@ namespace MuMech.Landing
                     _fallbackIndex++;
                     PrepareFallbackCandidate();
                 }
+                else if (SelectedOutput.UsesV1ControlModel && !IsDirectForecast &&
+                         _coarseCandidates != null)
+                    PrepareFallbackFromCoarse();
                 else Fail("ControllerPathTerrainUnsafe");
                 return;
             }
-            var effectiveSnapshot = SelectedOutput.UsesV1ControlModel ?
-                Snapshot.WithV1LandingTerrain(SelectedTerrain.LocalTerrainASL) : Snapshot;
+            var effectiveSnapshot = Snapshot;
             TerminalHandoff = TargetAwareTerminalHandoff.Assess(effectiveSnapshot,
                 SelectedOutput, SelectedTerrain.LocalTerrainASL);
             if (!TerminalHandoff.NecessaryControlBoundPasses)
             {
-                Fail("TerminalVerticalStoppingBoundFailed");
+                if (_fallbackSelection && !IsDirectForecast)
+                {
+                    _fallbackIndex++;
+                    PrepareFallbackCandidate();
+                }
+                else if (SelectedOutput.UsesV1ControlModel && !IsDirectForecast &&
+                         _coarseCandidates != null)
+                    PrepareFallbackFromCoarse();
+                else Fail("TerminalVerticalStoppingBoundFailed");
                 return;
             }
             _nextSelectedCoast = 0;
