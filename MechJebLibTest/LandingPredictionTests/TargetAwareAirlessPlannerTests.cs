@@ -77,7 +77,7 @@ namespace MechJebLibTest.LandingPredictionTests
                 640.0003892624502, 0, 0.27192431688308716, 0,
                 200692.18766502594, 1.629016227964847, 8.1128061441219437);
             var planner = new TargetAwareAirlessPlanner(snapshot, 1, 24, new object(),
-                (latitude, longitude) => source.TargetTerrainASL,
+                (latitude, longitude) => longitude < 22 ? 1420 : source.TargetTerrainASL,
                 200, 32, 1024);
             planner.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(snapshot));
             DriveUntilSettled(planner);
@@ -96,8 +96,82 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.True(planner.SelectedTerrain.ClearPath);
             Assert.True(planner.TerminalHandoff.NecessaryControlBoundPasses);
             Assert.True(Math.Abs(planner.SignedDownrangeError) > 200);
+            Assert.True(planner.SelectedPolicyTerrainASL >= source.TargetTerrainASL);
             _output.WriteLine($"Captured refresh 24: downrange={planner.SignedDownrangeError:F1} " +
                 $"brake={planner.SelectedOutput.BrakeUT:F2} queries={planner.TerrainQueryCount}");
+        }
+
+        [Fact]
+        public void NoReticleMunSnapshotCanPublishAnHonestMissAboveUprangeTerrain()
+        {
+            // First post-deorbit snapshot from the 2026-09-29 no-reticle
+            // flight. The live capture did not record each candidate's PQS
+            // sample, so the oracle supplies an explicit raised uprange ridge.
+            const double inputUT = 24603464.048182253;
+            var source = new AirlessTargetAwareSnapshot(inputUT, inputUT, 200000,
+                65138397520.78069, 0.1660567000983534, 138984.37657447497,
+                0.6741666666666666, 23.473055555555554, 492.18766502593644,
+                692.1876650259364, 8.109494985867846, 0.2,
+                0.019999999552965164, 0.5, -400, 8300,
+                new Vector3d(168422.503375561, 3231.06776177337, 147997.13795877405),
+                new Vector3d(-337.18116223774234, 5.598991540146544, 380.9405218515084),
+                new Vector3d(0, -4.520785330006307e-05, 0),
+                new Vector3d(-0.23815475457506763, 0, 0.971227220002245),
+                new Vector3d(-0.971227220002245, 0, -0.23815475457506757),
+                new Vector3d(-1.4582291282281835e-17, 1, 5.946855123099965e-17));
+            var snapshot = new AirlessTargetAwareSnapshot(source, 78.919843146512,
+                640.0000722821159, 0, 0.27192431688308716, 0,
+                200692.18766502594, 1.629016227964847, 8.109494985867846);
+            var planner = new TargetAwareAirlessPlanner(snapshot, 1, 1, new object(),
+                (latitude, longitude) => longitude < 20 ? 835 : source.TargetTerrainASL,
+                200, 32, 1024);
+            planner.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(snapshot));
+            DriveUntilSettled(planner);
+            Assert.Equal(TargetAwarePlannerStage.ReadyCoarse, planner.Stage);
+            planner.BeginCoarseWorker();
+            planner.SetCoarseOutputs(planner.RunCoarse());
+            DriveUntilSettled(planner);
+            if (planner.Stage == TargetAwarePlannerStage.ReadyRefinement)
+            {
+                planner.BeginRefinementWorker();
+                planner.SetRefinement(planner.RunRefinement());
+                DriveUntilSettled(planner);
+            }
+            Assert.True(planner.Stage == TargetAwarePlannerStage.Complete,
+                planner.Failure ?? planner.Stage.ToString());
+            Assert.True(planner.PolicyEscalations > 0);
+            Assert.True(planner.SelectedPolicyTerrainASL > source.TargetTerrainASL);
+            Assert.True(planner.SelectedTerrain.ClearPath);
+            Assert.True(planner.TerminalHandoff.NecessaryControlBoundPasses);
+            Assert.True(Math.Abs(planner.SignedDownrangeError) > 200);
+            Assert.InRange(planner.TerrainQueryCount, 1, 1024);
+            _output.WriteLine($"No-reticle Mun replay: policyASL={planner.SelectedPolicyTerrainASL:F1} " +
+                $"downrange={planner.SignedDownrangeError:F1} " +
+                $"queries={planner.TerrainQueryCount} escalations={planner.PolicyEscalations}");
+
+            var refreshed = new TargetAwareAirlessPlanner(
+                snapshot.WithV1LandingTerrain(planner.SelectedPolicyTerrainASL),
+                1, 2, new object(),
+                (latitude, longitude) => longitude < 20 ? 835 : source.TargetTerrainASL,
+                200, 32, 1024);
+            refreshed.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(
+                refreshed.Snapshot));
+            DriveUntilSettled(refreshed);
+            Assert.Equal(TargetAwarePlannerStage.ReadyCoarse, refreshed.Stage);
+            refreshed.BeginCoarseWorker();
+            refreshed.SetCoarseOutputs(refreshed.RunCoarse());
+            DriveUntilSettled(refreshed);
+            if (refreshed.Stage == TargetAwarePlannerStage.ReadyRefinement)
+            {
+                refreshed.BeginRefinementWorker();
+                refreshed.SetRefinement(refreshed.RunRefinement());
+                DriveUntilSettled(refreshed);
+            }
+            Assert.True(refreshed.Stage == TargetAwarePlannerStage.Complete,
+                refreshed.Failure ?? refreshed.Stage.ToString());
+            Assert.True(refreshed.SelectedTerrain.ClearPath);
+            Assert.True(refreshed.TerminalHandoff.NecessaryControlBoundPasses);
+            Assert.True(refreshed.SelectedPolicyTerrainASL >= planner.SelectedPolicyTerrainASL);
         }
 
         [Fact]
@@ -270,9 +344,17 @@ namespace MechJebLibTest.LandingPredictionTests
             for (int i = 0; i < 200 && (planner.Stage == TargetAwarePlannerStage.ResolveBallistic ||
                                           planner.Stage == TargetAwarePlannerStage.ResolveCoarse ||
                                           planner.Stage == TargetAwarePlannerStage.ResolveRefinement ||
+                                          planner.Stage == TargetAwarePlannerStage.ReadyPolicyEscalation ||
+                                          planner.Stage == TargetAwarePlannerStage.ResolvePolicyEscalation ||
                                           planner.Stage == TargetAwarePlannerStage.ResolveDirectForecast ||
                                           planner.Stage == TargetAwarePlannerStage.ResolveSelectedCoast); ++i)
             {
+                if (planner.Stage == TargetAwarePlannerStage.ReadyPolicyEscalation)
+                {
+                    planner.BeginPolicyEscalation();
+                    planner.SetPolicyEscalation(planner.RunPolicyEscalation());
+                    continue;
+                }
                 int before = planner.TerrainQueryCount;
                 planner.AdvanceTerrain();
                 Assert.InRange(planner.TerrainQueryCount - before, 0, 32);

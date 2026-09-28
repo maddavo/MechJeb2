@@ -601,7 +601,7 @@ namespace MuMech
             }
         }
 
-        private enum TargetAwareWorkKind { Ballistic, Coarse, Refinement, DirectForecast }
+        private enum TargetAwareWorkKind { Ballistic, Coarse, Refinement, PolicyEscalation, DirectForecast }
 
         private sealed class TargetAwareWorkItem
         {
@@ -676,11 +676,9 @@ namespace MuMech
                 double targetTerrainASL = body.TerrainAltitude(Core.Target.targetLatitude,
                     Core.Target.targetLongitude);
                 targetTerrainTimer.Stop();
-                // V1's airless predictor policy uses target terrain + 200 m.
-                // Snapshot that same value here so update order cannot import
-                // an unset or prior-target mutable policy field.
-                double activeDecelEndASL = directForecast ?
-                    Core.Landing.DecelerationEndAltitude() : targetTerrainASL + 200;
+                // V1 consumes the committed forecast's terrain-clear policy
+                // height. Start at target terrain before the first commit.
+                double activeDecelEndASL = Core.Landing.DecelerationEndAltitude();
                 double maximumThrustAcceleration = VesselState.LimitedMaxThrustAcceleration;
                 var activePolicy = new SafeDescentSpeedPolicy(body.Radius + activeDecelEndASL,
                     body.GeeASL * 9.81, maximumThrustAcceleration);
@@ -697,15 +695,14 @@ namespace MuMech
                     patch.WorldBCIPositionAtUT(inputUT), patch.WorldOrbitalVelocityAtUT(inputUT),
                     body.angularVelocity, body.GetSurfaceNVector(0, 0),
                     body.GetSurfaceNVector(0, 90), body.GetSurfaceNVector(90, 0));
-                if (!(Core.Landing.DescentSpeedPolicy is SafeDescentSpeedPolicy v1Policy))
+                if (!(Core.Landing.DescentSpeedPolicy is SafeDescentSpeedPolicy))
                     throw new InvalidOperationException("V1 airless speed policy unavailable");
                 var snapshot = new AirlessTargetAwareSnapshot(rawSnapshot,
                     VesselState.Mass, VesselState.ThrustAvailable,
                     VesselState.ThrustMinimum, VesselState.MaximumEngineMassFlow,
                     VesselState.MinimumEngineMassFlow,
-                    directForecast ? v1Policy.TerrainRadius :
-                    body.Radius + targetTerrainASL + 200,
-                    v1Policy.Gravity, v1Policy.Thrust, directForecast,
+                    body.Radius + activeDecelEndASL,
+                    activePolicy.Gravity, activePolicy.Thrust, directForecast,
                     VesselState.Forward,
                     Core.Thrust.LimiterMinThrottle ? (double)Core.Thrust.MinThrottle : 0,
                     Math.Max(Core.Thrust.LimiterMinThrottle ?
@@ -775,6 +772,9 @@ namespace MuMech
                     case TargetAwareWorkKind.Refinement:
                         completion.Refinement = item.Planner.RunRefinement();
                         break;
+                    case TargetAwareWorkKind.PolicyEscalation:
+                        completion.Revalidated = item.Planner.RunPolicyEscalation();
+                        break;
                     case TargetAwareWorkKind.DirectForecast:
                         completion.Revalidated = AirlessTargetAwareSimulation.Run(
                             item.Planner.Snapshot, item.Planner.Snapshot.InputUT, true);
@@ -801,7 +801,8 @@ namespace MuMech
                 while (readyTargetAwareWork.Count > 0)
                 {
                     TargetAwareWorkCompletion work = readyTargetAwareWork.Dequeue();
-                    int outputCount = work.Kind == TargetAwareWorkKind.DirectForecast ?
+                    int outputCount = work.Kind == TargetAwareWorkKind.PolicyEscalation ||
+                                      work.Kind == TargetAwareWorkKind.DirectForecast ?
                         (work.Revalidated == null ? 0 : 1) :
                         work.Kind == TargetAwareWorkKind.Ballistic ?
                         work.Ballistic?.Count ?? 0 : work.Kind == TargetAwareWorkKind.Coarse ?
@@ -832,6 +833,9 @@ namespace MuMech
                                 break;
                             case TargetAwareWorkKind.Refinement:
                                 work.Planner.SetRefinement(work.Refinement);
+                                break;
+                            case TargetAwareWorkKind.PolicyEscalation:
+                                work.Planner.SetPolicyEscalation(work.Revalidated);
                                 break;
                             case TargetAwareWorkKind.DirectForecast:
                                 work.Planner.SetDirectOutput(work.Revalidated);
@@ -868,6 +872,7 @@ namespace MuMech
             if (planner.Stage == TargetAwarePlannerStage.ResolveBallistic ||
                 planner.Stage == TargetAwarePlannerStage.ResolveCoarse ||
                 planner.Stage == TargetAwarePlannerStage.ResolveRefinement ||
+                planner.Stage == TargetAwarePlannerStage.ResolvePolicyEscalation ||
                 planner.Stage == TargetAwarePlannerStage.ResolveDirectForecast ||
                 planner.Stage == TargetAwarePlannerStage.ResolveSelectedCoast)
                 planner.AdvanceTerrain();
@@ -881,6 +886,11 @@ namespace MuMech
             {
                 planner.BeginRefinementWorker();
                 QueueTargetAwareWork(planner, TargetAwareWorkKind.Refinement);
+            }
+            else if (planner.Stage == TargetAwarePlannerStage.ReadyPolicyEscalation)
+            {
+                planner.BeginPolicyEscalation();
+                QueueTargetAwareWork(planner, TargetAwareWorkKind.PolicyEscalation);
             }
             else if (planner.Stage == TargetAwarePlannerStage.Complete)
             {
@@ -1012,10 +1022,10 @@ namespace MuMech
                 published.InputInitialOrbit = activeTargetAwareOrbit;
                 published.InputUT = snapshot.InputUT;
                 published.InputDescentSpeedPolicy = new SafeDescentSpeedPolicy(
-                    body.Radius + snapshot.TargetTerrainASL + 200,
+                    body.Radius + planner.SelectedPolicyTerrainASL + 200,
                     snapshot.BodyGeeASL * 9.81, snapshot.MaximumThrustAcceleration);
                 published.InputDecelEndAltitudeASL =
-                    snapshot.TargetTerrainASL + 200;
+                    planner.SelectedPolicyTerrainASL + 200;
                 published.InputMaxThrustAccel = snapshot.MaximumThrustAcceleration;
                 published.InputProbableLandingSiteASL = snapshot.TargetTerrainASL;
                 published.InputParachuteSemiDeployMultiplier = 0;

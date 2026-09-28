@@ -592,13 +592,16 @@ namespace MuMech
             //MechJebCore.print("DecelerationEndAltitude Vacum " + (200 + LandingAltitude).ToString("F2"));
             if (!UseAtmosphereToBrake())
             {
-                // Targeted airless braking must use the target's fixed terrain
-                // reference. Feeding the previous prediction's endpoint height
-                // back into this controller changes its speed policy after
-                // every publication and can oscillate across rugged terrain.
+                // A committed targeted-airless forecast carries the exact
+                // terrain-clear speed-policy height it simulated. The planner
+                // can only raise that height after checking live PQS, so the
+                // controller and the published path use the same policy.
                 if (LandAtTarget && !MainBody.atmosphere &&
                     Core.Target.PositionTargetExists && Core.Target.targetBody == MainBody)
-                    return 200 + PredictorLandingAltitudeASL();
+                    return PredictionReady && Prediction.Body == MainBody &&
+                        Prediction.HasControllerBrakeReferenceUT ?
+                        Prediction.InputDecelEndAltitudeASL :
+                        200 + PredictorLandingAltitudeASL();
                 return 200 + _landingAltitude;
             }
 

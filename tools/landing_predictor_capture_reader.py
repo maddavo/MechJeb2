@@ -168,6 +168,11 @@ def _validate_target_aware(record, line_number):
     for name in ("terrainQueryElapsedMs", "workerElapsedMs"):
         if not _finite(record.get(name)) or record[name] < 0:
             raise CaptureError(f"line {line_number}: invalid target-aware {name}")
+    if "selectedPolicyTerrainASL" in record and not _finite(record["selectedPolicyTerrainASL"]):
+        raise CaptureError(f"line {line_number}: invalid policy terrain")
+    if "policyEscalations" in record and (type(record["policyEscalations"]) is not int or
+                                          record["policyEscalations"] < 0):
+        raise CaptureError(f"line {line_number}: invalid policy escalation count")
     if record["stage"] == "Complete":
         for name in ("ballisticContactUT", "virtualBrakeUT",
                      "minimumSampledClearance", "handoffClearance", "localTerrainASL",
@@ -199,6 +204,7 @@ def read_capture(path, allow_incomplete=False):
     lifecycle = []
     events = []
     record_count = 0
+    truncated_tail = []
     with Path(path).open(encoding="utf-8-sig") as stream:
         for line_number, line in enumerate(stream, 1):
             if not line.strip():
@@ -206,6 +212,12 @@ def read_capture(path, allow_incomplete=False):
             try:
                 record = json.loads(line, parse_constant=_reject_constant)
             except (ValueError, TypeError) as exc:
+                # KSP can exit while its final append is in progress. Preserve
+                # every complete record and report that final fragment as a
+                # gap; malformed records in the middle still fail loudly.
+                if allow_incomplete and not line.endswith("\n") and not stream.read(1):
+                    truncated_tail.append(f"line {line_number}: truncated final record")
+                    break
                 raise CaptureError(f"line {line_number}: invalid JSON: {exc}") from exc
             if not isinstance(record, dict) or record.get("schemaVersion") != SCHEMA_VERSION:
                 raise CaptureError(f"line {line_number}: unsupported capture schema")
@@ -238,7 +250,8 @@ def read_capture(path, allow_incomplete=False):
                 continue
             if kind == "target_aware_worker_stage":
                 if record.get("stage") not in ("Ballistic", "Coarse", "Refinement",
-                                               "PolicyRevalidation", "DirectForecast") or \
+                                               "PolicyRevalidation", "PolicyEscalation",
+                                               "DirectForecast") or \
                         not _finite(record.get("processUT")) or \
                         not _finite(record.get("elapsedMs")) or record["elapsedMs"] < 0 or \
                         type(record.get("outputCount")) is not int or record["outputCount"] < 0:
@@ -294,6 +307,7 @@ def read_capture(path, allow_incomplete=False):
     if capture_errors:
         gaps.extend(f'line {item["line"]}: capture error at {item.get("stage")}'
                     for item in capture_errors)
+    gaps.extend(truncated_tail)
     if gaps and not allow_incomplete:
         raise CaptureError("incomplete capture:\n  " + "\n  ".join(gaps[:30]))
 

@@ -87,6 +87,18 @@ class CaptureReaderTests(unittest.TestCase):
             self.read([submission()])
         self.assertIn("submission without worker", self.read([submission()], True)["gaps"][0])
 
+    def test_truncated_final_append_is_an_explicit_gap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.jsonl"
+            path.write_text(json.dumps(submission()) + "\n" +
+                            json.dumps(worker()) + "\n" + '{"recordType":"sub',
+                            encoding="utf-8")
+            with self.assertRaisesRegex(reader.CaptureError, "invalid JSON"):
+                reader.read_capture(path)
+            document = reader.read_capture(path, allow_incomplete=True)
+            self.assertEqual(document["caseCount"], 1)
+            self.assertIn("truncated final record", " ".join(document["gaps"]))
+
     def test_keeps_append_order_when_a_later_session_resets_ut(self):
         later_submission = submission(captureSession="session-b", inputUT=10.0,
                                       captureEpochUT=10.0)
@@ -131,7 +143,8 @@ class CaptureReaderTests(unittest.TestCase):
                           optimisticStoppingDistance=175.0,
                           terminalNecessaryBoundPasses=True,
                           terrainQueryCount=300, terrainQueryElapsedMs=2.5,
-                          workerElapsedMs=20.0)
+                          workerElapsedMs=20.0,
+                          selectedPolicyTerrainASL=840.0, policyEscalations=1)
         publication = dict(BASE, recordType="published", processUT=101.0,
                            currentGeneration=4, phase="CourseCorrection", resultVersion=7)
         stages = [dict(BASE, recordType="target_aware_worker_stage", stage=stage,
@@ -139,7 +152,8 @@ class CaptureReaderTests(unittest.TestCase):
                        outputCount=count, exceptionType=None)
                   for index, (stage, count) in enumerate((("Ballistic", 300),
                                                           ("Coarse", 9),
-                                                          ("Refinement", 8)))]
+                                                          ("Refinement", 8),
+                                                          ("PolicyEscalation", 1)))]
         result = self.read([active, *stages, validation, worker(),
                             resolved(terrainQueryCount=0, terrainSamples=None,
                                      terrainContactConfirmed=False,
@@ -147,7 +161,7 @@ class CaptureReaderTests(unittest.TestCase):
         self.assertEqual(result["gaps"], [])
         self.assertEqual(result["cases"][0]["validation"]["handoffClearance"], 42.0)
         self.assertEqual([event["stage"] for event in result["cases"][0]["workerStages"]],
-                         ["Ballistic", "Coarse", "Refinement"])
+                         ["Ballistic", "Coarse", "Refinement", "PolicyEscalation"])
         with self.assertRaisesRegex(reader.CaptureError, "without validation"):
             self.read([active, worker(), resolved(terrainQueryCount=0,
                                                 terrainSamples=None,

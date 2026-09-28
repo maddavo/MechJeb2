@@ -255,6 +255,8 @@ namespace MuMech.Landing
                     .Append(",\"stage\":").Append(Quote(planner.Stage.ToString()))
                     .Append(",\"failure\":").Append(Quote(planner.Failure))
                     .Append(",\"directForecast\":").Append(planner.IsDirectForecast ? "true" : "false")
+                    .Append(",\"selectedPolicyTerrainASL\":").Append(Number(planner.SelectedPolicyTerrainASL))
+                    .Append(",\"policyEscalations\":").Append(planner.PolicyEscalations)
                     .Append(",\"brakeTimeBracketed\":").Append(
                         selected != null && !double.IsNaN(planner.TimingInterval) ? "true" : "false")
                     .Append(",\"ballisticContactUT\":").Append(Number(planner.BallisticContactUT))

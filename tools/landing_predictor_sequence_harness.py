@@ -232,7 +232,7 @@ def audit_sequence(document, guidance_states, ksp_states, terrain_results,
             unknowns.append(f"version {publication['version']}: no active guidance observations")
 
     if not active_trace:
-        unknowns.append("no guidance-state trace samples")
+        unknowns.append("no guidance-state samples linked to a published result")
     if not ksp_states:
         unknowns.append("no KSP controller-state samples")
     if not any(state["phase"] == "KillHorizontalVelocity" for state in ksp_states):
@@ -289,7 +289,8 @@ def main():
     ksp_states = read_ksp_states(args.ksp_log, start_ut, end_ut)
     report = audit_sequence(document, guidance_states, ksp_states, terrain, session,
                             malformed)
-    session_gaps = [gap for gap in document["gaps"] if session in gap]
+    session_gaps = [gap for gap in document["gaps"]
+                    if session in gap or gap.startswith("line ")]
     if session_gaps:
         report["unknowns"].extend(session_gaps)
         report["passed"] = False
