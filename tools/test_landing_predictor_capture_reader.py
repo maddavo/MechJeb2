@@ -115,6 +115,45 @@ class CaptureReaderTests(unittest.TestCase):
         self.assertFalse(result["cases"][0]["worker"]["complete"])
         self.assertEqual(result["gaps"], [])
 
+    def test_target_aware_validation_and_atomic_publication(self):
+        active = submission(kind="target_aware_transaction", minimumTerrainASL=-1000,
+                            maximumTerrainASL=10000)
+        validation = dict(BASE, recordType="target_aware_validation", processUT=101.0,
+                          generation=4, sequence=1, stage="Complete", failure=None,
+                          ballisticContactUT=350.0, virtualBrakeUT=260.0,
+                          signedDownrangeError=40.0, crossrangeError=165.0,
+                          timingInterval=0.2, timingDistanceEstimate=80.0,
+                          terrainResolved=True, clearPath=True,
+                          minimumSampledClearance=41.0, handoffClearance=42.0,
+                          localTerrainASL=450.0, endVerticalSpeed=-45.0,
+                          endSurfaceSpeed=60.0, transitionVerticalSpeed=-47.0,
+                          transitionSurfaceSpeed=70.0,
+                          optimisticStoppingDistance=175.0,
+                          terminalNecessaryBoundPasses=True,
+                          terrainQueryCount=300, terrainQueryElapsedMs=2.5,
+                          workerElapsedMs=20.0)
+        publication = dict(BASE, recordType="published", processUT=101.0,
+                           currentGeneration=4, phase="CourseCorrection", resultVersion=7)
+        stages = [dict(BASE, recordType="target_aware_worker_stage", stage=stage,
+                       processUT=100.1 + index * 0.1, elapsedMs=2.0,
+                       outputCount=count, exceptionType=None)
+                  for index, (stage, count) in enumerate((("Ballistic", 300),
+                                                          ("Coarse", 9),
+                                                          ("Refinement", 8)))]
+        result = self.read([active, *stages, validation, worker(),
+                            resolved(terrainQueryCount=0, terrainSamples=None,
+                                     terrainContactConfirmed=False,
+                                     terrainProfileApplied=False), publication])
+        self.assertEqual(result["gaps"], [])
+        self.assertEqual(result["cases"][0]["validation"]["handoffClearance"], 42.0)
+        self.assertEqual([event["stage"] for event in result["cases"][0]["workerStages"]],
+                         ["Ballistic", "Coarse", "Refinement"])
+        with self.assertRaisesRegex(reader.CaptureError, "without validation"):
+            self.read([active, worker(), resolved(terrainQueryCount=0,
+                                                terrainSamples=None,
+                                                terrainContactConfirmed=False,
+                                                terrainProfileApplied=False), publication])
+
 
 if __name__ == "__main__":
     unittest.main()

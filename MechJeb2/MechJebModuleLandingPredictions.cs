@@ -157,6 +157,20 @@ namespace MuMech
 
         private readonly Queue readyResults = new Queue();
         private readonly Queue readyBrakingPlanResults = new Queue();
+        private readonly Queue<TargetAwareWorkCompletion> readyTargetAwareWork =
+            new Queue<TargetAwareWorkCompletion>();
+        private TargetAwareAirlessPlanner activeTargetAware;
+        private Orbit activeTargetAwareOrbit;
+        private LandingPredictorCapture.Snapshot activeTargetAwareCapture;
+        private long activeTargetAwareCaptureId;
+        private TargetAwareResultLineage? committedTargetAware;
+        private long targetAwareSequence;
+        private double lastTargetAwareStartUT = double.NegativeInfinity;
+        private double targetAwareWorkerMilliseconds;
+        private const int TargetAwareTerrainQueriesPerTick = 32;
+        // Provisional safety cap. Mun replay measures the actual queries before
+        // this becomes an acceptance budget; exceeding it fails the candidate.
+        private const int TargetAwareMaximumTerrainQueries = 1024;
         private int brakingPlanRunning;
         private double lastBrakingPlanInputUT = double.NegativeInfinity;
         private const int BrakingPlanCandidateCount = 9;
@@ -191,7 +205,15 @@ namespace MuMech
             }
         }
 
-        protected override void OnModuleEnabled() => TryStartSimulation(false);
+        protected override void OnModuleEnabled()
+        {
+            if (!TargetAwareAirlessActive)
+                TryStartSimulation(false);
+        }
+
+        private bool TargetAwareAirlessActive => Core.Landing.Enabled && Core.Landing.LandAtTarget &&
+            Core.Target.PositionTargetExists && VesselState != null && VesselState.MainBody != null &&
+            Core.Target.targetBody == VesselState.MainBody && !VesselState.MainBody.atmosphere;
 
         protected override void OnModuleDisabled()
         {
@@ -201,6 +223,7 @@ namespace MuMech
                 LandingPredictorCapture.Lifecycle("predictor_disabled", Interlocked.Read(ref predictionGeneration),
                     ResultVersion, result?.CaptureSubmissionId ?? 0);
             ReleaseQueuedBrakingPlanResults();
+            CancelTargetAwareWork();
             stopwatch.Stop();
             stopwatch.Reset();
 
@@ -229,6 +252,9 @@ namespace MuMech
                 LandingPredictorCapture.Lifecycle("target_reset", Interlocked.Read(ref predictionGeneration),
                     ResultVersion, result?.CaptureSubmissionId ?? 0);
             ReleaseQueuedBrakingPlanResults();
+            CancelTargetAwareWork();
+            committedTargetAware = null;
+            lastTargetAwareStartUT = double.NegativeInfinity;
             if (candidateResult != null)
             {
                 LandingPredictorCapture.Discarded(candidateResult.CaptureSubmissionId,
@@ -254,16 +280,49 @@ namespace MuMech
 
         public override void OnFixedUpdate()
         {
+            InvalidateChangedTargetAwareContext();
             CheckForResult();
             CheckForBrakingPlanResult();
+            CheckForTargetAwareWork();
+            AdvanceTargetAwareTransaction();
+            if (TargetAwareAirlessActive)
+                TryStartTargetAwareTransaction();
+            else
+                TryStartSimulation(true);
+        }
 
-            TryStartSimulation(true);
+        private void InvalidateCommittedTargetAware(string reason)
+        {
+            if (!committedTargetAware.HasValue) return;
+            if (Core.Landing.LandingTraceEnabled)
+                LandingPredictorCapture.Lifecycle(reason, Interlocked.Read(ref predictionGeneration),
+                    ResultVersion, result?.CaptureSubmissionId ?? 0);
+            if (result != null)
+            {
+                LandingPredictorCapture.Discarded(result.CaptureSubmissionId, reason);
+                result.Release();
+                result = null;
+            }
+            committedTargetAware = null;
+            lastTargetAwareStartUT = double.NegativeInfinity;
+        }
+
+        private void InvalidateChangedTargetAwareContext()
+        {
+            if (!committedTargetAware.HasValue || !TargetAwareAirlessActive) return;
+            TargetAwareResultLineage committed = committedTargetAware.Value;
+            if (!ReferenceEquals(committed.Body, Core.Target.targetBody) ||
+                committed.TargetLatitude != (double)Core.Target.targetLatitude ||
+                committed.TargetLongitude != (double)Core.Target.targetLongitude)
+                InvalidateCommittedTargetAware("target_aware_target_changed");
         }
 
         private void TryStartSimulation(bool doErrorSim)
         {
             try
             {
+                if (TargetAwareAirlessActive)
+                    return;
                 if (!Vessel.LandedOrSplashed)
                 {
                     // We should be running simulations periodically. If one is not running right now,
@@ -303,7 +362,9 @@ namespace MuMech
 
         public override void OnUpdate() => MaintainAerobrakeNode();
 
-        private LandingPredictorCapture.Snapshot CaptureSnapshot(Orbit orbit, double inputUT, CelestialBody body)
+        private LandingPredictorCapture.Snapshot CaptureSnapshot(Orbit orbit, double inputUT, CelestialBody body,
+            AirlessTargetAwareSnapshot? activeSnapshot = null,
+            double? activeTargetTerrainQueryMs = null)
         {
             if (!Core.Landing.LandingTraceEnabled || !Core.Landing.Enabled || !Core.Landing.LandAtTarget ||
                 !Core.Target.PositionTargetExists || Core.Target.targetBody != body || body.atmosphere)
@@ -313,7 +374,8 @@ namespace MuMech
             {
                 return LandingPredictorCapture.Snapshot.Create(orbit, inputUT, body, VesselState,
                     Core.Target.targetLatitude, Core.Target.targetLongitude,
-                    Core.Landing.CurrentStep?.GetType().Name, Interlocked.Read(ref predictionGeneration));
+                    Core.Landing.CurrentStep?.GetType().Name, Interlocked.Read(ref predictionGeneration),
+                    activeSnapshot, activeTargetTerrainQueryMs);
             }
             catch (Exception ex)
             {
@@ -508,6 +570,412 @@ namespace MuMech
             }
         }
 
+        private enum TargetAwareWorkKind { Ballistic, Coarse, Refinement }
+
+        private sealed class TargetAwareWorkItem
+        {
+            public readonly TargetAwareAirlessPlanner Planner;
+            public readonly TargetAwareWorkKind Kind;
+            public readonly long CaptureId;
+
+            public TargetAwareWorkItem(TargetAwareAirlessPlanner planner, TargetAwareWorkKind kind,
+                long captureId)
+            {
+                Planner = planner;
+                Kind = kind;
+                CaptureId = captureId;
+            }
+        }
+
+        private sealed class TargetAwareWorkCompletion
+        {
+            public TargetAwareAirlessPlanner Planner;
+            public TargetAwareWorkKind Kind;
+            public long CaptureId;
+            public List<AirlessTargetAwareState> Ballistic;
+            public List<AirlessTargetAwareOutput> Coarse;
+            public TargetAwareRefinementBatch Refinement;
+            public Exception Exception;
+            public double ElapsedMilliseconds;
+        }
+
+        private void CancelTargetAwareWork()
+        {
+            if (activeTargetAwareCaptureId != 0)
+            {
+                LandingPredictorCapture.TargetAwareValidation(activeTargetAwareCaptureId,
+                    activeTargetAware, targetAwareWorkerMilliseconds);
+                LandingPredictorCapture.Abandoned(activeTargetAwareCaptureId,
+                    "target_aware_transaction_cancelled");
+            }
+            activeTargetAware = null;
+            activeTargetAwareOrbit = null;
+            activeTargetAwareCapture = null;
+            activeTargetAwareCaptureId = 0;
+            lock (readyTargetAwareWork)
+                readyTargetAwareWork.Clear();
+        }
+
+        private void TryStartTargetAwareTransaction()
+        {
+            if (activeTargetAware != null || Vessel.LandedOrSplashed)
+                return;
+            double now = Planetarium.GetUniversalTime();
+            if (now - lastTargetAwareStartUT < BrakingPlanRefreshSeconds)
+                return;
+            lastTargetAwareStartUT = now;
+            try
+            {
+                CelestialBody body = VesselState.MainBody;
+                Orbit patch = GetReenteringPatch() ?? Orbit;
+                if (patch == null || patch.referenceBody != body || body.pqsController == null)
+                    return;
+                double inputUT = patch.StartUT;
+                Stopwatch targetTerrainTimer = Stopwatch.StartNew();
+                double targetTerrainASL = body.TerrainAltitude(Core.Target.targetLatitude,
+                    Core.Target.targetLongitude);
+                targetTerrainTimer.Stop();
+                // V1's airless predictor policy uses target terrain + 200 m.
+                // Snapshot that same value here so update order cannot import
+                // an unset or prior-target mutable policy field.
+                double activeDecelEndASL = targetTerrainASL + 200;
+                double maximumThrustAcceleration = VesselState.LimitedMaxThrustAcceleration;
+                var activePolicy = new SafeDescentSpeedPolicy(body.Radius + activeDecelEndASL,
+                    body.GeeASL * 9.81, maximumThrustAcceleration);
+                if (committedTargetAware.HasValue &&
+                    committedTargetAware.Value.TargetTerrainASL != targetTerrainASL)
+                    InvalidateCommittedTargetAware("target_aware_target_terrain_changed");
+                var snapshot = new AirlessTargetAwareSnapshot(inputUT, now,
+                    body.Radius, body.gravParameter, body.GeeASL, body.rotationPeriod,
+                    Core.Target.targetLatitude, Core.Target.targetLongitude, targetTerrainASL,
+                    activeDecelEndASL, maximumThrustAcceleration, dt,
+                    Time.fixedDeltaTime, maxOrbits,
+                    body.pqsController.radiusMin - body.Radius,
+                    body.pqsController.radiusMax - body.Radius,
+                    patch.WorldBCIPositionAtUT(inputUT), patch.WorldOrbitalVelocityAtUT(inputUT),
+                    body.angularVelocity, body.GetSurfaceNVector(0, 0),
+                    body.GetSurfaceNVector(0, 90), body.GetSurfaceNVector(90, 0));
+                var orbitCopy = new Orbit();
+                orbitCopy.UpdateFromOrbitAtUT(patch, inputUT, body);
+                var planner = new TargetAwareAirlessPlanner(snapshot,
+                    Interlocked.Read(ref predictionGeneration), ++targetAwareSequence, body,
+                    (latitude, longitude) => body.TerrainAltitude(latitude, longitude),
+                    Math.Max(200, body.Radius * 0.0005), TargetAwareTerrainQueriesPerTick,
+                    TargetAwareMaximumTerrainQueries);
+                activeTargetAware = planner;
+                activeTargetAwareOrbit = orbitCopy;
+                targetAwareWorkerMilliseconds = 0;
+                activeTargetAwareCapture = CaptureSnapshot(patch, inputUT, body, snapshot,
+                    targetTerrainTimer.Elapsed.TotalMilliseconds);
+                activeTargetAwareCaptureId = LandingPredictorCapture.Submit(activeTargetAwareCapture,
+                    "target_aware_transaction", activePolicy, activeDecelEndASL,
+                    targetTerrainASL, maximumThrustAcceleration,
+                    parachuteSemiDeployMultiplier, dt, Time.fixedDeltaTime, maxOrbits,
+                    noSkipToFreefall, double.NaN);
+                LandingPredictorCapture.Decision(activeTargetAwareCaptureId,
+                    "target_aware_refresh_started", result?.CaptureSubmissionId ?? 0);
+                lastTargetAwareStartUT = now;
+                QueueTargetAwareWork(planner, TargetAwareWorkKind.Ballistic);
+            }
+            catch (Exception ex)
+            {
+                CancelTargetAwareWork();
+                if (Core.Landing.LandingTraceEnabled)
+                    Core.Landing.TraceLanding("target-aware submission failed: " + ex.Message);
+                Debug.LogException(ex);
+            }
+        }
+
+        private void QueueTargetAwareWork(TargetAwareAirlessPlanner planner, TargetAwareWorkKind kind)
+        {
+            if (!ThreadPool.QueueUserWorkItem(RunTargetAwareWork,
+                    new TargetAwareWorkItem(planner, kind, activeTargetAwareCaptureId)))
+                planner.WorkerFailed("WorkerQueueRejected:" + kind);
+        }
+
+        private void RunTargetAwareWork(object state)
+        {
+            var item = (TargetAwareWorkItem)state;
+            var completion = new TargetAwareWorkCompletion
+                { Planner = item.Planner, Kind = item.Kind, CaptureId = item.CaptureId };
+            Stopwatch timer = Stopwatch.StartNew();
+            try
+            {
+                switch (item.Kind)
+                {
+                    case TargetAwareWorkKind.Ballistic:
+                        completion.Ballistic = AirlessTargetAwareSimulation.BallisticTerrainPass(
+                            item.Planner.Snapshot);
+                        break;
+                    case TargetAwareWorkKind.Coarse:
+                        completion.Coarse = item.Planner.RunCoarse();
+                        break;
+                    case TargetAwareWorkKind.Refinement:
+                        completion.Refinement = item.Planner.RunRefinement();
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                completion.Exception = ex;
+            }
+            finally
+            {
+                timer.Stop();
+                completion.ElapsedMilliseconds = timer.Elapsed.TotalMilliseconds;
+                lock (readyTargetAwareWork)
+                    readyTargetAwareWork.Enqueue(completion);
+            }
+        }
+
+        private void CheckForTargetAwareWork()
+        {
+            lock (readyTargetAwareWork)
+            {
+                while (readyTargetAwareWork.Count > 0)
+                {
+                    TargetAwareWorkCompletion work = readyTargetAwareWork.Dequeue();
+                    int outputCount = work.Kind == TargetAwareWorkKind.Ballistic ?
+                        work.Ballistic?.Count ?? 0 : work.Kind == TargetAwareWorkKind.Coarse ?
+                            work.Coarse?.Count ?? 0 : work.Refinement?.Outputs?.Count ?? 0;
+                    LandingPredictorCapture.TargetAwareWorkerStage(work.CaptureId,
+                        work.Kind.ToString(), work.ElapsedMilliseconds, outputCount,
+                        work.Exception?.GetType().Name);
+                    if (work.Planner != activeTargetAware ||
+                        work.Planner.Generation != Interlocked.Read(ref predictionGeneration))
+                        continue;
+                    targetAwareWorkerMilliseconds += work.ElapsedMilliseconds;
+                    if (work.Exception != null)
+                    {
+                        work.Planner.WorkerFailed("Worker" + work.Kind + ":" +
+                            work.Exception.GetType().Name);
+                        Debug.LogException(work.Exception);
+                        continue;
+                    }
+                    try
+                    {
+                        switch (work.Kind)
+                        {
+                            case TargetAwareWorkKind.Ballistic:
+                                work.Planner.SetBallisticSamples(work.Ballistic);
+                                break;
+                            case TargetAwareWorkKind.Coarse:
+                                work.Planner.SetCoarseOutputs(work.Coarse);
+                                break;
+                            case TargetAwareWorkKind.Refinement:
+                                work.Planner.SetRefinement(work.Refinement);
+                                break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        work.Planner.WorkerFailed("IncompleteWorkerCompletion:" +
+                            work.Kind + ":" + ex.GetType().Name);
+                        Debug.LogException(ex);
+                    }
+                }
+            }
+        }
+
+        private void AdvanceTargetAwareTransaction()
+        {
+            TargetAwareAirlessPlanner planner = activeTargetAware;
+            if (planner == null)
+                return;
+            if (!TargetAwareAirlessActive ||
+                planner.Generation != Interlocked.Read(ref predictionGeneration) ||
+                !ReferenceEquals(planner.BodyIdentity, Core.Target.targetBody) ||
+                planner.Snapshot.TargetLatitude != (double)Core.Target.targetLatitude ||
+                planner.Snapshot.TargetLongitude != (double)Core.Target.targetLongitude)
+            {
+                CancelTargetAwareWork();
+                return;
+            }
+            double age = Planetarium.GetUniversalTime() - planner.Snapshot.EpochUT;
+            if (age < 0 || age > 2 * BrakingPlanRefreshSeconds)
+                planner.WorkerFailed("SnapshotExpiredBeforePublication");
+            if (planner.Stage == TargetAwarePlannerStage.ResolveBallistic ||
+                planner.Stage == TargetAwarePlannerStage.ResolveCoarse ||
+                planner.Stage == TargetAwarePlannerStage.ResolveRefinement ||
+                planner.Stage == TargetAwarePlannerStage.ResolveSelectedCoast)
+                planner.AdvanceTerrain();
+
+            if (planner.Stage == TargetAwarePlannerStage.ReadyCoarse)
+            {
+                planner.BeginCoarseWorker();
+                QueueTargetAwareWork(planner, TargetAwareWorkKind.Coarse);
+            }
+            else if (planner.Stage == TargetAwarePlannerStage.ReadyRefinement)
+            {
+                planner.BeginRefinementWorker();
+                QueueTargetAwareWork(planner, TargetAwareWorkKind.Refinement);
+            }
+            else if (planner.Stage == TargetAwarePlannerStage.Complete)
+            {
+                TryPublishTargetAwareResult(planner);
+                activeTargetAware = null;
+                activeTargetAwareOrbit = null;
+                activeTargetAwareCapture = null;
+                activeTargetAwareCaptureId = 0;
+            }
+            else if (planner.Stage == TargetAwarePlannerStage.Failed)
+            {
+                if (Core.Landing.LandingTraceEnabled)
+                    Core.Landing.TraceLanding("target-aware transaction failed: " + planner.Failure +
+                        " terrainQueries=" + planner.TerrainQueryCount);
+                LandingPredictorCapture.Decision(activeTargetAwareCaptureId,
+                    "target_aware_failed:" + planner.Failure, result?.CaptureSubmissionId ?? 0);
+                CancelTargetAwareWork();
+            }
+        }
+
+        private void TryPublishTargetAwareResult(TargetAwareAirlessPlanner planner)
+        {
+            ReentrySimulation.Result replacement = null;
+            try
+            {
+                LandingPredictorCapture.TargetAwareValidation(activeTargetAwareCaptureId,
+                    planner, targetAwareWorkerMilliseconds);
+                var body = (CelestialBody)planner.BodyIdentity;
+                AirlessTargetAwareSnapshot snapshot = planner.Snapshot;
+                double currentTerrain = body.TerrainAltitude(Core.Target.targetLatitude,
+                    Core.Target.targetLongitude);
+                if (committedTargetAware.HasValue &&
+                    committedTargetAware.Value.TargetTerrainASL != currentTerrain)
+                    InvalidateCommittedTargetAware("target_aware_target_terrain_changed");
+                var lineage = new TargetAwareResultLineage(planner.Generation, planner.Sequence,
+                    body, snapshot.TargetLatitude, snapshot.TargetLongitude,
+                    snapshot.TargetTerrainASL, snapshot.EpochUT, snapshot.InputUT,
+                    true, planner.SelectedOutput != null && planner.SelectedOutput.ReachedHandoff,
+                    planner.SelectedTerrain != null && planner.SelectedTerrain.Resolved,
+                    planner.SelectedTerrain != null && planner.SelectedTerrain.ClearPath,
+                    planner.TerminalHandoff.NecessaryControlBoundPasses);
+                TargetAwarePublicationDecision decision = TargetAwarePublicationGate.Check(lineage,
+                    committedTargetAware, Interlocked.Read(ref predictionGeneration),
+                    Core.Target.targetBody, Core.Target.targetLatitude, Core.Target.targetLongitude,
+                    currentTerrain, Planetarium.GetUniversalTime(),
+                    2 * BrakingPlanRefreshSeconds, 0);
+                if (decision != TargetAwarePublicationDecision.Accept)
+                {
+                    LandingPredictorCapture.Decision(activeTargetAwareCaptureId,
+                        "target_aware_rejected:" + decision, result?.CaptureSubmissionId ?? 0);
+                    LandingPredictorCapture.Abandoned(activeTargetAwareCaptureId,
+                        "target_aware_publication_rejected:" + decision);
+                    if (Core.Landing.LandingTraceEnabled)
+                        Core.Landing.TraceLanding("target-aware publication rejected: " + decision);
+                    return;
+                }
+
+                replacement = BuildTargetAwareResult(planner, body);
+                LandingPredictorCapture.WorkerResult(activeTargetAwareCaptureId, replacement,
+                    false, targetAwareWorkerMilliseconds);
+                LandingPredictorCapture.ResolvedResult(activeTargetAwareCaptureId, replacement,
+                    null, "target_aware_clearance_validated", planner.Generation,
+                    Core.Landing.CurrentStep?.GetType().Name);
+                LandingPredictorCapture.Decision(activeTargetAwareCaptureId,
+                    "target_aware_atomic_accept", result?.CaptureSubmissionId ?? 0);
+                ReentrySimulation.Result predecessor = result;
+                result = replacement;
+                replacement = null;
+                committedTargetAware = lineage;
+                ResultVersion++;
+                LandingPredictorCapture.Published(result.CaptureSubmissionId, ResultVersion,
+                    planner.Generation, Core.Landing.CurrentStep?.GetType().Name);
+                if (predecessor != null)
+                {
+                    LandingPredictorCapture.Discarded(predecessor.CaptureSubmissionId,
+                        "published_result_replaced_by_target_aware");
+                    predecessor.Release();
+                }
+                if (Core.Landing.LandingTraceEnabled)
+                    Core.Landing.TraceLanding($"target-aware committed seq={planner.Sequence} " +
+                        $"inputUT={snapshot.InputUT:F2} brakeUT={planner.SelectedOutput.BrakeUT:F2} " +
+                        $"downrange={planner.SignedDownrangeError:F1} crossrange={planner.CrossrangeError:F1} " +
+                        $"clearance={planner.SelectedTerrain.HandoffClearance:F1} " +
+                        $"vertical={planner.TerminalHandoff.EndVerticalSpeed:F1} " +
+                        $"terrainQueries={planner.TerrainQueryCount} " +
+                        $"terrainMs={planner.TerrainQueryMilliseconds:F3} workerMs={targetAwareWorkerMilliseconds:F3}");
+            }
+            catch (Exception ex)
+            {
+                if (replacement != null)
+                    replacement.Release();
+                LandingPredictorCapture.Decision(activeTargetAwareCaptureId,
+                    "target_aware_publication_exception:" + ex.GetType().Name,
+                    result?.CaptureSubmissionId ?? 0);
+                LandingPredictorCapture.Abandoned(activeTargetAwareCaptureId,
+                    "target_aware_publication_exception");
+                Debug.LogException(ex);
+            }
+        }
+
+        private ReentrySimulation.Result BuildTargetAwareResult(TargetAwareAirlessPlanner planner,
+            CelestialBody body)
+        {
+            AirlessTargetAwareSnapshot snapshot = planner.Snapshot;
+            AirlessTargetAwareOutput output = planner.SelectedOutput;
+            ReentrySimulation.Result published = ReentrySimulation.Result.Borrow();
+            published.Trajectory = null;
+            try
+            {
+                published.Outcome = ReentrySimulation.Outcome.LANDED;
+                published.Exception = null;
+                published.Body = body;
+                published.ReferenceFrame = new ReferenceFrame();
+                published.ReferenceFrame.UpdateAtCurrentTime(body);
+                published.ID = unchecked((ulong)planner.Sequence);
+                published.InputInitialOrbit = activeTargetAwareOrbit;
+                published.InputUT = snapshot.InputUT;
+                published.InputDescentSpeedPolicy = new SafeDescentSpeedPolicy(
+                    body.Radius + snapshot.DecelEndASL,
+                    snapshot.BodyGeeASL * 9.81, snapshot.MaximumThrustAcceleration);
+                published.InputDecelEndAltitudeASL = snapshot.DecelEndASL;
+                published.InputMaxThrustAccel = snapshot.MaximumThrustAcceleration;
+                published.InputProbableLandingSiteASL = snapshot.TargetTerrainASL;
+                published.InputParachuteSemiDeployMultiplier = 0;
+                published.InputMultiplierHasError = false;
+                published.InputDT = snapshot.Dt;
+                published.InputMaxOrbits = snapshot.MaxOrbits;
+                published.InputNoSkipToFreefall = false;
+                published.InputForcedBrakingStartUT = output.BrakeUT;
+                published.InputParachuteList = null;
+                published.MultiplierHasError = false;
+                published.ParachuteMultiplier = 0;
+                published.AeroBrake = false;
+                published.AeroBrakeUT = 0;
+                published.AeroBrakePosition = default(AbsoluteVector);
+                published.AeroBrakeVelocity = default(AbsoluteVector);
+                published.DebugLog = null;
+                published.SimulatedBrakingStartUT = output.BrakeUT;
+                published.StartPosition = AirlessTargetAwareSimulation.ToAbsolute(
+                    output.Trajectory[0].Position, output.Trajectory[0].UT, snapshot);
+                published.EndPosition = AirlessTargetAwareSimulation.ToAbsolute(
+                    output.End.Position, output.End.UT, snapshot);
+                published.EndVelocity = AirlessTargetAwareSimulation.ToAbsolute(
+                    output.End.Velocity, output.End.UT, snapshot);
+                published.EndUT = output.End.UT;
+                published.EndASL = planner.SelectedTerrain.LocalTerrainASL;
+                published.TimeToComplete = output.End.UT - snapshot.InputUT;
+                published.EndSurfaceSpeed = output.EndSurfaceSpeed;
+                published.DeltaVExpended = output.VirtualDeltaV;
+                published.MaxDragGees = 0;
+                published.Maxdt = snapshot.Dt;
+                published.Steps = output.Steps;
+                published.Prediction = default(ReentrySimulation.Prediction);
+                published.CaptureSubmissionId = activeTargetAwareCaptureId;
+                published.Trajectory = new List<AbsoluteVector>(output.Trajectory.Count);
+                foreach (AirlessTargetAwareState state in output.Trajectory)
+                    published.Trajectory.Add(AirlessTargetAwareSimulation.ToAbsolute(
+                        state.Position, state.UT, snapshot));
+                return published;
+            }
+            catch
+            {
+                published.Release();
+                throw;
+            }
+        }
+
         private void CheckForResult()
         {
             lock (readyResults)
@@ -515,6 +983,20 @@ namespace MuMech
                 while (readyResults.Count > 0)
                 {
                     var newResult = (ReentrySimulation.Result)readyResults.Dequeue();
+
+                    // A queued ordinary result may finish after targeted V1
+                    // begins. It has no ownership of the target-aware slot.
+                    if (TargetAwareAirlessActive)
+                    {
+                        LandingPredictorCapture.ResolvedResult(newResult.CaptureSubmissionId,
+                            newResult, null, "ordinary_blocked_by_target_aware_mode",
+                            Interlocked.Read(ref predictionGeneration),
+                            Core.Landing.CurrentStep?.GetType().Name);
+                        LandingPredictorCapture.Discarded(newResult.CaptureSubmissionId,
+                            "ordinary_cannot_replace_target_aware");
+                        newResult.Release();
+                        continue;
+                    }
 
                     // If running the simulation resulted in an error then just ignore it.
                     if (newResult.Outcome != ReentrySimulation.Outcome.ERROR)
@@ -712,6 +1194,11 @@ namespace MuMech
                 while (readyBrakingPlanResults.Count > 0)
                 {
                     var set = (BrakingPlanResultSet)readyBrakingPlanResults.Dequeue();
+                    if (TargetAwareAirlessActive)
+                    {
+                        ReleaseBrakingPlanResults(set.Results);
+                        continue;
+                    }
                     if (set.Generation != Interlocked.Read(ref predictionGeneration) || !Core.Target.PositionTargetExists)
                     {
                         foreach (ReentrySimulation.Result candidate in set.Results)
@@ -1015,6 +1502,18 @@ namespace MuMech
 
         private void PublishNormalResult(ReentrySimulation.Result newResult)
         {
+            // Recheck ownership at the final write, after any terrain queries.
+            // A mode/target change during resolution cannot grant an ordinary
+            // or legacy planner result the target-aware active slot.
+            if (TargetAwareAirlessActive)
+            {
+                LandingPredictorCapture.Decision(newResult.CaptureSubmissionId,
+                    "ordinary_blocked_at_publication", result?.CaptureSubmissionId ?? 0);
+                LandingPredictorCapture.Discarded(newResult.CaptureSubmissionId,
+                    "ordinary_cannot_replace_target_aware");
+                newResult.Release();
+                return;
+            }
             if (result != null)
             {
                 LandingPredictorCapture.Discarded(result.CaptureSubmissionId,

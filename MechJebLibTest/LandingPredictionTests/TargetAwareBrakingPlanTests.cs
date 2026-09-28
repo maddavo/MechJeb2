@@ -44,5 +44,34 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.False(TargetAwareBrakingPlan.TrySelect(candidates, out _));
         }
 
+        [Fact]
+        public void BracketsSignedDownrangeAcrossUnorderedSafeSamples()
+        {
+            var candidates = new List<TargetAwareBrakingPlan.Candidate>
+            {
+                new TargetAwareBrakingPlan.Candidate(140, 400, 900, true),
+                new TargetAwareBrakingPlan.Candidate(100, -800, 20, true),
+                new TargetAwareBrakingPlan.Candidate(120, -15, 700, true)
+            };
+
+            Assert.True(TargetAwareBrakingPlan.TryFindDownrangeBracket(candidates, out var bracket));
+            Assert.Equal(120, bracket.Earlier.StartUT);
+            Assert.Equal(140, bracket.Later.StartUT);
+            Assert.Equal(700, bracket.Earlier.CrossrangeError);
+        }
+
+        [Fact]
+        public void UnsafeIntermediateBranchCannotCreateBracket()
+        {
+            var candidates = new List<TargetAwareBrakingPlan.Candidate>
+            {
+                new TargetAwareBrakingPlan.Candidate(100, -100, 0, true),
+                new TargetAwareBrakingPlan.Candidate(110, 0, 0, false),
+                new TargetAwareBrakingPlan.Candidate(120, 100, 0, true)
+            };
+
+            Assert.False(TargetAwareBrakingPlan.TryFindDownrangeBracket(candidates, out _));
+        }
+
     }
 }

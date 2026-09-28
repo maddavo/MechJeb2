@@ -1,0 +1,1390 @@
+{
+  "format": "mechjeb-v1-mun-forced-candidates",
+  "formatVersion": 1,
+  "sourceSha256": "9f6e573c0e02183dc918f279d32a67abb4c54e457b1c8229c85a6a3b8678ba44",
+  "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+  "cases": [
+    {
+      "submissionId": 173,
+      "submission": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "submission",
+        "submissionId": 173,
+        "wallTimestamp": 4081960981,
+        "wallTimestampFrequency": 10000000,
+        "kind": "forced_candidate",
+        "generation": 1,
+        "inputUT": 24603456.768967465,
+        "captureEpochUT": 24603456.808967464,
+        "phase": "DeorbitBurn",
+        "body": "Mun",
+        "bodyRadius": 200000,
+        "bodyMu": 65138397520.78069,
+        "bodyGeeASL": 0.1660567000983534,
+        "rotationPeriod": 138984.37657447223,
+        "angularVelocity": [
+          0,
+          -4.520785330006396e-05,
+          0
+        ],
+        "bodyAxis0": [
+          -0.24958996806572017,
+          0,
+          0.9683516137441776
+        ],
+        "bodyAxis90": [
+          -0.9683516137441776,
+          0,
+          -0.24958996806572012
+        ],
+        "bodyAxisNorth": [
+          -1.5282473037180257e-17,
+          1,
+          5.929247694626362e-17
+        ],
+        "positionBCI": [
+          169119.97759942123,
+          3204.0130791774627,
+          147215.54897786683
+        ],
+        "velocityBCI": [
+          -344.2340528178373,
+          5.522923460620535,
+          393.87087909277227
+        ],
+        "mass": 79.40477127761551,
+        "thrustAvailable": 640.0000548835449,
+        "thrustMinimum": 0,
+        "throttleFixedLimit": 1,
+        "limitedMaxThrustAcceleration": 8.059969754789321,
+        "maxEngineResponseTime": 0,
+        "targetLatitude": 0.6741666666666666,
+        "targetLongitude": 23.473055555555554,
+        "targetTerrainASL": 492.18766502593644,
+        "targetTerrainQueryElapsedMs": 0.0088,
+        "policy": "SafeDescentSpeedPolicy",
+        "decelEndASL": 692.1876650259364,
+        "probableLandingSiteASL": 492.18766502593644,
+        "maxThrustAcceleration": 8.059969754789321,
+        "parachuteMultiplier": 0,
+        "dt": 0.2,
+        "minDt": 0.019999999552965164,
+        "maxOrbits": 0.5,
+        "noSkipToFreefall": false,
+        "forcedBrakingStartUT": 24603456.768967465
+      },
+      "worker": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "worker_result",
+        "submissionId": 173,
+        "wallTimestamp": 4082022099,
+        "simulationElapsedMs": 0.6401,
+        "outcome": "LANDED",
+        "staleGeneration": false,
+        "complete": true,
+        "exceptionType": null,
+        "steps": 188,
+        "inputUT": 24603456.768967465,
+        "endUT": 24603906.979748674,
+        "virtualBrakeUT": 24603456.768967465,
+        "forcedBrakeUT": 24603456.768967465,
+        "start": [
+          0.8186828651002975,
+          -63.41422909433413,
+          224241.5001374523,
+          24603456.768967465
+        ],
+        "simulatorEnd": [
+          1.0024025369296825,
+          -17.878737435011942,
+          200491.9055290548,
+          24603906.979748674
+        ],
+        "simulatorEndVelocity": [
+          -0.8686659629227721,
+          123.11178634003863,
+          60.08440325225997,
+          24603906.979748674
+        ],
+        "endSurfaceSpeed": 54.83483455445423,
+        "virtualDeltaV": 588.183972979773,
+        "trajectoryStart": [
+          0.8186828651002975,
+          -63.41422909433413,
+          224241.5001374523,
+          24603456.768967465
+        ],
+        "trajectorySamples": 167
+      },
+      "resolved": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "resolved_result",
+        "submissionId": 173,
+        "processUT": 24603456.828967463,
+        "wallTimestamp": 4082312723,
+        "currentGeneration": 1,
+        "phase": "DeorbitBurn",
+        "disposition": "candidate_not_selected",
+        "outcome": "LANDED",
+        "simulatorLanded": true,
+        "terrainContactConfirmed": false,
+        "resolvedEnd": [
+          1.0024025369296825,
+          -17.878737435011942,
+          200491.9055290548,
+          24603906.979748674
+        ],
+        "resolvedEndASL": 0,
+        "terrainProfileApplied": false,
+        "terrainProfileStartIndex": -1,
+        "terrainProfileSampleCount": 0,
+        "terrainContactIndex": -1,
+        "terrainContactASL": null,
+        "terrainQueryCount": 0,
+        "terrainQueryElapsedMs": 0,
+        "terrainSamples": null
+      },
+      "published": null
+    },
+    {
+      "submissionId": 174,
+      "submission": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "submission",
+        "submissionId": 174,
+        "wallTimestamp": 4081969737,
+        "wallTimestampFrequency": 10000000,
+        "kind": "forced_candidate",
+        "generation": 1,
+        "inputUT": 24603456.768967465,
+        "captureEpochUT": 24603456.808967464,
+        "phase": "DeorbitBurn",
+        "body": "Mun",
+        "bodyRadius": 200000,
+        "bodyMu": 65138397520.78069,
+        "bodyGeeASL": 0.1660567000983534,
+        "rotationPeriod": 138984.37657447223,
+        "angularVelocity": [
+          0,
+          -4.520785330006396e-05,
+          0
+        ],
+        "bodyAxis0": [
+          -0.24958996806572017,
+          0,
+          0.9683516137441776
+        ],
+        "bodyAxis90": [
+          -0.9683516137441776,
+          0,
+          -0.24958996806572012
+        ],
+        "bodyAxisNorth": [
+          -1.5282473037180257e-17,
+          1,
+          5.929247694626362e-17
+        ],
+        "positionBCI": [
+          169119.97759942123,
+          3204.0130791774627,
+          147215.54897786683
+        ],
+        "velocityBCI": [
+          -344.2340528178373,
+          5.522923460620535,
+          393.87087909277227
+        ],
+        "mass": 79.40477127761551,
+        "thrustAvailable": 640.0000548835449,
+        "thrustMinimum": 0,
+        "throttleFixedLimit": 1,
+        "limitedMaxThrustAcceleration": 8.059969754789321,
+        "maxEngineResponseTime": 0,
+        "targetLatitude": 0.6741666666666666,
+        "targetLongitude": 23.473055555555554,
+        "targetTerrainASL": 492.18766502593644,
+        "targetTerrainQueryElapsedMs": 0.0088,
+        "policy": "SafeDescentSpeedPolicy",
+        "decelEndASL": 692.1876650259364,
+        "probableLandingSiteASL": 492.18766502593644,
+        "maxThrustAcceleration": 8.059969754789321,
+        "parachuteMultiplier": 0,
+        "dt": 0.2,
+        "minDt": 0.019999999552965164,
+        "maxOrbits": 0.5,
+        "noSkipToFreefall": false,
+        "forcedBrakingStartUT": 24603588.64910906
+      },
+      "worker": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "worker_result",
+        "submissionId": 174,
+        "wallTimestamp": 4082028930,
+        "simulationElapsedMs": 0.6293000000000001,
+        "outcome": "LANDED",
+        "staleGeneration": false,
+        "complete": true,
+        "exceptionType": null,
+        "steps": 185,
+        "inputUT": 24603456.768967465,
+        "endUT": 24603968.88460951,
+        "virtualBrakeUT": 24603588.64910906,
+        "forcedBrakeUT": 24603588.64910906,
+        "start": [
+          0.9641507080220427,
+          -46.08262920480291,
+          223468.80916635384,
+          24603588.64910906
+        ],
+        "simulatorEnd": [
+          0.9665431309454828,
+          -9.684191432537887,
+          200491.63712739735,
+          24603968.88460951
+        ],
+        "simulatorEndVelocity": [
+          -0.9060964194097607,
+          133.3938830768532,
+          45.3224450382388,
+          24603968.88460951
+        ],
+        "endSurfaceSpeed": 40.53191640916588,
+        "virtualDeltaV": 605.1519216986669,
+        "trajectoryStart": [
+          0.9641507080220427,
+          -46.08262920480291,
+          223468.80916635384,
+          24603588.64910906
+        ],
+        "trajectorySamples": 161
+      },
+      "resolved": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "resolved_result",
+        "submissionId": 174,
+        "processUT": 24603456.828967463,
+        "wallTimestamp": 4082312956,
+        "currentGeneration": 1,
+        "phase": "DeorbitBurn",
+        "disposition": "candidate_not_selected",
+        "outcome": "LANDED",
+        "simulatorLanded": true,
+        "terrainContactConfirmed": false,
+        "resolvedEnd": [
+          0.9665431309454828,
+          -9.684191432537887,
+          200491.63712739735,
+          24603968.88460951
+        ],
+        "resolvedEndASL": 0,
+        "terrainProfileApplied": false,
+        "terrainProfileStartIndex": -1,
+        "terrainProfileSampleCount": 0,
+        "terrainContactIndex": -1,
+        "terrainContactASL": null,
+        "terrainQueryCount": 0,
+        "terrainQueryElapsedMs": 0,
+        "terrainSamples": null
+      },
+      "published": null
+    },
+    {
+      "submissionId": 175,
+      "submission": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "submission",
+        "submissionId": 175,
+        "wallTimestamp": 4081976373,
+        "wallTimestampFrequency": 10000000,
+        "kind": "forced_candidate",
+        "generation": 1,
+        "inputUT": 24603456.768967465,
+        "captureEpochUT": 24603456.808967464,
+        "phase": "DeorbitBurn",
+        "body": "Mun",
+        "bodyRadius": 200000,
+        "bodyMu": 65138397520.78069,
+        "bodyGeeASL": 0.1660567000983534,
+        "rotationPeriod": 138984.37657447223,
+        "angularVelocity": [
+          0,
+          -4.520785330006396e-05,
+          0
+        ],
+        "bodyAxis0": [
+          -0.24958996806572017,
+          0,
+          0.9683516137441776
+        ],
+        "bodyAxis90": [
+          -0.9683516137441776,
+          0,
+          -0.24958996806572012
+        ],
+        "bodyAxisNorth": [
+          -1.5282473037180257e-17,
+          1,
+          5.929247694626362e-17
+        ],
+        "positionBCI": [
+          169119.97759942123,
+          3204.0130791774627,
+          147215.54897786683
+        ],
+        "velocityBCI": [
+          -344.2340528178373,
+          5.522923460620535,
+          393.87087909277227
+        ],
+        "mass": 79.40477127761551,
+        "thrustAvailable": 640.0000548835449,
+        "thrustMinimum": 0,
+        "throttleFixedLimit": 1,
+        "limitedMaxThrustAcceleration": 8.059969754789321,
+        "maxEngineResponseTime": 0,
+        "targetLatitude": 0.6741666666666666,
+        "targetLongitude": 23.473055555555554,
+        "targetTerrainASL": 492.18766502593644,
+        "targetTerrainQueryElapsedMs": 0.0088,
+        "policy": "SafeDescentSpeedPolicy",
+        "decelEndASL": 692.1876650259364,
+        "probableLandingSiteASL": 492.18766502593644,
+        "maxThrustAcceleration": 8.059969754789321,
+        "parachuteMultiplier": 0,
+        "dt": 0.2,
+        "minDt": 0.019999999552965164,
+        "maxOrbits": 0.5,
+        "noSkipToFreefall": false,
+        "forcedBrakingStartUT": 24603720.52925066
+      },
+      "worker": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "worker_result",
+        "submissionId": 175,
+        "wallTimestamp": 4082034665,
+        "simulationElapsedMs": 0.548,
+        "outcome": "LANDED",
+        "staleGeneration": false,
+        "complete": true,
+        "exceptionType": null,
+        "steps": 178,
+        "inputUT": 24603456.768967465,
+        "endUT": 24604031.18157972,
+        "virtualBrakeUT": 24603720.52925066,
+        "forcedBrakeUT": 24603720.52925066,
+        "start": [
+          1.0186947477507051,
+          -28.52695861740807,
+          221465.3999635718,
+          24603720.52925066
+        ],
+        "simulatorEnd": [
+          0.9037915665603465,
+          -0.7033643872152879,
+          200492.17007704443,
+          24604031.18157972
+        ],
+        "simulatorEndVelocity": [
+          -0.9323298191363331,
+          140.36771447598122,
+          58.77980947125391,
+          24604031.18157972
+        ],
+        "endSurfaceSpeed": 53.55214768997635,
+        "virtualDeltaV": 589.2040419039033,
+        "trajectoryStart": [
+          1.0186947477507051,
+          -28.52695861740807,
+          221465.3999635718,
+          24603720.52925066
+        ],
+        "trajectorySamples": 154
+      },
+      "resolved": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "resolved_result",
+        "submissionId": 175,
+        "processUT": 24603456.828967463,
+        "wallTimestamp": 4082313051,
+        "currentGeneration": 1,
+        "phase": "DeorbitBurn",
+        "disposition": "candidate_not_selected",
+        "outcome": "LANDED",
+        "simulatorLanded": true,
+        "terrainContactConfirmed": false,
+        "resolvedEnd": [
+          0.9037915665603465,
+          -0.7033643872152879,
+          200492.17007704443,
+          24604031.18157972
+        ],
+        "resolvedEndASL": 0,
+        "terrainProfileApplied": false,
+        "terrainProfileStartIndex": -1,
+        "terrainProfileSampleCount": 0,
+        "terrainContactIndex": -1,
+        "terrainContactASL": null,
+        "terrainQueryCount": 0,
+        "terrainQueryElapsedMs": 0,
+        "terrainSamples": null
+      },
+      "published": null
+    },
+    {
+      "submissionId": 176,
+      "submission": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "submission",
+        "submissionId": 176,
+        "wallTimestamp": 4081982058,
+        "wallTimestampFrequency": 10000000,
+        "kind": "forced_candidate",
+        "generation": 1,
+        "inputUT": 24603456.768967465,
+        "captureEpochUT": 24603456.808967464,
+        "phase": "DeorbitBurn",
+        "body": "Mun",
+        "bodyRadius": 200000,
+        "bodyMu": 65138397520.78069,
+        "bodyGeeASL": 0.1660567000983534,
+        "rotationPeriod": 138984.37657447223,
+        "angularVelocity": [
+          0,
+          -4.520785330006396e-05,
+          0
+        ],
+        "bodyAxis0": [
+          -0.24958996806572017,
+          0,
+          0.9683516137441776
+        ],
+        "bodyAxis90": [
+          -0.9683516137441776,
+          0,
+          -0.24958996806572012
+        ],
+        "bodyAxisNorth": [
+          -1.5282473037180257e-17,
+          1,
+          5.929247694626362e-17
+        ],
+        "positionBCI": [
+          169119.97759942123,
+          3204.0130791774627,
+          147215.54897786683
+        ],
+        "velocityBCI": [
+          -344.2340528178373,
+          5.522923460620535,
+          393.87087909277227
+        ],
+        "mass": 79.40477127761551,
+        "thrustAvailable": 640.0000548835449,
+        "thrustMinimum": 0,
+        "throttleFixedLimit": 1,
+        "limitedMaxThrustAcceleration": 8.059969754789321,
+        "maxEngineResponseTime": 0,
+        "targetLatitude": 0.6741666666666666,
+        "targetLongitude": 23.473055555555554,
+        "targetTerrainASL": 492.18766502593644,
+        "targetTerrainQueryElapsedMs": 0.0088,
+        "policy": "SafeDescentSpeedPolicy",
+        "decelEndASL": 692.1876650259364,
+        "probableLandingSiteASL": 492.18766502593644,
+        "maxThrustAcceleration": 8.059969754789321,
+        "parachuteMultiplier": 0,
+        "dt": 0.2,
+        "minDt": 0.019999999552965164,
+        "maxOrbits": 0.5,
+        "noSkipToFreefall": false,
+        "forcedBrakingStartUT": 24603852.40939226
+      },
+      "worker": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "worker_result",
+        "submissionId": 176,
+        "wallTimestamp": 4082039326,
+        "simulationElapsedMs": 0.4501,
+        "outcome": "LANDED",
+        "staleGeneration": false,
+        "complete": true,
+        "exceptionType": null,
+        "steps": 163,
+        "inputUT": 24603456.768967465,
+        "endUT": 24604104.32297132,
+        "virtualBrakeUT": 24603852.40939226,
+        "forcedBrakeUT": 24603852.40939226,
+        "start": [
+          0.9724767526705299,
+          -10.553382789915986,
+          218406.4718902848,
+          24603852.40939226
+        ],
+        "simulatorEnd": [
+          0.7967134219892373,
+          10.219925490936562,
+          200491.7891555359,
+          24604104.32297132
+        ],
+        "simulatorEndVelocity": [
+          -0.948030768600522,
+          149.84426430022853,
+          73.78270644167416,
+          24604104.32297132
+        ],
+        "endSurfaceSpeed": 68.26270313086336,
+        "virtualDeltaV": 571.3193023654383,
+        "trajectoryStart": [
+          0.9724767526705299,
+          -10.553382789915986,
+          218406.4718902848,
+          24603852.40939226
+        ],
+        "trajectorySamples": 145
+      },
+      "resolved": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "resolved_result",
+        "submissionId": 176,
+        "processUT": 24603456.828967463,
+        "wallTimestamp": 4082313126,
+        "currentGeneration": 1,
+        "phase": "DeorbitBurn",
+        "disposition": "candidate_not_selected",
+        "outcome": "LANDED",
+        "simulatorLanded": true,
+        "terrainContactConfirmed": false,
+        "resolvedEnd": [
+          0.7967134219892373,
+          10.219925490936562,
+          200491.7891555359,
+          24604104.32297132
+        ],
+        "resolvedEndASL": 0,
+        "terrainProfileApplied": false,
+        "terrainProfileStartIndex": -1,
+        "terrainProfileSampleCount": 0,
+        "terrainContactIndex": -1,
+        "terrainContactASL": null,
+        "terrainQueryCount": 0,
+        "terrainQueryElapsedMs": 0,
+        "terrainSamples": null
+      },
+      "published": null
+    },
+    {
+      "submissionId": 177,
+      "submission": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "submission",
+        "submissionId": 177,
+        "wallTimestamp": 4081987632,
+        "wallTimestampFrequency": 10000000,
+        "kind": "forced_candidate",
+        "generation": 1,
+        "inputUT": 24603456.768967465,
+        "captureEpochUT": 24603456.808967464,
+        "phase": "DeorbitBurn",
+        "body": "Mun",
+        "bodyRadius": 200000,
+        "bodyMu": 65138397520.78069,
+        "bodyGeeASL": 0.1660567000983534,
+        "rotationPeriod": 138984.37657447223,
+        "angularVelocity": [
+          0,
+          -4.520785330006396e-05,
+          0
+        ],
+        "bodyAxis0": [
+          -0.24958996806572017,
+          0,
+          0.9683516137441776
+        ],
+        "bodyAxis90": [
+          -0.9683516137441776,
+          0,
+          -0.24958996806572012
+        ],
+        "bodyAxisNorth": [
+          -1.5282473037180257e-17,
+          1,
+          5.929247694626362e-17
+        ],
+        "positionBCI": [
+          169119.97759942123,
+          3204.0130791774627,
+          147215.54897786683
+        ],
+        "velocityBCI": [
+          -344.2340528178373,
+          5.522923460620535,
+          393.87087909277227
+        ],
+        "mass": 79.40477127761551,
+        "thrustAvailable": 640.0000548835449,
+        "thrustMinimum": 0,
+        "throttleFixedLimit": 1,
+        "limitedMaxThrustAcceleration": 8.059969754789321,
+        "maxEngineResponseTime": 0,
+        "targetLatitude": 0.6741666666666666,
+        "targetLongitude": 23.473055555555554,
+        "targetTerrainASL": 492.18766502593644,
+        "targetTerrainQueryElapsedMs": 0.0088,
+        "policy": "SafeDescentSpeedPolicy",
+        "decelEndASL": 692.1876650259364,
+        "probableLandingSiteASL": 492.18766502593644,
+        "maxThrustAcceleration": 8.059969754789321,
+        "parachuteMultiplier": 0,
+        "dt": 0.2,
+        "minDt": 0.019999999552965164,
+        "maxOrbits": 0.5,
+        "noSkipToFreefall": false,
+        "forcedBrakingStartUT": 24603984.289533857
+      },
+      "worker": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "worker_result",
+        "submissionId": 177,
+        "wallTimestamp": 4082043715,
+        "simulationElapsedMs": 0.42260000000000003,
+        "outcome": "LANDED",
+        "staleGeneration": false,
+        "complete": true,
+        "exceptionType": null,
+        "steps": 149,
+        "inputUT": 24603456.768967465,
+        "endUT": 24604187.49453382,
+        "virtualBrakeUT": 24603984.289533857,
+        "forcedBrakeUT": 24603984.289533857,
+        "start": [
+          0.8215681922065954,
+          8.011665751190048,
+          214579.07759896893,
+          24603984.289533857
+        ],
+        "simulatorEnd": [
+          0.6311512446623657,
+          23.18660345018692,
+          200491.96514198187,
+          24604187.49453382
+        ],
+        "simulatorEndVelocity": [
+          -0.9158592409102037,
+          162.13097941895285,
+          77.47318586075339,
+          24604187.49453382
+        ],
+        "endSurfaceSpeed": 71.84713008890506,
+        "virtualDeltaV": 564.3938598105352,
+        "trajectoryStart": [
+          0.8215681922065954,
+          8.011665751190048,
+          214579.07759896893,
+          24603984.289533857
+        ],
+        "trajectorySamples": 137
+      },
+      "resolved": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "resolved_result",
+        "submissionId": 177,
+        "processUT": 24603456.828967463,
+        "wallTimestamp": 4082311731,
+        "currentGeneration": 1,
+        "phase": "DeorbitBurn",
+        "disposition": "selected_for_publication",
+        "outcome": "LANDED",
+        "simulatorLanded": true,
+        "terrainContactConfirmed": false,
+        "resolvedEnd": [
+          0.6311512446623657,
+          23.18660345018692,
+          200491.96514198187,
+          24604187.49453382
+        ],
+        "resolvedEndASL": 0,
+        "terrainProfileApplied": false,
+        "terrainProfileStartIndex": 126,
+        "terrainProfileSampleCount": 11,
+        "terrainContactIndex": -1,
+        "terrainContactASL": null,
+        "terrainQueryCount": 11,
+        "terrainQueryElapsedMs": 0.0813,
+        "terrainSamples": [
+          [
+            0.6802412642605189,
+            19.647751075241846,
+            7533.760869919555,
+            1477.9318051983137
+          ],
+          [
+            0.670771550272864,
+            20.345346301883993,
+            6578.7266026496945,
+            1471.3392048300593
+          ],
+          [
+            0.6619854285215365,
+            20.98585472822742,
+            5593.576529325597,
+            904.0087633625371
+          ],
+          [
+            0.6540058687031144,
+            21.562196163762614,
+            4594.033546750201,
+            569.1184698146244
+          ],
+          [
+            0.6469654613939914,
+            22.066631496572146,
+            3601.401511504693,
+            638.7331048120977
+          ],
+          [
+            0.6410061910749927,
+            22.490731256575174,
+            2644.811438058008,
+            420.6066982758348
+          ],
+          [
+            0.6362797944739489,
+            22.825286120196054,
+            1765.0712248439668,
+            575.7442025380151
+          ],
+          [
+            0.6329533877269428,
+            23.059826187492416,
+            1022.9594236128323,
+            503.1759159731446
+          ],
+          [
+            0.6312608558551477,
+            23.178897355880615,
+            529.3136358790216,
+            453.04089280814514
+          ],
+          [
+            0.6311546443281852,
+            23.186364448907526,
+            493.1332807931467,
+            450.25941261736443
+          ],
+          [
+            0.6311512446623657,
+            23.18660345018692,
+            491.96514198186924,
+            450.18037516254117
+          ]
+        ]
+      },
+      "published": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "published",
+        "submissionId": 177,
+        "processUT": 24603456.828967463,
+        "wallTimestamp": 4082312109,
+        "resultVersion": 261,
+        "currentGeneration": 1,
+        "phase": "DeorbitBurn"
+      }
+    },
+    {
+      "submissionId": 178,
+      "submission": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "submission",
+        "submissionId": 178,
+        "wallTimestamp": 4081993065,
+        "wallTimestampFrequency": 10000000,
+        "kind": "forced_candidate",
+        "generation": 1,
+        "inputUT": 24603456.768967465,
+        "captureEpochUT": 24603456.808967464,
+        "phase": "DeorbitBurn",
+        "body": "Mun",
+        "bodyRadius": 200000,
+        "bodyMu": 65138397520.78069,
+        "bodyGeeASL": 0.1660567000983534,
+        "rotationPeriod": 138984.37657447223,
+        "angularVelocity": [
+          0,
+          -4.520785330006396e-05,
+          0
+        ],
+        "bodyAxis0": [
+          -0.24958996806572017,
+          0,
+          0.9683516137441776
+        ],
+        "bodyAxis90": [
+          -0.9683516137441776,
+          0,
+          -0.24958996806572012
+        ],
+        "bodyAxisNorth": [
+          -1.5282473037180257e-17,
+          1,
+          5.929247694626362e-17
+        ],
+        "positionBCI": [
+          169119.97759942123,
+          3204.0130791774627,
+          147215.54897786683
+        ],
+        "velocityBCI": [
+          -344.2340528178373,
+          5.522923460620535,
+          393.87087909277227
+        ],
+        "mass": 79.40477127761551,
+        "thrustAvailable": 640.0000548835449,
+        "thrustMinimum": 0,
+        "throttleFixedLimit": 1,
+        "limitedMaxThrustAcceleration": 8.059969754789321,
+        "maxEngineResponseTime": 0,
+        "targetLatitude": 0.6741666666666666,
+        "targetLongitude": 23.473055555555554,
+        "targetTerrainASL": 492.18766502593644,
+        "targetTerrainQueryElapsedMs": 0.0088,
+        "policy": "SafeDescentSpeedPolicy",
+        "decelEndASL": 692.1876650259364,
+        "probableLandingSiteASL": 492.18766502593644,
+        "maxThrustAcceleration": 8.059969754789321,
+        "parachuteMultiplier": 0,
+        "dt": 0.2,
+        "minDt": 0.019999999552965164,
+        "maxOrbits": 0.5,
+        "noSkipToFreefall": false,
+        "forcedBrakingStartUT": 24604116.169675454
+      },
+      "worker": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "worker_result",
+        "submissionId": 178,
+        "wallTimestamp": 4082047867,
+        "simulationElapsedMs": 0.39890000000000003,
+        "outcome": "LANDED",
+        "staleGeneration": false,
+        "complete": true,
+        "exceptionType": null,
+        "steps": 142,
+        "inputUT": 24603456.768967465,
+        "endUT": 24604277.729675416,
+        "virtualBrakeUT": 24604116.169675454,
+        "forcedBrakeUT": 24604116.169675454,
+        "start": [
+          0.5713551760844842,
+          27.30296880711081,
+          210378.28937421553,
+          24604116.169675454
+        ],
+        "simulatorEnd": [
+          0.40075449466695606,
+          38.06144574209462,
+          200491.42578575353,
+          24604277.729675416
+        ],
+        "simulatorEndVelocity": [
+          -0.7934122322907975,
+          177.25764817338364,
+          65.52252587313608,
+          24604277.729675416
+        ],
+        "endSurfaceSpeed": 59.9939469272537,
+        "virtualDeltaV": 571.970721397686,
+        "trajectoryStart": [
+          0.5713551760844842,
+          27.30296880711081,
+          210378.28937421553,
+          24604116.169675454
+        ],
+        "trajectorySamples": 130
+      },
+      "resolved": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "resolved_result",
+        "submissionId": 178,
+        "processUT": 24603456.828967463,
+        "wallTimestamp": 4082313252,
+        "currentGeneration": 1,
+        "phase": "DeorbitBurn",
+        "disposition": "candidate_not_selected",
+        "outcome": "LANDED",
+        "simulatorLanded": true,
+        "terrainContactConfirmed": false,
+        "resolvedEnd": [
+          0.40075449466695606,
+          38.06144574209462,
+          200491.42578575353,
+          24604277.729675416
+        ],
+        "resolvedEndASL": 0,
+        "terrainProfileApplied": false,
+        "terrainProfileStartIndex": -1,
+        "terrainProfileSampleCount": 0,
+        "terrainContactIndex": -1,
+        "terrainContactASL": null,
+        "terrainQueryCount": 0,
+        "terrainQueryElapsedMs": 0,
+        "terrainSamples": null
+      },
+      "published": null
+    },
+    {
+      "submissionId": 179,
+      "submission": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "submission",
+        "submissionId": 179,
+        "wallTimestamp": 4081998513,
+        "wallTimestampFrequency": 10000000,
+        "kind": "forced_candidate",
+        "generation": 1,
+        "inputUT": 24603456.768967465,
+        "captureEpochUT": 24603456.808967464,
+        "phase": "DeorbitBurn",
+        "body": "Mun",
+        "bodyRadius": 200000,
+        "bodyMu": 65138397520.78069,
+        "bodyGeeASL": 0.1660567000983534,
+        "rotationPeriod": 138984.37657447223,
+        "angularVelocity": [
+          0,
+          -4.520785330006396e-05,
+          0
+        ],
+        "bodyAxis0": [
+          -0.24958996806572017,
+          0,
+          0.9683516137441776
+        ],
+        "bodyAxis90": [
+          -0.9683516137441776,
+          0,
+          -0.24958996806572012
+        ],
+        "bodyAxisNorth": [
+          -1.5282473037180257e-17,
+          1,
+          5.929247694626362e-17
+        ],
+        "positionBCI": [
+          169119.97759942123,
+          3204.0130791774627,
+          147215.54897786683
+        ],
+        "velocityBCI": [
+          -344.2340528178373,
+          5.522923460620535,
+          393.87087909277227
+        ],
+        "mass": 79.40477127761551,
+        "thrustAvailable": 640.0000548835449,
+        "thrustMinimum": 0,
+        "throttleFixedLimit": 1,
+        "limitedMaxThrustAcceleration": 8.059969754789321,
+        "maxEngineResponseTime": 0,
+        "targetLatitude": 0.6741666666666666,
+        "targetLongitude": 23.473055555555554,
+        "targetTerrainASL": 492.18766502593644,
+        "targetTerrainQueryElapsedMs": 0.0088,
+        "policy": "SafeDescentSpeedPolicy",
+        "decelEndASL": 692.1876650259364,
+        "probableLandingSiteASL": 492.18766502593644,
+        "maxThrustAcceleration": 8.059969754789321,
+        "parachuteMultiplier": 0,
+        "dt": 0.2,
+        "minDt": 0.019999999552965164,
+        "maxOrbits": 0.5,
+        "noSkipToFreefall": false,
+        "forcedBrakingStartUT": 24604248.049817055
+      },
+      "worker": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "worker_result",
+        "submissionId": 179,
+        "wallTimestamp": 4082052113,
+        "simulationElapsedMs": 0.40140000000000003,
+        "outcome": "LANDED",
+        "staleGeneration": false,
+        "complete": true,
+        "exceptionType": null,
+        "steps": 143,
+        "inputUT": 24603456.768967465,
+        "endUT": 24604369.94947522,
+        "virtualBrakeUT": 24604248.049817055,
+        "forcedBrakeUT": 24604248.049817055,
+        "start": [
+          0.24096678260640153,
+          47.38973082929652,
+          206288.23972138032,
+          24604248.049817055
+        ],
+        "simulatorEnd": [
+          0.10680642662910643,
+          54.92901683553001,
+          200492.1672293183,
+          24604369.94947522
+        ],
+        "simulatorEndVelocity": [
+          -0.6568426572091797,
+          -168.53080843879306,
+          73.26641446555423,
+          24604369.94947522
+        ],
+        "endSurfaceSpeed": 67.35444430807395,
+        "virtualDeltaV": 553.0578891577834,
+        "trajectoryStart": [
+          0.24096678260640153,
+          47.38973082929652,
+          206288.23972138032,
+          24604248.049817055
+        ],
+        "trajectorySamples": 125
+      },
+      "resolved": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "resolved_result",
+        "submissionId": 179,
+        "processUT": 24603456.828967463,
+        "wallTimestamp": 4082313329,
+        "currentGeneration": 1,
+        "phase": "DeorbitBurn",
+        "disposition": "candidate_not_selected",
+        "outcome": "LANDED",
+        "simulatorLanded": true,
+        "terrainContactConfirmed": false,
+        "resolvedEnd": [
+          0.10680642662910643,
+          54.92901683553001,
+          200492.1672293183,
+          24604369.94947522
+        ],
+        "resolvedEndASL": 0,
+        "terrainProfileApplied": false,
+        "terrainProfileStartIndex": -1,
+        "terrainProfileSampleCount": 0,
+        "terrainContactIndex": -1,
+        "terrainContactASL": null,
+        "terrainQueryCount": 0,
+        "terrainQueryElapsedMs": 0,
+        "terrainSamples": null
+      },
+      "published": null
+    },
+    {
+      "submissionId": 180,
+      "submission": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "submission",
+        "submissionId": 180,
+        "wallTimestamp": 4082003703,
+        "wallTimestampFrequency": 10000000,
+        "kind": "forced_candidate",
+        "generation": 1,
+        "inputUT": 24603456.768967465,
+        "captureEpochUT": 24603456.808967464,
+        "phase": "DeorbitBurn",
+        "body": "Mun",
+        "bodyRadius": 200000,
+        "bodyMu": 65138397520.78069,
+        "bodyGeeASL": 0.1660567000983534,
+        "rotationPeriod": 138984.37657447223,
+        "angularVelocity": [
+          0,
+          -4.520785330006396e-05,
+          0
+        ],
+        "bodyAxis0": [
+          -0.24958996806572017,
+          0,
+          0.9683516137441776
+        ],
+        "bodyAxis90": [
+          -0.9683516137441776,
+          0,
+          -0.24958996806572012
+        ],
+        "bodyAxisNorth": [
+          -1.5282473037180257e-17,
+          1,
+          5.929247694626362e-17
+        ],
+        "positionBCI": [
+          169119.97759942123,
+          3204.0130791774627,
+          147215.54897786683
+        ],
+        "velocityBCI": [
+          -344.2340528178373,
+          5.522923460620535,
+          393.87087909277227
+        ],
+        "mass": 79.40477127761551,
+        "thrustAvailable": 640.0000548835449,
+        "thrustMinimum": 0,
+        "throttleFixedLimit": 1,
+        "limitedMaxThrustAcceleration": 8.059969754789321,
+        "maxEngineResponseTime": 0,
+        "targetLatitude": 0.6741666666666666,
+        "targetLongitude": 23.473055555555554,
+        "targetTerrainASL": 492.18766502593644,
+        "targetTerrainQueryElapsedMs": 0.0088,
+        "policy": "SafeDescentSpeedPolicy",
+        "decelEndASL": 692.1876650259364,
+        "probableLandingSiteASL": 492.18766502593644,
+        "maxThrustAcceleration": 8.059969754789321,
+        "parachuteMultiplier": 0,
+        "dt": 0.2,
+        "minDt": 0.019999999552965164,
+        "maxOrbits": 0.5,
+        "noSkipToFreefall": false,
+        "forcedBrakingStartUT": 24604379.929958653
+      },
+      "worker": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "worker_result",
+        "submissionId": 180,
+        "wallTimestamp": 4082056150,
+        "simulationElapsedMs": 0.38930000000000003,
+        "outcome": "LANDED",
+        "staleGeneration": false,
+        "complete": true,
+        "exceptionType": null,
+        "steps": 142,
+        "inputUT": 24603456.768967465,
+        "endUT": 24604463.05961682,
+        "virtualBrakeUT": 24604379.929958653,
+        "forcedBrakeUT": 24604379.929958653,
+        "start": [
+          -0.1332941477289825,
+          68.2442152539367,
+          202836.62822247675,
+          24604379.929958653
+        ],
+        "simulatorEnd": [
+          -0.23230146727524856,
+          73.81789398848818,
+          200491.55057058198,
+          24604463.05961682
+        ],
+        "simulatorEndVelocity": [
+          -0.46311082980359036,
+          -154.65566978941823,
+          67.352229543235,
+          24604463.05961682
+        ],
+        "endSurfaceSpeed": 60.86427188563208,
+        "virtualDeltaV": 540.6105148167246,
+        "trajectoryStart": [
+          -0.1332941477289825,
+          68.2442152539367,
+          202836.62822247675,
+          24604379.929958653
+        ],
+        "trajectorySamples": 121
+      },
+      "resolved": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "resolved_result",
+        "submissionId": 180,
+        "processUT": 24603456.828967463,
+        "wallTimestamp": 4082313402,
+        "currentGeneration": 1,
+        "phase": "DeorbitBurn",
+        "disposition": "candidate_not_selected",
+        "outcome": "LANDED",
+        "simulatorLanded": true,
+        "terrainContactConfirmed": false,
+        "resolvedEnd": [
+          -0.23230146727524856,
+          73.81789398848818,
+          200491.55057058198,
+          24604463.05961682
+        ],
+        "resolvedEndASL": 0,
+        "terrainProfileApplied": false,
+        "terrainProfileStartIndex": -1,
+        "terrainProfileSampleCount": 0,
+        "terrainContactIndex": -1,
+        "terrainContactASL": null,
+        "terrainQueryCount": 0,
+        "terrainQueryElapsedMs": 0,
+        "terrainSamples": null
+      },
+      "published": null
+    },
+    {
+      "submissionId": 181,
+      "submission": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "submission",
+        "submissionId": 181,
+        "wallTimestamp": 4082008715,
+        "wallTimestampFrequency": 10000000,
+        "kind": "forced_candidate",
+        "generation": 1,
+        "inputUT": 24603456.768967465,
+        "captureEpochUT": 24603456.808967464,
+        "phase": "DeorbitBurn",
+        "body": "Mun",
+        "bodyRadius": 200000,
+        "bodyMu": 65138397520.78069,
+        "bodyGeeASL": 0.1660567000983534,
+        "rotationPeriod": 138984.37657447223,
+        "angularVelocity": [
+          0,
+          -4.520785330006396e-05,
+          0
+        ],
+        "bodyAxis0": [
+          -0.24958996806572017,
+          0,
+          0.9683516137441776
+        ],
+        "bodyAxis90": [
+          -0.9683516137441776,
+          0,
+          -0.24958996806572012
+        ],
+        "bodyAxisNorth": [
+          -1.5282473037180257e-17,
+          1,
+          5.929247694626362e-17
+        ],
+        "positionBCI": [
+          169119.97759942123,
+          3204.0130791774627,
+          147215.54897786683
+        ],
+        "velocityBCI": [
+          -344.2340528178373,
+          5.522923460620535,
+          393.87087909277227
+        ],
+        "mass": 79.40477127761551,
+        "thrustAvailable": 640.0000548835449,
+        "thrustMinimum": 0,
+        "throttleFixedLimit": 1,
+        "limitedMaxThrustAcceleration": 8.059969754789321,
+        "maxEngineResponseTime": 0,
+        "targetLatitude": 0.6741666666666666,
+        "targetLongitude": 23.473055555555554,
+        "targetTerrainASL": 492.18766502593644,
+        "targetTerrainQueryElapsedMs": 0.0088,
+        "policy": "SafeDescentSpeedPolicy",
+        "decelEndASL": 692.1876650259364,
+        "probableLandingSiteASL": 492.18766502593644,
+        "maxThrustAcceleration": 8.059969754789321,
+        "parachuteMultiplier": 0,
+        "dt": 0.2,
+        "minDt": 0.019999999552965164,
+        "maxOrbits": 0.5,
+        "noSkipToFreefall": false,
+        "forcedBrakingStartUT": 24604511.81010025
+      },
+      "worker": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "worker_result",
+        "submissionId": 181,
+        "wallTimestamp": 4082058890,
+        "simulationElapsedMs": 0.2597,
+        "outcome": "LANDED",
+        "staleGeneration": false,
+        "complete": true,
+        "exceptionType": null,
+        "steps": 89,
+        "inputUT": 24603456.768967465,
+        "endUT": 24604513.812600214,
+        "virtualBrakeUT": 24604511.81010025,
+        "forcedBrakeUT": 24604511.81010025,
+        "start": [
+          -0.4991353520386055,
+          89.71771261856567,
+          200516.56026691818,
+          24604511.81010025
+        ],
+        "simulatorEnd": [
+          -0.504316539868483,
+          90.04728656641815,
+          200492.15741682946,
+          24604513.812600214
+        ],
+        "simulatorEndVelocity": [
+          -0.8746266631630063,
+          -178.760175495662,
+          585.2182223124412,
+          24604513.812600214
+        ],
+        "endSurfaceSpeed": 576.157819738244,
+        "virtualDeltaV": 0,
+        "trajectoryStart": [
+          -0.4991353520386055,
+          89.71771261856567,
+          200516.56026691818,
+          24604511.81010025
+        ],
+        "trajectorySamples": 82
+      },
+      "resolved": {
+        "schemaVersion": 1,
+        "captureSession": "a398605cbd7942b0837d4fe4a3493229",
+        "recordType": "resolved_result",
+        "submissionId": 181,
+        "processUT": 24603456.828967463,
+        "wallTimestamp": 4082313581,
+        "currentGeneration": 1,
+        "phase": "DeorbitBurn",
+        "disposition": "candidate_not_selected",
+        "outcome": "LANDED",
+        "simulatorLanded": true,
+        "terrainContactConfirmed": false,
+        "resolvedEnd": [
+          -0.504316539868483,
+          90.04728656641815,
+          200492.15741682946,
+          24604513.812600214
+        ],
+        "resolvedEndASL": 0,
+        "terrainProfileApplied": false,
+        "terrainProfileStartIndex": -1,
+        "terrainProfileSampleCount": 0,
+        "terrainContactIndex": -1,
+        "terrainContactASL": null,
+        "terrainQueryCount": 0,
+        "terrainQueryElapsedMs": 0,
+        "terrainSamples": null
+      },
+      "published": null
+    }
+  ]
+}

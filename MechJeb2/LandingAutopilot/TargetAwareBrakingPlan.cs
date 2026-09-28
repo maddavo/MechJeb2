@@ -4,12 +4,24 @@ using System.Collections.Generic;
 namespace MuMech.Landing
 {
     /// <summary>
-    /// Selects a safe braking-start candidate by its signed downrange powered
-    /// touchdown error. Negative is short; positive is long. The caller owns
+    /// Evaluates braking-start candidates by signed downrange handoff error.
+    /// Negative is short; positive is long. The caller owns
     /// the trajectory simulations that produce the candidates.
     /// </summary>
     public static class TargetAwareBrakingPlan
     {
+        public readonly struct Bracket
+        {
+            public readonly Candidate Earlier;
+            public readonly Candidate Later;
+
+            public Bracket(Candidate earlier, Candidate later)
+            {
+                Earlier = earlier;
+                Later = later;
+            }
+        }
+
         public readonly struct Candidate
         {
             public readonly double StartUT;
@@ -53,6 +65,46 @@ namespace MuMech.Landing
             }
 
             return haveSelection;
+        }
+
+        // Brake time controls signed downrange, not crossrange. Only two valid
+        // adjacent time samples that straddle zero establish a refinement interval.
+        // An unsafe or incomplete sample between them may indicate a terrain
+        // branch discontinuity, so it must not be skipped to fabricate a bracket.
+        // Candidate order is irrelevant to callers; sorting a copy leaves their
+        // result ownership and original order unchanged.
+        public static bool TryFindDownrangeBracket(IList<Candidate> candidates, out Bracket bracket)
+        {
+            bracket = default(Bracket);
+            if (candidates == null || candidates.Count < 2)
+                return false;
+
+            var ordered = new List<Candidate>(candidates);
+            ordered.Sort((left, right) => left.StartUT.CompareTo(right.StartUT));
+
+            bool found = false;
+            double bestResidual = double.PositiveInfinity;
+            for (int i = 1; i < ordered.Count; ++i)
+            {
+                Candidate earlier = ordered[i - 1];
+                Candidate later = ordered[i];
+                if (!earlier.Safe || !later.Safe || !Finite(earlier.StartUT) || !Finite(later.StartUT) ||
+                    !Finite(earlier.DownrangeError) || !Finite(later.DownrangeError) ||
+                    !Finite(earlier.CrossrangeError) || !Finite(later.CrossrangeError) ||
+                    earlier.StartUT >= later.StartUT ||
+                    !((earlier.DownrangeError <= 0 && later.DownrangeError >= 0) ||
+                      (earlier.DownrangeError >= 0 && later.DownrangeError <= 0)))
+                    continue;
+
+                double residual = Math.Max(Math.Abs(earlier.DownrangeError), Math.Abs(later.DownrangeError));
+                if (!found || residual < bestResidual)
+                {
+                    bracket = new Bracket(earlier, later);
+                    bestResidual = residual;
+                    found = true;
+                }
+            }
+            return found;
         }
 
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);

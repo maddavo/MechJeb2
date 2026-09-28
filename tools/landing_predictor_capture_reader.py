@@ -16,7 +16,7 @@ SCHEMA_VERSION = 1
 RECORD_TYPES = {
     "submission", "worker_result", "worker_exception", "resolved_result",
     "published", "capture_error", "submission_abandoned", "discarded", "lifecycle",
-    "selection_decision",
+    "selection_decision", "target_aware_validation", "target_aware_worker_stage",
 }
 INPUT_NUMBERS = (
     "inputUT", "captureEpochUT", "bodyRadius", "bodyMu", "bodyGeeASL",
@@ -60,6 +60,11 @@ def _validate_submission(record, line_number):
         raise CaptureError(f"line {line_number}: missing predictor settings")
     if record["kind"] == "forced_candidate" and not _finite(record["forcedBrakingStartUT"]):
         raise CaptureError(f"line {line_number}: forced candidate needs a finite brake UT")
+    if record["kind"] == "target_aware_transaction" and (
+            not _finite(record.get("minimumTerrainASL")) or
+            not _finite(record.get("maximumTerrainASL")) or
+            record["minimumTerrainASL"] > record["maximumTerrainASL"]):
+        raise CaptureError(f"line {line_number}: target-aware terrain bounds missing")
     if record["forcedBrakingStartUT"] is not None and not _finite(record["forcedBrakingStartUT"]):
         raise CaptureError(f"line {line_number}: invalid forced brake UT")
     if not isinstance(record["noSkipToFreefall"], bool):
@@ -101,11 +106,39 @@ def _validate_result(record, line_number):
                 raise CaptureError(f"line {line_number}: inconsistent terrain contact")
 
 
+def _validate_target_aware(record, line_number):
+    if type(record.get("generation")) is not int or type(record.get("sequence")) is not int:
+        raise CaptureError(f"line {line_number}: missing target-aware lineage")
+    if not _finite(record.get("processUT")) or not record.get("stage"):
+        raise CaptureError(f"line {line_number}: missing target-aware stage or process UT")
+    for name in ("terrainResolved", "clearPath", "terminalNecessaryBoundPasses"):
+        if not isinstance(record.get(name), bool):
+            raise CaptureError(f"line {line_number}: invalid target-aware {name}")
+    for name in ("terrainQueryCount",):
+        if type(record.get(name)) is not int or record[name] < 0:
+            raise CaptureError(f"line {line_number}: invalid target-aware {name}")
+    for name in ("terrainQueryElapsedMs", "workerElapsedMs"):
+        if not _finite(record.get(name)) or record[name] < 0:
+            raise CaptureError(f"line {line_number}: invalid target-aware {name}")
+    if record["stage"] == "Complete":
+        for name in ("ballisticContactUT", "virtualBrakeUT", "signedDownrangeError",
+                     "crossrangeError", "timingInterval", "timingDistanceEstimate",
+                     "minimumSampledClearance", "handoffClearance", "localTerrainASL",
+                     "endVerticalSpeed", "endSurfaceSpeed", "transitionVerticalSpeed",
+                     "transitionSurfaceSpeed", "optimisticStoppingDistance"):
+            if not _finite(record.get(name)):
+                raise CaptureError(f"line {line_number}: complete target-aware result lacks {name}")
+        if not (record["terrainResolved"] and record["clearPath"] and
+                record["terminalNecessaryBoundPasses"]):
+            raise CaptureError(f"line {line_number}: complete target-aware result is not validated")
+
+
 def read_capture(path, allow_incomplete=False):
     """Return a replay-input document; never silently repair malformed capture."""
     cases = {}
     capture_errors = []
     lifecycle = []
+    events = []
     record_count = 0
     with Path(path).open(encoding="utf-8-sig") as stream:
         for line_number, line in enumerate(stream, 1):
@@ -122,6 +155,7 @@ def read_capture(path, allow_incomplete=False):
             if not isinstance(session, str) or not session or kind not in RECORD_TYPES:
                 raise CaptureError(f"line {line_number}: missing session or invalid record type")
             record_count += 1
+            events.append({"lineNumber": line_number, **record})
             if kind == "capture_error":
                 capture_errors.append({"line": line_number, **record})
                 continue
@@ -135,16 +169,25 @@ def read_capture(path, allow_incomplete=False):
             case = cases.setdefault(key, {"captureSession": session, "submissionId": submission_id,
                                           "submissionLine": None,
                                           "submission": None, "worker": None, "resolved": None,
-                                          "published": None, "discarded": [], "decisions": []})
+                                          "published": None, "validation": None,
+                                          "discarded": [], "decisions": [], "workerStages": []})
             if kind == "discarded":
                 case["discarded"].append(record)
                 continue
             if kind == "selection_decision":
                 case["decisions"].append(record)
                 continue
+            if kind == "target_aware_worker_stage":
+                if record.get("stage") not in ("Ballistic", "Coarse", "Refinement") or \
+                        not _finite(record.get("processUT")) or \
+                        not _finite(record.get("elapsedMs")) or record["elapsedMs"] < 0 or \
+                        type(record.get("outputCount")) is not int or record["outputCount"] < 0:
+                    raise CaptureError(f"line {line_number}: invalid target-aware worker stage")
+                case["workerStages"].append(record)
+                continue
             slot = {"submission": "submission", "worker_result": "worker",
                     "worker_exception": "worker", "submission_abandoned": "worker",
-                    "resolved_result": "resolved",
+                    "resolved_result": "resolved", "target_aware_validation": "validation",
                     "published": "published"}[kind]
             if case[slot] is not None:
                 raise CaptureError(f"line {line_number}: duplicate {slot} for {session}/{submission_id}")
@@ -153,6 +196,8 @@ def read_capture(path, allow_incomplete=False):
                 case["submissionLine"] = line_number
             elif kind in ("worker_result", "resolved_result"):
                 _validate_result(record, line_number)
+            elif kind == "target_aware_validation":
+                _validate_target_aware(record, line_number)
             elif kind == "published" and ("phase" not in record or
                                            type(record.get("currentGeneration")) is not int or
                                            type(record.get("resultVersion")) is not int or
@@ -173,6 +218,10 @@ def read_capture(path, allow_incomplete=False):
             gaps.append(f"{key}: result without submission")
         if case["worker"] is None:
             gaps.append(f"{key}: submission without worker completion")
+        if case["submission"] is not None and \
+                case["submission"].get("kind") == "target_aware_transaction" and \
+                case["validation"] is None:
+            gaps.append(f"{key}: target-aware transaction without validation")
         if case["published"] is not None and case["resolved"] is None:
             gaps.append(f"{key}: publication without flight-thread resolution")
         if case["published"] is not None and case["worker"] is not None and \
@@ -197,6 +246,7 @@ def read_capture(path, allow_incomplete=False):
         "gaps": gaps,
         "captureErrors": capture_errors,
         "lifecycle": lifecycle,
+        "events": events,
         "cases": ordered,
     }
 

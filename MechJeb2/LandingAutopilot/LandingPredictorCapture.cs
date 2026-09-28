@@ -25,29 +25,43 @@ namespace MuMech.Landing
             private Snapshot(string fields) => Fields = fields;
 
             internal static Snapshot Create(Orbit orbit, double inputUT, CelestialBody body, VesselState vesselState,
-                double targetLatitude, double targetLongitude, string phase, long generation)
+                double targetLatitude, double targetLongitude, string phase, long generation,
+                AirlessTargetAwareSnapshot? activeSnapshot = null,
+                double? activeTargetTerrainQueryMs = null)
             {
                 // All KSP/Unity queries happen on the flight thread, once per predictor submission batch.
-                double epoch = Planetarium.GetUniversalTime();
-                Vector3d position = orbit.WorldBCIPositionAtUT(inputUT);
-                Vector3d velocity = orbit.WorldOrbitalVelocityAtUT(inputUT);
-                var terrainTimer = Stopwatch.StartNew();
-                double targetTerrainASL = body.TerrainAltitude(targetLatitude, targetLongitude);
-                terrainTimer.Stop();
+                double epoch = activeSnapshot?.EpochUT ?? Planetarium.GetUniversalTime();
+                Vector3d position = activeSnapshot?.Position ?? orbit.WorldBCIPositionAtUT(inputUT);
+                Vector3d velocity = activeSnapshot?.Velocity ?? orbit.WorldOrbitalVelocityAtUT(inputUT);
+                var terrainTimer = new Stopwatch();
+                double targetTerrainASL;
+                double terrainQueryMs;
+                if (activeSnapshot.HasValue)
+                {
+                    targetTerrainASL = activeSnapshot.Value.TargetTerrainASL;
+                    terrainQueryMs = activeTargetTerrainQueryMs ?? 0;
+                }
+                else
+                {
+                    terrainTimer.Start();
+                    targetTerrainASL = body.TerrainAltitude(targetLatitude, targetLongitude);
+                    terrainTimer.Stop();
+                    terrainQueryMs = terrainTimer.Elapsed.TotalMilliseconds;
+                }
                 var fields = new StringBuilder(950);
                 fields.Append(",\"generation\":").Append(generation);
                 fields.Append(",\"inputUT\":").Append(Number(inputUT));
                 fields.Append(",\"captureEpochUT\":").Append(Number(epoch));
                 fields.Append(",\"phase\":").Append(Quote(phase));
                 fields.Append(",\"body\":").Append(Quote(body.bodyName));
-                fields.Append(",\"bodyRadius\":").Append(Number(body.Radius));
-                fields.Append(",\"bodyMu\":").Append(Number(body.gravParameter));
-                fields.Append(",\"bodyGeeASL\":").Append(Number(body.GeeASL));
-                fields.Append(",\"rotationPeriod\":").Append(Number(body.rotationPeriod));
-                fields.Append(",\"angularVelocity\":").Append(Vector(body.angularVelocity));
-                fields.Append(",\"bodyAxis0\":").Append(Vector(body.GetSurfaceNVector(0, 0)));
-                fields.Append(",\"bodyAxis90\":").Append(Vector(body.GetSurfaceNVector(0, 90)));
-                fields.Append(",\"bodyAxisNorth\":").Append(Vector(body.GetSurfaceNVector(90, 0)));
+                fields.Append(",\"bodyRadius\":").Append(Number(activeSnapshot?.BodyRadius ?? body.Radius));
+                fields.Append(",\"bodyMu\":").Append(Number(activeSnapshot?.BodyMu ?? body.gravParameter));
+                fields.Append(",\"bodyGeeASL\":").Append(Number(activeSnapshot?.BodyGeeASL ?? body.GeeASL));
+                fields.Append(",\"rotationPeriod\":").Append(Number(activeSnapshot?.RotationPeriod ?? body.rotationPeriod));
+                fields.Append(",\"angularVelocity\":").Append(Vector(activeSnapshot?.AngularVelocity ?? body.angularVelocity));
+                fields.Append(",\"bodyAxis0\":").Append(Vector(activeSnapshot?.Axis0 ?? body.GetSurfaceNVector(0, 0)));
+                fields.Append(",\"bodyAxis90\":").Append(Vector(activeSnapshot?.Axis90 ?? body.GetSurfaceNVector(0, 90)));
+                fields.Append(",\"bodyAxisNorth\":").Append(Vector(activeSnapshot?.AxisNorth ?? body.GetSurfaceNVector(90, 0)));
                 fields.Append(",\"positionBCI\":").Append(Vector(position));
                 fields.Append(",\"velocityBCI\":").Append(Vector(velocity));
                 fields.Append(",\"mass\":").Append(Number(vesselState.Mass));
@@ -59,7 +73,12 @@ namespace MuMech.Landing
                 fields.Append(",\"targetLatitude\":").Append(Number(targetLatitude));
                 fields.Append(",\"targetLongitude\":").Append(Number(targetLongitude));
                 fields.Append(",\"targetTerrainASL\":").Append(Number(targetTerrainASL));
-                fields.Append(",\"targetTerrainQueryElapsedMs\":").Append(Number(terrainTimer.Elapsed.TotalMilliseconds));
+                fields.Append(",\"targetTerrainQueryElapsedMs\":").Append(Number(terrainQueryMs));
+                if (activeSnapshot.HasValue)
+                {
+                    fields.Append(",\"minimumTerrainASL\":").Append(Number(activeSnapshot.Value.MinimumTerrainASL));
+                    fields.Append(",\"maximumTerrainASL\":").Append(Number(activeSnapshot.Value.MaximumTerrainASL));
+                }
                 return new Snapshot(fields.ToString());
             }
         }
@@ -165,6 +184,72 @@ namespace MuMech.Landing
                   ",\"recordType\":\"selection_decision\",\"submissionId\":" + id +
                   ",\"decision\":" + Quote(decision) +
                   ",\"comparedSubmissionId\":" + comparedSubmissionId + "}");
+        }
+
+        // One summary per active transaction. Clearance is deliberately separate
+        // from the legacy terrain-contact fields in resolved_result.
+        internal static void TargetAwareValidation(long id, TargetAwareAirlessPlanner planner,
+            double workerMilliseconds)
+        {
+            if (id == 0 || planner == null) return;
+            try
+            {
+                var selected = planner.SelectedOutput;
+                var terrain = planner.SelectedTerrain;
+                var handoff = planner.TerminalHandoff;
+                var line = new StringBuilder(700);
+                line.Append("{\"schemaVersion\":").Append(SchemaVersion)
+                    .Append(",\"captureSession\":").Append(Quote(SessionId))
+                    .Append(",\"recordType\":\"target_aware_validation\",\"submissionId\":").Append(id)
+                    .Append(",\"processUT\":").Append(Number(Planetarium.GetUniversalTime()))
+                    .Append(",\"generation\":").Append(planner.Generation)
+                    .Append(",\"sequence\":").Append(planner.Sequence)
+                    .Append(",\"stage\":").Append(Quote(planner.Stage.ToString()))
+                    .Append(",\"failure\":").Append(Quote(planner.Failure))
+                    .Append(",\"ballisticContactUT\":").Append(Number(planner.BallisticContactUT))
+                    .Append(",\"ballisticContact\":").Append(planner.BallisticContactUT > 0 ?
+                        Absolute(planner.BallisticContact) : "null")
+                    .Append(",\"virtualBrakeUT\":").Append(Number(selected?.BrakeUT ?? double.NaN))
+                    .Append(",\"signedDownrangeError\":").Append(Number(selected == null ? double.NaN : planner.SignedDownrangeError))
+                    .Append(",\"crossrangeError\":").Append(Number(selected == null ? double.NaN : planner.CrossrangeError))
+                    .Append(",\"timingInterval\":").Append(Number(selected == null ? double.NaN : planner.TimingInterval))
+                    .Append(",\"timingDistanceEstimate\":").Append(Number(selected == null ? double.NaN : planner.TimingDistanceEstimate))
+                    .Append(",\"terrainResolved\":").Append(terrain != null && terrain.Resolved ? "true" : "false")
+                    .Append(",\"clearPath\":").Append(terrain != null && terrain.ClearPath ? "true" : "false")
+                    .Append(",\"minimumSampledClearance\":").Append(Number(terrain?.MinimumSampledClearance ?? double.NaN))
+                    .Append(",\"handoffClearance\":").Append(Number(terrain?.HandoffClearance ?? double.NaN))
+                    .Append(",\"localTerrainASL\":").Append(Number(terrain?.LocalTerrainASL ?? double.NaN))
+                    .Append(",\"endVerticalSpeed\":").Append(Number(selected == null ? double.NaN : handoff.EndVerticalSpeed))
+                    .Append(",\"endSurfaceSpeed\":").Append(Number(selected == null ? double.NaN : handoff.EndSurfaceSpeed))
+                    .Append(",\"transitionVerticalSpeed\":").Append(Number(selected == null ? double.NaN : handoff.ControllerTransitionVerticalSpeed))
+                    .Append(",\"transitionSurfaceSpeed\":").Append(Number(selected == null ? double.NaN : handoff.ControllerTransitionSurfaceSpeed))
+                    .Append(",\"optimisticStoppingDistance\":").Append(Number(selected == null ? double.NaN : handoff.OptimisticVerticalStoppingDistance))
+                    .Append(",\"terminalNecessaryBoundPasses\":").Append(handoff.NecessaryControlBoundPasses ? "true" : "false")
+                    .Append(",\"terrainQueryCount\":").Append(planner.TerrainQueryCount)
+                    .Append(",\"terrainQueryElapsedMs\":").Append(Number(planner.TerrainQueryMilliseconds))
+                    .Append(",\"workerElapsedMs\":").Append(Number(workerMilliseconds))
+                    .Append('}');
+                Write(line.ToString());
+            }
+            catch (Exception) { /* Diagnostic capture cannot affect publication. */ }
+        }
+
+        internal static void TargetAwareWorkerStage(long id, string stage, double elapsedMilliseconds,
+            int outputCount, string exceptionType)
+        {
+            if (id == 0) return;
+            try
+            {
+                Write("{\"schemaVersion\":" + SchemaVersion + ",\"captureSession\":" + Quote(SessionId) +
+                      ",\"recordType\":\"target_aware_worker_stage\",\"submissionId\":" + id +
+                      ",\"processUT\":" + Number(Planetarium.GetUniversalTime()) +
+                      ",\"wallTimestamp\":" + Stopwatch.GetTimestamp() +
+                      ",\"stage\":" + Quote(stage) +
+                      ",\"elapsedMs\":" + Number(elapsedMilliseconds) +
+                      ",\"outputCount\":" + outputCount +
+                      ",\"exceptionType\":" + Quote(exceptionType) + "}");
+            }
+            catch (Exception) { /* Diagnostic capture cannot affect worker completion. */ }
         }
 
         internal static void Lifecycle(string action, long generation, long resultVersion, long activeSubmissionId)
