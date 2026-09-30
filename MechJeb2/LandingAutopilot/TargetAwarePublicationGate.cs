@@ -68,6 +68,15 @@ namespace MuMech.Landing
 
     internal static class TargetAwarePublicationGate
     {
+        internal static bool CanSeedSearch(TargetAwareResultLineage? committed,
+            bool directForecast, long currentGeneration, object currentBody,
+            double targetLatitude, double targetLongitude, double targetTerrainASL,
+            double currentUT, double maximumSnapshotAge) =>
+            !directForecast && committed.HasValue &&
+            Check(committed.Value, null, currentGeneration, currentBody,
+                targetLatitude, targetLongitude, targetTerrainASL,
+                currentUT, maximumSnapshotAge, 0) == TargetAwarePublicationDecision.Accept;
+
         internal static TargetAwarePublicationDecision Check(TargetAwareResultLineage candidate,
             TargetAwareResultLineage? committed, long currentGeneration, object currentBody,
             double currentTargetLatitude, double currentTargetLongitude, double currentTargetTerrainASL,

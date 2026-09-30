@@ -739,6 +739,19 @@ namespace MuMech
                 double targetTerrainASL = body.TerrainAltitude(Core.Target.targetLatitude,
                     Core.Target.targetLongitude);
                 targetTerrainTimer.Stop();
+                if (committedTargetAware.HasValue &&
+                    committedTargetAware.Value.TargetTerrainASL != targetTerrainASL)
+                    InvalidateCommittedTargetAware("target_aware_target_terrain_changed");
+                // Reuse only a fresh committed transaction's search seed.
+                // State, thrust, mass and every path are simulated anew below.
+                bool reuseBrakingSeed = TargetAwarePublicationGate.CanSeedSearch(
+                    committedTargetAware, directForecast, Interlocked.Read(ref predictionGeneration), body,
+                    Core.Target.targetLatitude, Core.Target.targetLongitude, targetTerrainASL,
+                    now, TargetAwareMaximumSnapshotAgeSeconds) &&
+                    result != null && result.ForecastKind == ReentrySimulation.LandingForecastKind.LandableForecast &&
+                    !double.IsNaN(result.InputForcedBrakingStartUT) &&
+                    now >= result.InputUT && now - result.InputUT <= TargetAwareMaximumSnapshotAgeSeconds;
+                double previousBrakeUT = reuseBrakingSeed ? result.InputForcedBrakingStartUT : double.NaN;
                 // V1 Beta derives its airless handoff height from the published
                 // endpoint. Before the first valid result that live value is
                 // sea level; a prospective forecast must seed the eventual
@@ -746,13 +759,10 @@ namespace MuMech
                 // it again against the forecast endpoint before publication.
                 double activeDecelEndASL = directForecast ?
                     Core.Landing.DecelerationEndAltitude() :
-                    targetTerrainASL + 200;
+                    (reuseBrakingSeed ? result.InputProbableLandingSiteASL : targetTerrainASL) + 200;
                 double maximumThrustAcceleration = VesselState.LimitedMaxThrustAcceleration;
                 var activePolicy = new SafeDescentSpeedPolicy(body.Radius + activeDecelEndASL,
                     body.GeeASL * 9.81, maximumThrustAcceleration);
-                if (committedTargetAware.HasValue &&
-                    committedTargetAware.Value.TargetTerrainASL != targetTerrainASL)
-                    InvalidateCommittedTargetAware("target_aware_target_terrain_changed");
                 var rawSnapshot = new AirlessTargetAwareSnapshot(inputUT, now,
                     body.Radius, body.gravParameter, body.GeeASL, body.rotationPeriod,
                     Core.Target.targetLatitude, Core.Target.targetLongitude, targetTerrainASL,
@@ -790,7 +800,8 @@ namespace MuMech
                     Interlocked.Read(ref predictionGeneration), ++targetAwareSequence, body,
                     (latitude, longitude) => body.TerrainAltitude(latitude, longitude),
                     Math.Max(200, body.Radius * 0.0005), TargetAwareTerrainSamplesPerTick,
-                    TargetAwareMaximumTerrainQueries, 1, directForecast, targetAwareTerrainCache);
+                    TargetAwareMaximumTerrainQueries, 1, directForecast, targetAwareTerrainCache,
+                    previousBrakeUT);
                 activeTargetAware = planner;
                 activeTargetAwareOrbit = orbitCopy;
                 targetAwareWorkerMilliseconds = 0;

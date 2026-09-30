@@ -3,12 +3,12 @@
 **Reviewed:** 2026-09-27; `design/landing-guidance-v2` at `8db84cf3`
 **Reference only:** V1 Beta `d8ac3dd5` still has the Mun early-braking fault.
 **Status:** **V1 Gamma**, designated after Dave's successful 30 September Mun
-landing. The demand-loaded spatial-reuse build supplied visible predictions
-during deorbit and completed landing. The saved landed position is 888.58 m
-west of the target. Deorbit publication cadence remains inadequate: median
-4.96 seconds, maximum 9.98 seconds. Dave observed deorbit overshoot and no course
-correction, consistent with the captured endpoint crossing in a 2,056 m update
-and direct transition to DecelerationBurn. See
+landing (888.58 m west). Its two-Hz follow-up, `v1-gamma-two-hz-20260930`,
+subsequently landed **3.40 m** from the target. Captured deorbit publications
+had a median 0.30-second interval, with twenty gaps over half a second and a
+maximum 2.50-second gap; braking publications were 0.26 seconds apart.
+The continuity repair below has passed offline acceptance and awaits a new
+flight. The original Gamma flight and its slow cadence are preserved in
 [the Gamma flight record](LandingGuidanceV1-Gamma-2026-09-30.md).
 The earlier exact-coordinate-cache DLL failed its Mun deorbit test.
 The binding integrated-system and corridor-reuse amendment immediately below
@@ -18,6 +18,63 @@ plan and V1 Beta control boundary; it does not replace that plan or authorise ne
 guidance, controller, UI, or actuator behaviour.
 
 ### 30 September implementation: moving-flight reuse and local terrain feedback
+
+**Post-Gamma continuity amendment (items 1 and 2 approved by Dave).** The
+two-Hz DLL landed 3.40 m from the target, but its captured deorbit sequence
+contained ten endpoint reversals. A pair of successive forecasts changed the
+executable braking reference from 76 to 239 seconds ahead after candidate
+rejection, producing a 9.7 km endpoint reversal. The repair changes predictor
+search order and initialization only, preserving the successful controller,
+UI, publication ownership and all terrain/throttle/terminal acceptance checks.
+
+1. A fresh committed landing transaction supplies its absolute brake-search
+   time and converged policy terrain height as a numerical seed. The next
+   transaction takes a new coherent physical snapshot and re-simulates every
+   candidate; no prior path, endpoint or validity decision is reused. Seed
+   eligibility requires the existing committed target/body/generation ownership,
+   unchanged target terrain and the existing ten-second age limit. Target
+   invalidation and post-correction reset remove that ownership. Direct braking
+   forecasts and terminal phases do not run this search.
+2. Recheck the seed and eight nearby times, using the existing coarse/refinement
+   grid spacing to define the neighbourhood. Clamp times to the new snapshot's
+   executable search window. Fully validate the nearest candidate first, with
+   an earlier-time tie-break. Safety screening is followed by fresh selected
+   coast, braking and complete terminal validation; a marginal provisional
+   classification cannot alone switch to a distant braking branch.
+3. If the neighbourhood has no fully valid solution, run the existing broad
+   search on the same snapshot, preserving total terrain/query/sample budgets.
+   Its candidate order prefers proximity to the previous solution, but every
+   candidate must independently pass all original gates. A failed or incomplete
+   search still cannot replace the committed result. No endpoint averaging or
+   forced movement toward the target is introduced.
+
+Acceptance uses the successful Gamma capture's 139 advancing deorbit inputs
+and actual captured PQS samples with explicitly bounded offline interpolation.
+Compare broad and continuity searches on identical current states and terrain:
+valid-forecast availability must not decrease; endpoint reversals must decrease;
+the final near-target forecast must stay within the existing 200 m gate. Check
+local failure invokes broad fallback, no seed is used after context/age
+invalidation or during direct braking, and current terrain can invalidate a
+previously valid seed. The existing publication, handoff, terminal stopping,
+terrain-budget, teardown and cadence regressions remain required. This replay
+measures predictor mechanics on a recorded trajectory; a new KSP flight measures
+the controller's changed responses to those forecasts.
+
+**Completed offline evidence:** 86 focused landing tests and 32 capture-reader
+tests passed. On the 139 recorded Gamma inputs, broad versus continuity search
+produced 136 versus 137 valid forecasts and ten versus three endpoint reversals
+over one metre. Seven neighbourhoods invoked broad fallback. Final offline
+forecast miss was 46.68 m, within the existing 200 m gate. The terrain oracle's
+maximum distance to a recorded sample was 206 m; this is bounded interpolation,
+not a complete terrain map or a future landing-accuracy claim. One continuity
+refresh exhausted the unchanged 1,536-query cap; it remained non-publishable.
+The replay does not establish perfectly monotone predictions or zero gaps.
+Focused tests also prove fresh re-simulation, direct-braking seed exclusion,
+age/context/incomplete-result rejection, changed unresolved terrain rejection,
+and fully valid broad fallback without resetting budgets. Cadence replay with
+continuity measured advancing publication intervals of 0.34, 0.32 and 0.25 s;
+cold startup was 1.18 s. Live controller, UI, simulation model and actuator
+sources have zero diff from the successful two-Hz baseline.
 
 **Post-Gamma cadence amendment (authorised by Dave).** Guidance needs at least
 two fresh complete forecasts per second during active prediction phases.

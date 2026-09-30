@@ -148,6 +148,28 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.Equal(10, committed.GetValueOrDefault().Sequence);
         }
 
+        [Fact]
+        public void ContinuitySeedRequiresFreshCompleteMatchingCommittedSearchForecast()
+        {
+            bool Eligible(TargetAwareResultLineage? prior, bool direct = false,
+                long generation = 1, double now = 105, double lat = 0.5, double terrain = 492) =>
+                TargetAwarePublicationGate.CanSeedSearch(prior, direct, generation, _mun,
+                    lat, 23, terrain, now, 10);
+            Assert.True(Eligible(Candidate(1, 100)));
+            Assert.False(Eligible(null));
+            Assert.False(Eligible(Candidate(1, 100), direct: true));
+            Assert.False(Eligible(Candidate(1, 100), generation: 2));
+            Assert.False(Eligible(Candidate(1, 100), now: 111));
+            Assert.False(Eligible(Candidate(1, 100), now: 99));
+            Assert.False(Eligible(Candidate(1, 100), lat: 0.6));
+            Assert.False(Eligible(Candidate(1, 100), terrain: 493));
+            Assert.False(Eligible(Candidate(1, 100, targetAware: false)));
+            Assert.False(Eligible(Candidate(1, 100, complete: false)));
+            Assert.False(Eligible(Candidate(1, 100, terrainResolved: false)));
+            Assert.False(Eligible(Candidate(1, 100, clearPath: false)));
+            Assert.False(Eligible(Candidate(1, 100, terminalNecessaryBoundPasses: false)));
+        }
+
         private TargetAwareResultLineage Candidate(long sequence, double inputUT,
             bool targetAware = true, bool complete = true, bool terrainResolved = true,
             bool clearPath = true, bool terminalNecessaryBoundPasses = true) =>

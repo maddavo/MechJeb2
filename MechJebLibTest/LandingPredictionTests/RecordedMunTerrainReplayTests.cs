@@ -71,19 +71,163 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
-        public void AdvancingCapturedDeorbitForecastsFitTwoHzDeliveryBudget()
+        public void GammaMovingDeorbitUsesFreshLocalSolutionsWithoutIncreasingReversals()
+        {
+            var terrain = new RecordedTerrain("Mun-gamma-demand-terrain.csv");
+            var body = new object();
+            var broadCache = new TargetAwareTerrainCache();
+            var localCache = new TargetAwareTerrainCache();
+            TargetAwareAirlessPlanner? prior = null;
+            double lastBroadMiss = double.NaN, lastLocalMiss = double.NaN;
+            int broadReversals = 0, localReversals = 0, broadValid = 0, localValid = 0,
+                localSearches = 0, fallbacks = 0;
+            double lastLocalMissToTarget = double.NaN;
+            foreach (var row in ReadRows("Mun-gamma-deorbit-inputs.csv"))
+            {
+                var snapshot = Snapshot(row);
+                var broad = new TargetAwareAirlessPlanner(snapshot, 1,
+                    (long)row["submissionId"], body, terrain.Height, 200, 512, 1536,
+                    1, false, broadCache);
+                broad.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(snapshot));
+                Run(broad, 512);
+                bool fresh = prior != null && snapshot.InputUT >= prior.Snapshot.InputUT &&
+                    snapshot.InputUT - prior.Snapshot.InputUT <=
+                        MechJebModuleLandingPredictions.TargetAwareMaximumSnapshotAgeSeconds;
+                var localSnapshot = fresh ? snapshot.WithV1LandingTerrain(prior!.SelectedPolicyTerrainASL) : snapshot;
+                var local = new TargetAwareAirlessPlanner(localSnapshot, 1,
+                    (long)row["submissionId"], body, terrain.Height, 200, 512, 1536,
+                    1, false, localCache, fresh ? prior!.SelectedOutput.BrakeUT : double.NaN);
+                local.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(localSnapshot));
+                Run(local, 512);
+                double Miss(TargetAwareAirlessPlanner p)
+                {
+                    var location = AirlessTargetAwareSimulation.ToAbsolute(
+                        p.NominalTerminalTerrain.Contact.Position, p.NominalTerminalTerrain.Contact.UT, p.Snapshot);
+                    double lat = location.Latitude * Math.PI / 180,
+                        targetLat = snapshot.TargetLatitude * Math.PI / 180;
+                    double h = Math.Pow(Math.Sin((lat - targetLat) / 2), 2) +
+                        Math.Cos(lat) * Math.Cos(targetLat) *
+                        Math.Pow(Math.Sin((location.Longitude - snapshot.TargetLongitude) * Math.PI / 360), 2);
+                    return 2 * snapshot.BodyRadius * Math.Asin(Math.Min(1, Math.Sqrt(h)));
+                }
+                if (broad.TerminalTouchdownValidated)
+                {
+                    double miss = Miss(broad);
+                    if (!double.IsNaN(lastBroadMiss) && miss > lastBroadMiss + 1) broadReversals++;
+                    lastBroadMiss = miss; broadValid++;
+                }
+                if (local.UsedLocalSearch) localSearches++;
+                if (local.BroadSearchFallback) fallbacks++;
+                if (local.TerminalTouchdownValidated)
+                {
+                    Assert.True(local.SelectedTerrain.ClearPath);
+                    Assert.True(local.TerminalHandoff.NecessaryControlBoundPasses);
+                    Assert.InRange(local.TerrainQueryCount, 1, 1536);
+                    double miss = Miss(local);
+                    if (!double.IsNaN(lastLocalMiss) && miss > lastLocalMiss + 1) localReversals++;
+                    lastLocalMiss = lastLocalMissToTarget = miss; localValid++;
+                    prior = local;
+                }
+                _output.WriteLine($"gamma input={row["submissionId"]} broad={broad.Stage}/{broad.Failure} " +
+                    $"local={local.Stage}/{local.Failure} seed={local.ContinuitySeedUT:F3} " +
+                    $"localSearch={local.UsedLocalSearch} fallback={local.BroadSearchFallback} " +
+                    $"brake={local.SelectedOutput?.BrakeUT:F3} miss={lastLocalMissToTarget:F2}");
+            }
+            _output.WriteLine($"Gamma replay broad/local valid={broadValid}/{localValid} " +
+                $"reversals={broadReversals}/{localReversals} localSearches={localSearches} " +
+                $"fallbacks={fallbacks} finalMiss={lastLocalMissToTarget:F2}m " +
+                $"oracleMaxDistance={terrain.MaximumDistance:F2}m");
+            Assert.True(localSearches > 0);
+            Assert.True(localValid >= broadValid);
+            Assert.True(localReversals < broadReversals);
+            Assert.InRange(lastLocalMissToTarget, 0, 200);
+        }
+
+        [Fact]
+        public void ContinuitySeedIsResimulatedAndTerminalDirectForecastExcludesSearch()
+        {
+            var snapshot = Snapshot(ReadRows("Mun-gamma-deorbit-inputs.csv").Last());
+            var terrain = new RecordedTerrain("Mun-gamma-demand-terrain.csv");
+            var body = new object();
+            var first = new TargetAwareAirlessPlanner(snapshot, 1, 1, body,
+                terrain.Height, 200, 512, 1536);
+            first.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(snapshot));
+            Run(first, 512);
+            Assert.True(first.TerminalTouchdownValidated);
+            var repeat = new TargetAwareAirlessPlanner(
+                snapshot.WithV1LandingTerrain(first.SelectedPolicyTerrainASL), 1, 2, body,
+                terrain.Height, 200, 512, 1536, previousBrakeUT: first.SelectedOutput.BrakeUT);
+            repeat.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(repeat.Snapshot));
+            Run(repeat, 512);
+            Assert.True(repeat.TerminalTouchdownValidated);
+            Assert.True(repeat.UsedLocalSearch);
+            Assert.False(repeat.BroadSearchFallback);
+            Assert.Equal(first.SelectedOutput.BrakeUT, repeat.SelectedOutput.BrakeUT);
+            Assert.NotSame(first.SelectedOutput, repeat.SelectedOutput);
+            Assert.True(repeat.SelectedTerrain.ClearPath);
+            var direct = new TargetAwareAirlessPlanner(snapshot, 1, 3, body,
+                terrain.Height, 200, 512, 1536, directForecast: true,
+                previousBrakeUT: first.SelectedOutput.BrakeUT);
+            Assert.True(double.IsNaN(direct.ContinuitySeedUT));
+            Assert.False(direct.UsedLocalSearch);
+        }
+
+        [Fact]
+        public void UnsafeLocalNeighborhoodFallsBackWithinOriginalTerrainBudget()
+        {
+            var snapshot = Snapshot(ReadRows("Mun-gamma-deorbit-inputs.csv").Last());
+            var terrain = new RecordedTerrain("Mun-gamma-demand-terrain.csv");
+            var planner = new TargetAwareAirlessPlanner(snapshot, 1, 1, new object(),
+                terrain.Height, 200, 512, 1536, previousBrakeUT: snapshot.InputUT + 10000);
+            planner.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(snapshot));
+            Run(planner, 512);
+            Assert.True(planner.UsedLocalSearch);
+            Assert.True(planner.BroadSearchFallback);
+            Assert.True(planner.TerminalTouchdownValidated, planner.Failure);
+            Assert.True(planner.SelectedTerrain.ClearPath);
+            Assert.InRange(planner.TerrainQueryCount, 1, 1536);
+        }
+
+        [Fact]
+        public void ChangedUnresolvedTerrainCannotReusePreviouslyValidTrajectory()
+        {
+            var snapshot = Snapshot(ReadRows("Mun-gamma-deorbit-inputs.csv").Last());
+            var terrain = new RecordedTerrain("Mun-gamma-demand-terrain.csv");
+            var first = new TargetAwareAirlessPlanner(snapshot, 1, 1, new object(),
+                terrain.Height, 200, 512, 1536);
+            first.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(snapshot));
+            Run(first, 512);
+            Assert.True(first.TerminalTouchdownValidated);
+            var changed = new TargetAwareAirlessPlanner(snapshot, 1, 2, first.BodyIdentity,
+                (lat, lon) => double.NaN, 200, 512, 1536,
+                previousBrakeUT: first.SelectedOutput.BrakeUT);
+            changed.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(snapshot));
+            Run(changed, 512);
+            Assert.Equal(TargetAwarePlannerStage.Failed, changed.Stage);
+            Assert.False(changed.TerminalTouchdownValidated);
+            Assert.Null(changed.SelectedOutput);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void AdvancingCapturedDeorbitForecastsFitTwoHzDeliveryBudget(bool continuity)
         {
             var terrain = new RecordedTerrain();
             var cache = new TargetAwareTerrainCache();
             var body = new object();
             int count = 0;
+            TargetAwareAirlessPlanner? prior = null;
             foreach (var row in ReadRows("Mun-d680-deorbit-inputs.csv"))
             {
                 var snapshot = Snapshot(row);
+                if (continuity && prior != null)
+                    snapshot = snapshot.WithV1LandingTerrain(prior.SelectedPolicyTerrainASL);
                 int samplesPerTick = MechJebModuleLandingPredictions.TargetAwareTerrainSamplesPerTick;
                 var planner = new TargetAwareAirlessPlanner(snapshot, 1,
                     (long)row["submissionId"], body, terrain.Height, 200,
-                    samplesPerTick, 1536, 1, false, cache);
+                    samplesPerTick, 1536, 1, false, cache,
+                    continuity && prior != null ? prior.SelectedOutput.BrakeUT : double.NaN);
                 double latency = RunAtFlightCadence(planner, snapshot.MinDt, samplesPerTick);
                 double publicationInterval = Math.Max(
                     MechJebModuleLandingPredictions.TargetAwareRefreshSeconds, latency);
@@ -95,6 +239,7 @@ namespace MechJebLibTest.LandingPredictionTests
                 // Startup can fill cold terrain coverage; subsequent moving
                 // snapshots must fit the requested half-second delivery rate.
                 if (count++ > 0) Assert.InRange(publicationInterval, 0, 0.5);
+                prior = planner;
             }
             Assert.Equal(4, count);
         }
@@ -281,7 +426,7 @@ namespace MechJebLibTest.LandingPredictionTests
         {
             private readonly (double Lat, double Lon, double Height)[] _points;
             internal double MaximumDistance { get; private set; }
-            internal RecordedTerrain() => _points = ReadRows("Mun-d680-demand-terrain.csv")
+            internal RecordedTerrain(string file = "Mun-d680-demand-terrain.csv") => _points = ReadRows(file)
                 .Select(r => (r["latitude"], r["longitude"], r["heightASL"]))
                 .OrderBy(p => p.Item2).ToArray();
 

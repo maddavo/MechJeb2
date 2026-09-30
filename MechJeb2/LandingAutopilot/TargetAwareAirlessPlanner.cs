@@ -161,6 +161,11 @@ namespace MuMech.Landing
         private AirlessTargetAwareState _ballisticContactState;
         internal double SelectedPolicyTerrainASL { get; private set; }
         internal int PolicyEscalations { get; private set; }
+        internal double ContinuitySeedUT { get; }
+        internal bool UsedLocalSearch { get; private set; }
+        internal bool BroadSearchFallback { get; private set; }
+        private bool _localSearchActive;
+        private double _localAnchorUT;
         internal double TerrainQueryMilliseconds => 1000d * _terrainTicks / Stopwatch.Frequency;
         internal int TerrainQueryCount { get; private set; }
         internal int TerrainSampleCount { get; private set; }
@@ -206,13 +211,17 @@ namespace MuMech.Landing
             long sequence, object bodyIdentity, Func<double, double, double> terrainAltitude,
             double targetTolerance, int queriesPerTick, int maximumQueries,
             double maximumTerrainMillisecondsPerTick = 1,
-            bool directForecast = false, TargetAwareTerrainCache terrainCache = null)
+            bool directForecast = false, TargetAwareTerrainCache terrainCache = null,
+            double previousBrakeUT = double.NaN)
         {
             Snapshot = snapshot;
             Generation = generation;
             Sequence = sequence;
             BodyIdentity = bodyIdentity;
             IsDirectForecast = directForecast;
+            ContinuitySeedUT = !directForecast && snapshot.HasV1ControlModel &&
+                Finite(previousBrakeUT) ? previousBrakeUT : double.NaN;
+            _localSearchActive = Finite(ContinuitySeedUT);
             _terrainAltitude = terrainAltitude ?? throw new ArgumentNullException(nameof(terrainAltitude));
             _terrainCache = terrainCache ?? new TargetAwareTerrainCache();
             _targetTolerance = targetTolerance;
@@ -659,6 +668,18 @@ namespace MuMech.Landing
                 (Snapshot.HasV1ControlModel && !Snapshot.DecelerationAlreadyTriggered ? 15 : 0);
             double latest = BallisticContactUT - 2;
             if (latest <= earliest + 4) throw new InvalidOperationException("NoBrakingWindow");
+            if (_localSearchActive)
+            {
+                // Resolve the prior absolute search time against this NEW
+                // physical snapshot. Use the existing broad/refinement grid
+                // spacing for the neighbourhood, not a targeting tolerance.
+                double anchor = Math.Max(earliest, Math.Min(latest, ContinuitySeedUT));
+                double step = Math.Max(Snapshot.Dt, (latest - earliest) / (8 * 18));
+                for (int i = -4; i <= 4; i++)
+                    outputs.Add(AirlessTargetAwareSimulation.Run(Snapshot,
+                        Math.Max(earliest, Math.Min(latest, anchor + i * step)), true));
+                return outputs;
+            }
             for (int i = 0; i < 9; ++i)
                 outputs.Add(AirlessTargetAwareSimulation.Run(Snapshot,
                     earliest + i / 8d * (latest - earliest), true));
@@ -818,6 +839,18 @@ namespace MuMech.Landing
 
         private void FinishCoarse()
         {
+            if (_localSearchActive)
+            {
+                UsedLocalSearch = true;
+                double earliest = Snapshot.InputUT +
+                    (Snapshot.DecelerationAlreadyTriggered ? 0 : 15);
+                _localAnchorUT = Math.Max(earliest,
+                    Math.Min(BallisticContactUT - 2, ContinuitySeedUT));
+                // Each candidate still goes through the full selected coast,
+                // braking, terminal, terrain and thrust-margin validation.
+                PrepareFallbackFromCoarse();
+                return;
+            }
             if (Snapshot.HasV1ControlModel)
             {
                 TargetAwareTerrainCandidate latestSafe = null;
@@ -901,6 +934,7 @@ namespace MuMech.Landing
             }
             if (_fallbackOptions.Count == 0)
             {
+                if (_localSearchActive) { BeginBroadFallback(); return; }
                 if (Snapshot.HasV1ControlModel)
                     PrepareBallisticImpact();
                 else Fail("NoTerrainClearControllerForecast");
@@ -910,6 +944,17 @@ namespace MuMech.Landing
             {
                 if (Snapshot.HasV1ControlModel)
                 {
+                    if (Finite(ContinuitySeedUT))
+                    {
+                        double anchor = _localSearchActive ? _localAnchorUT : ContinuitySeedUT;
+                        int proximity = Math.Abs(a.Output.BrakeUT - anchor).CompareTo(
+                            Math.Abs(b.Output.BrakeUT - anchor));
+                        // Stable nearest-neighbour order, with an earlier
+                        // braking tie-break. Provisional terrain classification
+                        // cannot displace the seed before full validation.
+                        return proximity != 0 ? proximity :
+                            a.Output.BrakeUT.CompareTo(b.Output.BrakeUT);
+                    }
                     bool aSafe = SafetyMarginPasses(a);
                     bool bSafe = SafetyMarginPasses(b);
                     if (aSafe != bSafe) return aSafe ? -1 : 1;
@@ -934,6 +979,7 @@ namespace MuMech.Landing
         {
             if (_fallbackIndex >= _fallbackOptions.Count)
             {
+                if (_localSearchActive) { BeginBroadFallback(); return; }
                 if (Snapshot.HasV1ControlModel)
                     PrepareBallisticImpact();
                 else Fail("NoTerrainClearControllerForecast");
@@ -953,6 +999,26 @@ namespace MuMech.Landing
                 new TargetAwareTerrainCandidate(output, Snapshot) };
             _nextCandidate = 0;
             Stage = TargetAwarePlannerStage.ResolveRefinement;
+        }
+
+        private void BeginBroadFallback()
+        {
+            // Exhausting a neighbourhood is not proof that no solution exists.
+            // Keep this snapshot and the shared transaction budgets, then run
+            // the original broad search. Never restore an old trajectory.
+            _localSearchActive = false;
+            BroadSearchFallback = true;
+            _coarseCandidates = null;
+            _fallbackSelection = false;
+            _fallbackOptions = null;
+            SelectedOutput = null;
+            SelectedTerrain = null;
+            TerminalEnvelope = null;
+            NominalTerminalTerrain = default(TargetAwareTerminalTerrainProbeResult);
+            DelayedTerminalTerrain = default(TargetAwareTerminalTerrainProbeResult);
+            TerminalTouchdownValidated = false;
+            TerminalImpactForecast = false;
+            Stage = TargetAwarePlannerStage.ReadyCoarse;
         }
 
         private void PrepareBallisticImpact()
