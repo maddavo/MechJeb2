@@ -114,6 +114,9 @@ namespace MuMech.Landing
                         fields.Append(",\"controllerMaximumCommandThrottle\":").Append(Number(activeSnapshot.Value.MaximumCommandThrottle));
                         fields.Append(",\"controllerThrottleSmoothingSeconds\":").Append(Number(activeSnapshot.Value.ThrottleSmoothingSeconds));
                         fields.Append(",\"controllerInitialAppliedThrottle\":").Append(Number(activeSnapshot.Value.InitialAppliedThrottle));
+                        fields.Append(",\"controllerTouchdownSpeed\":").Append(Number(activeSnapshot.Value.TouchdownSpeed));
+                        fields.Append(",\"controllerBottomOffset\":").Append(Number(activeSnapshot.Value.BottomOffset));
+                        fields.Append(",\"controllerPreviousTransThrottle\":").Append(Number(activeSnapshot.Value.PreviousTransThrottle));
                         if (core.Landing.DescentSpeedPolicy is SafeDescentSpeedPolicy livePolicy)
                         {
                             fields.Append(",\"livePolicyTerrainRadius\":").Append(Number(livePolicy.TerrainRadius));
@@ -166,6 +169,7 @@ namespace MuMech.Landing
             try
             {
             bool hasEndpoint = result.Outcome == ReentrySimulation.Outcome.LANDED ||
+                               result.Outcome == ReentrySimulation.Outcome.IMPACT ||
                                result.Outcome == ReentrySimulation.Outcome.AEROBRAKED ||
                                result.Outcome == ReentrySimulation.Outcome.TIMED_OUT;
             bool complete = hasEndpoint && result.Body != null && result.Trajectory != null &&
@@ -178,6 +182,7 @@ namespace MuMech.Landing
                 .Append(",\"wallTimestamp\":").Append(Stopwatch.GetTimestamp())
                 .Append(",\"simulationElapsedMs\":").Append(Number(simulationElapsedMs))
                 .Append(",\"outcome\":").Append(Quote(result.Outcome.ToString()))
+                .Append(",\"forecastKind\":").Append(Quote(result.ForecastKind.ToString()))
                 .Append(",\"staleGeneration\":").Append(staleGeneration ? "true" : "false")
                 .Append(",\"complete\":").Append(complete ? "true" : "false")
                 .Append(",\"exceptionType\":").Append(Quote(result.Exception?.GetType().Name))
@@ -194,6 +199,11 @@ namespace MuMech.Landing
                 .Append(",\"simulatorEnd\":").Append(hasEndpoint ? Absolute(result.EndPosition) : "null")
                 .Append(",\"simulatorEndVelocity\":").Append(hasEndpoint ? Absolute(result.EndVelocity) : "null")
                 .Append(",\"endSurfaceSpeed\":").Append(hasEndpoint ? Number(result.EndSurfaceSpeed) : "null")
+                .Append(",\"endVerticalSpeed\":").Append(Number(result.EndVerticalSpeed))
+                .Append(",\"endHorizontalSpeed\":").Append(Number(result.EndHorizontalSpeed))
+                .Append(",\"endTerrainClearance\":").Append(Number(result.EndTerrainClearance))
+                .Append(",\"excludedTargetSteeringDisplacementBound\":")
+                .Append(Number(result.ExcludedTargetSteeringDisplacementBound))
                 .Append(",\"virtualDeltaV\":").Append(hasEndpoint ? Number(result.DeltaVExpended) : "null")
                 .Append(",\"trajectoryStart\":").Append(hasEndpoint && result.Trajectory != null && result.Trajectory.Count > 0 ? Absolute(result.Trajectory[0]) : "null")
                 .Append(",\"trajectorySamples\":").Append(hasEndpoint && result.Trajectory != null ? result.Trajectory.Count : 0).Append('}');
@@ -245,6 +255,17 @@ namespace MuMech.Landing
                 var selected = planner.SelectedOutput;
                 var terrain = planner.SelectedTerrain;
                 var handoff = planner.TerminalHandoff;
+                bool impact = terrain != null && terrain.HasFirstContact;
+                bool terminalContact = planner.NominalTerminalTerrain.Resolved &&
+                    planner.NominalTerminalTerrain.HasContact;
+                AirlessTargetAwareState endpoint = terminalContact ? planner.NominalTerminalTerrain.Contact :
+                    impact ? terrain.FirstContact :
+                    selected != null ? selected.End : default(AirlessTargetAwareState);
+                Vector3d endSurface = endpoint.Velocity - Vector3d.Cross(
+                    planner.Snapshot.AngularVelocity, endpoint.Position);
+                double endVertical = impact || terminalContact ? Vector3d.Dot(endSurface,
+                    endpoint.Position.normalized) : handoff.EndVerticalSpeed;
+                double endSpeed = impact || terminalContact ? endSurface.magnitude : handoff.EndSurfaceSpeed;
                 var line = new StringBuilder(700);
                 line.Append("{\"schemaVersion\":").Append(SchemaVersion)
                     .Append(",\"captureSession\":").Append(Quote(SessionId))
@@ -253,6 +274,16 @@ namespace MuMech.Landing
                     .Append(",\"generation\":").Append(planner.Generation)
                     .Append(",\"sequence\":").Append(planner.Sequence)
                     .Append(",\"stage\":").Append(Quote(planner.Stage.ToString()))
+                    .Append(",\"pathEndpointKind\":")
+                    .Append(Quote(planner.TerminalTouchdownValidated ? "PredictedTouchdown" :
+                        planner.PathEndpointKind.ToString()))
+                    .Append(",\"terminalContinuation\":")
+                    .Append(Quote(planner.TerminalTouchdownValidated ? "ValidatedConditionalModel" : planner.PathEndpointKind ==
+                        TargetAwarePathEndpointKind.BrakingHandoff ?
+                        "Uncertain" : "NotReached"))
+                    .Append(",\"forecastKind\":").Append(Quote(planner.TerminalTouchdownValidated ?
+                        "LandableForecast" : impact || planner.TerminalImpactForecast ?
+                        "ImpactForecast" : "NoForecast"))
                     .Append(",\"failure\":").Append(Quote(planner.Failure))
                     .Append(",\"directForecast\":").Append(planner.IsDirectForecast ? "true" : "false")
                     .Append(",\"selectedPolicyTerrainASL\":").Append(Number(planner.SelectedPolicyTerrainASL))
@@ -263,6 +294,8 @@ namespace MuMech.Landing
                     .Append(",\"ballisticContact\":").Append(planner.BallisticContactUT > 0 ?
                         Absolute(planner.BallisticContact) : "null")
                     .Append(",\"virtualBrakeUT\":").Append(Number(selected?.BrakeUT ?? double.NaN))
+                    .Append(",\"firstContactUT\":").Append(Number(terminalContact ? endpoint.UT : impact ?
+                        terrain.FirstContact.UT : double.NaN))
                     .Append(",\"signedDownrangeError\":").Append(Number(selected == null ? double.NaN : planner.SignedDownrangeError))
                     .Append(",\"crossrangeError\":").Append(Number(selected == null ? double.NaN : planner.CrossrangeError))
                     .Append(",\"timingInterval\":").Append(Number(selected == null ? double.NaN : planner.TimingInterval))
@@ -272,13 +305,40 @@ namespace MuMech.Landing
                     .Append(",\"minimumSampledClearance\":").Append(Number(terrain?.MinimumSampledClearance ?? double.NaN))
                     .Append(",\"handoffClearance\":").Append(Number(terrain?.HandoffClearance ?? double.NaN))
                     .Append(",\"localTerrainASL\":").Append(Number(terrain?.LocalTerrainASL ?? double.NaN))
-                    .Append(",\"endVerticalSpeed\":").Append(Number(selected == null ? double.NaN : handoff.EndVerticalSpeed))
-                    .Append(",\"endSurfaceSpeed\":").Append(Number(selected == null ? double.NaN : handoff.EndSurfaceSpeed))
+                    .Append(",\"endVerticalSpeed\":").Append(Number(selected == null ? double.NaN : endVertical))
+                    .Append(",\"endSurfaceSpeed\":").Append(Number(selected == null ? double.NaN : endSpeed))
+                    .Append(",\"handoffHorizontalSpeed\":")
+                    .Append(Number(selected == null ? double.NaN : handoff.EndHorizontalSpeed))
                     .Append(",\"transitionVerticalSpeed\":").Append(Number(selected == null ? double.NaN : handoff.ControllerTransitionVerticalSpeed))
                     .Append(",\"transitionSurfaceSpeed\":").Append(Number(selected == null ? double.NaN : handoff.ControllerTransitionSurfaceSpeed))
                     .Append(",\"optimisticStoppingDistance\":").Append(Number(selected == null ? double.NaN : handoff.OptimisticVerticalStoppingDistance))
+                    .Append(",\"idealHoverHorizontalStoppingDistance\":")
+                    .Append(Number(selected == null ? double.NaN : handoff.IdealHoverHorizontalStoppingDistance))
+                    .Append(",\"idealHoverHorizontalStoppingTime\":")
+                    .Append(Number(selected == null ? double.NaN : handoff.IdealHoverHorizontalStoppingTime))
                     .Append(",\"terminalNecessaryBoundPasses\":").Append(handoff.NecessaryControlBoundPasses ? "true" : "false")
                     .Append(",\"terrainQueryCount\":").Append(planner.TerrainQueryCount)
+                    .Append(",\"terrainSampleCount\":").Append(planner.TerrainSampleCount)
+                    .Append(",\"terrainCacheHits\":").Append(planner.TerrainCacheHits)
+                    .Append(",\"terrainCacheModel\":\"demand_quantized_pqs\"")
+                    .Append(",\"coarseTerrainResolutionMetres\":")
+                    .Append(Number(TargetAwareAirlessPlanner.CoarseTerrainResolutionMetres))
+                    .Append(",\"fineTerrainResolutionMetres\":")
+                    .Append(Number(TargetAwareAirlessPlanner.FineTerrainResolutionMetres))
+                    .Append(",\"terrainMaximumQueryOffsetMetres\":")
+                    .Append(Number(planner.TerrainMaximumQueryOffsetMetres))
+                    .Append(",\"lastCandidateFailure\":").Append(Quote(planner.LastCandidateFailure))
+                    .Append(",\"terrainCacheSamples\":[");
+                bool first = true;
+                foreach (var sample in planner.TerrainSamples)
+                {
+                    if (!first) line.Append(',');
+                    first = false;
+                    line.Append('[').Append(Number(sample.Key.Latitude)).Append(',')
+                        .Append(Number(sample.Key.Longitude)).Append(',')
+                        .Append(Number(sample.Value)).Append(']');
+                }
+                line.Append(']')
                     .Append(",\"terrainQueryElapsedMs\":").Append(Number(planner.TerrainQueryMilliseconds))
                     .Append(",\"workerElapsedMs\":").Append(Number(workerMilliseconds))
                     .Append('}');
@@ -333,6 +393,7 @@ namespace MuMech.Landing
             try
             {
             bool landed = result.Outcome == ReentrySimulation.Outcome.LANDED;
+            bool contact = result.Outcome == ReentrySimulation.Outcome.IMPACT;
             var line = new StringBuilder(450);
             line.Append("{\"schemaVersion\":").Append(SchemaVersion).Append(",\"captureSession\":").Append(Quote(SessionId))
                 .Append(",\"recordType\":\"resolved_result\",\"submissionId\":").Append(id)
@@ -342,10 +403,11 @@ namespace MuMech.Landing
                 .Append(",\"phase\":").Append(Quote(phase))
                 .Append(",\"disposition\":").Append(Quote(disposition))
                 .Append(",\"outcome\":").Append(Quote(result.Outcome.ToString()))
+                .Append(",\"forecastKind\":").Append(Quote(result.ForecastKind.ToString()))
                 .Append(",\"simulatorLanded\":").Append(landed && result.Trajectory != null ? "true" : "false")
                 .Append(",\"terrainContactConfirmed\":").Append(landed && terrain != null && terrain.Applied ? "true" : "false")
-                .Append(",\"resolvedEnd\":").Append(landed ? Absolute(result.EndPosition) : "null")
-                .Append(",\"resolvedEndASL\":").Append(landed ? Number(result.EndASL) : "null")
+                .Append(",\"resolvedEnd\":").Append(landed || contact ? Absolute(result.EndPosition) : "null")
+                .Append(",\"resolvedEndASL\":").Append(landed || contact ? Number(result.EndASL) : "null")
                 .Append(",\"terrainProfileApplied\":").Append(terrain != null && terrain.Applied ? "true" : "false")
                 .Append(",\"terrainProfileStartIndex\":").Append(terrain?.FirstProfileIndex ?? -1)
                 .Append(",\"terrainProfileSampleCount\":").Append(terrain?.ProfileSampleCount ?? 0)
@@ -375,6 +437,25 @@ namespace MuMech.Landing
             catch (Exception) { /* Capture must not affect V1 publication. */ }
         }
 
+        internal static void MapDraw(long version, long id, bool map, bool camera,
+            bool enabled, bool landed, string outcome, bool markerRequested, string reason, string phase)
+        {
+            try
+            {
+                Write("{\"schemaVersion\":" + SchemaVersion + ",\"captureSession\":" + Quote(SessionId) +
+                    ",\"recordType\":\"map_draw\",\"processUT\":" + Number(Planetarium.GetUniversalTime()) +
+                    ",\"resultVersion\":" + version + ",\"submissionId\":" + id +
+                    ",\"mapEnabled\":" + (map ? "true" : "false") +
+                    ",\"cameraTrajectory\":" + (camera ? "true" : "false") +
+                    ",\"predictorEnabled\":" + (enabled ? "true" : "false") +
+                    ",\"vesselLanded\":" + (landed ? "true" : "false") +
+                    ",\"outcome\":" + Quote(outcome) +
+                    ",\"reason\":" + Quote(reason) + ",\"phase\":" + Quote(phase) +
+                    ",\"markerRequested\":" + (markerRequested ? "true" : "false") + "}");
+            }
+            catch (Exception) { /* Observation must not affect map rendering. */ }
+        }
+
         internal static void Close()
         {
             lock (Sync)
@@ -400,7 +481,7 @@ namespace MuMech.Landing
                         string path = MuUtils.GetCfgPath("LandingGuidanceV1.capture.jsonl");
                         string directory = Path.GetDirectoryName(path);
                         if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
-                        _writer = new StreamWriter(new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read));
+                        _writer = new StreamWriter(OpenAppendStream(path));
                     }
                     _writer.WriteLine(line);
                     if (++_recordsSinceFlush >= 5)
@@ -415,6 +496,42 @@ namespace MuMech.Landing
                 Trace.WriteLine("[MechJebLandingTrace] passive capture failed: " + ex.Message);
                 Close();
             }
+        }
+
+        // A forced KSP exit can leave the last buffered line incomplete.  Before a
+        // new capture session appends, remove only that unterminated fragment so
+        // the new session cannot be joined to it and corrupt both JSON records.
+        private static FileStream OpenAppendStream(string path)
+        {
+            var stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+            if (stream.Length > 0)
+            {
+                stream.Seek(-1, SeekOrigin.End);
+                if (stream.ReadByte() != '\n')
+                {
+                    long newline = FindLastNewline(stream);
+                    stream.SetLength(newline + 1);
+                }
+            }
+            stream.Seek(0, SeekOrigin.End);
+            return stream;
+        }
+
+        private static long FindLastNewline(FileStream stream)
+        {
+            const int bufferSize = 4096;
+            byte[] buffer = new byte[bufferSize];
+            long end = stream.Length;
+            while (end > 0)
+            {
+                int count = (int)Math.Min(bufferSize, end);
+                end -= count;
+                stream.Seek(end, SeekOrigin.Begin);
+                int read = stream.Read(buffer, 0, count);
+                for (int i = read - 1; i >= 0; i--)
+                    if (buffer[i] == '\n') return end + i;
+            }
+            return -1;
         }
 
         private static string Number(double value) => double.IsNaN(value) || double.IsInfinity(value)

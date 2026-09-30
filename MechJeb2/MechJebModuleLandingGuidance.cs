@@ -235,6 +235,14 @@ namespace MuMech
             {
                 switch (result.Outcome)
                 {
+                    case ReentrySimulation.Outcome.IMPACT:
+                        GUILayout.Label("Predicted terrain impact (unsafe):");
+                        GUILayout.Label(Coordinates.ToStringDMS(result.EndPosition.Latitude,
+                            result.EndPosition.Longitude) + "\nASL:" + result.EndASL.ToSI() + "m");
+                        GUILayout.Label("Surface speed: " + result.EndSurfaceSpeed.ToString("F1") +
+                            " m/s; contact in " + GuiUtils.TimeToDHMS(
+                                result.EndUT - Planetarium.GetUniversalTime(), 1));
+                        break;
                     case ReentrySimulation.Outcome.LANDED:
                         GUILayout.Label(Localizer.Format("#MechJeb_LandingGuidance_label9")); //Landing Predictions:
                         GUILayout.Label(Coordinates.ToStringDMS(result.EndPosition.Latitude, result.EndPosition.Longitude) + "\nASL:" +

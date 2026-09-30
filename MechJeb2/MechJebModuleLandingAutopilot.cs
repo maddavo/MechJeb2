@@ -16,13 +16,16 @@ namespace MuMech
     {
         private bool _deployedGears;
         public bool LandAtTarget;
+        internal bool AirlessTargetedForecast => LandAtTarget && MainBody != null &&
+            !MainBody.atmosphere && Core.Target.PositionTargetExists &&
+            Core.Target.targetBody == MainBody;
         // Diagnostic build: retain a concise landing trace in KSP.log without changing
         // any control command.  It is deliberately rate-limited because the predictor
         // and autopilot both run far more often than a useful human-readable trace.
         [Persistent(pass = (int)(Pass.LOCAL | Pass.TYPE | Pass.GLOBAL))]
-        public bool LandingTraceEnabled;
+        public bool LandingTraceEnabled = true;
 
-        public const string DiagnosticBuildVersion = "V1 controller-policy predictor 2026-09-29";
+        public const string DiagnosticBuildVersion = "V1 Beta guidance predictor 2026-09-30";
         private double _nextLandingTraceUT;
         private long _lastTracedPredictionVersion = -1;
         private string _lastTracedStep;
@@ -61,13 +64,7 @@ namespace MuMech
         {
             get
             {
-                // Check that there is a prediction and that it is a landing prediction.
-                if (Prediction == null)
-                {
-                    return false;
-                }
-
-                return Prediction.Outcome == ReentrySimulation.Outcome.LANDED;
+                return Prediction != null && Prediction.Outcome == ReentrySimulation.Outcome.LANDED;
             }
         }
 
@@ -191,13 +188,8 @@ namespace MuMech
 
             DescentSpeedPolicy = PickDescentSpeedPolicy();
 
-            // The active predictor must use the selected target's terrain height.
-            // Feeding it the previous predicted endpoint height creates a circular
-            // error: a short prediction over a ridge raises the speed envelope,
-            // which makes the following prediction short again. V1's flight
-            // controller keeps its existing DecelerationEndAltitude behaviour.
-            _predictor.descentSpeedPolicy = PickPredictorDescentSpeedPolicy();
-            _predictor.decelEndAltitudeASL = PredictorDecelerationEndAltitude();
+            _predictor.descentSpeedPolicy = PickDescentSpeedPolicy();
+            _predictor.decelEndAltitudeASL = DecelerationEndAltitude();
             _predictor.parachuteSemiDeployMultiplier = _parachutePlan.Multiplier;
 
             // Consider lowering the langing gear
@@ -558,17 +550,6 @@ namespace MuMech
             return new SafeDescentSpeedPolicy(MainBody.Radius + DecelerationEndAltitude(), MainBody.GeeASL * 9.81, VesselState.LimitedMaxThrustAcceleration);
         }
 
-        private IDescentSpeedPolicy PickPredictorDescentSpeedPolicy()
-        {
-            double endAltitude = PredictorDecelerationEndAltitude();
-            if (UseAtmosphereToBrake())
-                return new PoweredCoastDescentSpeedPolicy(MainBody.Radius + endAltitude, MainBody.GeeASL * 9.81,
-                    VesselState.LimitedMaxThrustAcceleration);
-
-            return new SafeDescentSpeedPolicy(MainBody.Radius + endAltitude, MainBody.GeeASL * 9.81,
-                VesselState.LimitedMaxThrustAcceleration);
-        }
-
         internal double PredictorLandingAltitudeASL()
         {
             if (LandAtTarget && Core.Target.PositionTargetExists && Core.Target.targetBody == MainBody)
@@ -577,33 +558,12 @@ namespace MuMech
             return _landingAltitude;
         }
 
-        internal double PredictorDecelerationEndAltitude()
-        {
-            if (!UseAtmosphereToBrake())
-                return 200 + PredictorLandingAltitudeASL();
-
-            return DecelerationEndAltitude();
-        }
-
         public double DecelerationEndAltitude()
         {
             //if the atmosphere is thin, the deceleration burn should end
             //500 meters above the landing site to allow for a controlled final descent
             //MechJebCore.print("DecelerationEndAltitude Vacum " + (200 + LandingAltitude).ToString("F2"));
-            if (!UseAtmosphereToBrake())
-            {
-                // A committed targeted-airless forecast carries the exact
-                // terrain-clear speed-policy height it simulated. The planner
-                // can only raise that height after checking live PQS, so the
-                // controller and the published path use the same policy.
-                if (LandAtTarget && !MainBody.atmosphere &&
-                    Core.Target.PositionTargetExists && Core.Target.targetBody == MainBody)
-                    return PredictionReady && Prediction.Body == MainBody &&
-                        Prediction.HasControllerBrakeReferenceUT ?
-                        Prediction.InputDecelEndAltitudeASL :
-                        200 + PredictorLandingAltitudeASL();
-                return 200 + _landingAltitude;
-            }
+            if (!UseAtmosphereToBrake()) return 200 + _landingAltitude;
 
             // if the atmosphere is thick, deceleration (meaning freefall through the atmosphere)
             // should end a safe height above the landing site in order to allow braking from terminal velocity
@@ -744,8 +704,8 @@ namespace MuMech
 
         public double MaxAllowedSpeed(Vector3d pos, Vector3d vel)
         {
-            return V1LandingControlPolicy.SafeDescentMaximumSpeed(
-                pos.magnitude, _terrainRadius, _g, _thrust);
+            double altitude = pos.magnitude - _terrainRadius;
+            return 0.9 * Math.Sqrt(2 * (_thrust - _g) * altitude);
         }
     }
 

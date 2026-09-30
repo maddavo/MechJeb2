@@ -29,6 +29,7 @@ namespace MuMech
 
         public float TransSpdAct;
         private float _transPrevThrust;
+        internal float PreviousTransThrottle => _transPrevThrust;
         public bool TransKillH = false;
 
         [Persistent(pass = (int)Pass.GLOBAL)]

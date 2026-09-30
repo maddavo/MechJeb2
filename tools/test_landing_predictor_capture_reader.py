@@ -61,6 +61,61 @@ def resolved(**changes):
 
 
 class CaptureReaderTests(unittest.TestCase):
+    def test_map_observation_does_not_create_a_prediction_or_submission(self):
+        map_event = dict(BASE, recordType="map_draw", submissionId=0,
+                         processUT=101, resultVersion=7, mapEnabled=True,
+                         cameraTrajectory=False, predictorEnabled=True,
+                         vesselLanded=False, outcome=None, markerRequested=False,
+                         reason="no_committed_result")
+        document = self.read([submission(), worker(), map_event])
+        self.assertEqual(document["caseCount"], 1)
+        self.assertEqual(document["events"][-1]["reason"], "no_committed_result")
+        self.assertIsNone(document["cases"][0]["published"])
+        with self.assertRaisesRegex(reader.CaptureError, "map draw markerRequested"):
+            self.read([submission(), worker(), {**map_event, "markerRequested": 1}])
+
+    def test_cache_samples_accounting_and_terminal_worker_are_replayable(self):
+        validation = dict(BASE, recordType="target_aware_validation", processUT=101,
+                          generation=4, sequence=1, stage="Failed", terrainResolved=False,
+                          clearPath=False, terminalNecessaryBoundPasses=False,
+                          terrainQueryCount=2, terrainSampleCount=4, terrainCacheHits=2,
+                          terrainCacheSamples=[[0, 23, 492], [0, 24, 600]],
+                          terrainQueryElapsedMs=0.1, workerElapsedMs=10)
+        stage = dict(BASE, recordType="target_aware_worker_stage", processUT=101,
+                     stage="Terminal", elapsedMs=5, outputCount=20, exceptionType=None)
+        document = self.read([submission(), worker(), stage, validation])
+        self.assertEqual(document["cases"][0]["validation"]["terrainCacheSamples"],
+                         validation["terrainCacheSamples"])
+        with self.assertRaisesRegex(reader.CaptureError, "cache accounting"):
+            self.read([submission(), worker(), {**validation, "terrainCacheHits": 4}])
+        with self.assertRaisesRegex(reader.CaptureError, "duplicate cached terrain"):
+            self.read([submission(), worker(), {**validation, "terrainCacheSamples":
+                       [[0, 23, 492], [0, 23, 493]]}])
+
+    def test_terminal_contact_with_unknown_total_delta_v_preserves_the_gap(self):
+        contact = worker(forecastKind="LandableForecast", virtualDeltaV=None,
+                         endVerticalSpeed=-0.31, endHorizontalSpeed=0.0003,
+                         endTerrainClearance=0)
+        doc = self.read([submission(), contact])
+        self.assertIsNone(doc["cases"][0]["worker"]["virtualDeltaV"])
+        with self.assertRaisesRegex(reader.CaptureError, "virtualDeltaV"):
+            self.read([submission(), {**contact, "forecastKind": None}])
+
+    def test_spatial_resolution_metadata_is_preserved_and_validated(self):
+        validation = dict(BASE, recordType="target_aware_validation", processUT=101,
+                          generation=4, sequence=1, stage="Failed", terrainResolved=False,
+                          clearPath=False, terminalNecessaryBoundPasses=False,
+                          terrainQueryCount=0, terrainQueryElapsedMs=0, workerElapsedMs=1,
+                          terrainCacheModel="demand_quantized_pqs",
+                          coarseTerrainResolutionMetres=25, fineTerrainResolutionMetres=1,
+                          terrainMaximumQueryOffsetMetres=12)
+        doc = self.read([submission(), worker(), validation])
+        self.assertEqual(doc["cases"][0]["validation"]["fineTerrainResolutionMetres"], 1)
+        with self.assertRaisesRegex(reader.CaptureError, "invalid terrain query offset"):
+            self.read([submission(), worker(), {**validation, "terrainMaximumQueryOffsetMetres": 30}])
+        with self.assertRaisesRegex(reader.CaptureError, "invalid fineTerrainResolutionMetres"):
+            self.read([submission(), worker(), {**validation, "fineTerrainResolutionMetres": 0}])
+
     def read(self, records, allow_incomplete=False):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "capture.jsonl"
@@ -173,6 +228,31 @@ class CaptureReaderTests(unittest.TestCase):
         result = worker(controllerBrakeReferenceUT=150.0,
                         controllerBrakeReferencePosition=[0, 10, 205000, 150])
         self.assertEqual(self.read([active, result])["gaps"], [])
+
+    def test_baseline_impact_without_a_brake_trigger_is_complete(self):
+        active = submission(kind="target_aware_transaction", minimumTerrainASL=-1000,
+                            maximumTerrainASL=10000)
+        contact = worker(outcome="IMPACT", forecastKind="ImpactForecast",
+                         virtualBrakeUT=None, virtualDeltaV=None,
+                         endVerticalSpeed=-58,
+                         endHorizontalSpeed=400, endTerrainClearance=0)
+        validation = dict(BASE, recordType="target_aware_validation",
+                          processUT=101, generation=4, sequence=1, stage="Complete",
+                          directForecast=True, forecastKind="ImpactForecast",
+                          firstContactUT=300, virtualBrakeUT=None,
+                          terrainResolved=True, clearPath=True,
+                          terminalNecessaryBoundPasses=False,
+                          minimumSampledClearance=-1, handoffClearance=0,
+                          localTerrainASL=150, endVerticalSpeed=-58,
+                          endSurfaceSpeed=404, terrainQueryCount=12,
+                          terrainQueryElapsedMs=0.1, workerElapsedMs=20)
+        result = self.read([active, contact, validation])
+        self.assertEqual(result["gaps"], [])
+        self.assertEqual(result["cases"][0]["worker"]["forecastKind"], "ImpactForecast")
+        self.assertIsNone(result["cases"][0]["worker"]["virtualDeltaV"])
+        with self.assertRaisesRegex(reader.CaptureError, "impact lacks contact state"):
+            self.read([active, worker(**{**contact, "endHorizontalSpeed": None}),
+                       validation])
         with self.assertRaisesRegex(reader.CaptureError, "controller brake reference position"):
             self.read([active, worker(controllerBrakeReferenceUT=150.0)])
         with self.assertRaisesRegex(reader.CaptureError, "model provenance"):

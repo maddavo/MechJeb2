@@ -82,7 +82,7 @@ namespace MuMech
                     if (_planeChangeDVLeft < 0.1F)
                     {
                         Core.Thrust.ThrustOff();
-                        return new DeorbitBurn(Core);
+                        return new LowDeorbitBurn(Core);
                     }
                 }
                 else

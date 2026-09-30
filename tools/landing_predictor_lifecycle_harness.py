@@ -61,7 +61,8 @@ def audit_lifecycle(document, require_active=False):
             targeted_by_session[session] = True
             if event.get("phase") in TERMINAL_PHASES and not (
                     event.get("phase") == "DecelerationBurn" and
-                    event.get("modelProvenance") == "v1_live_braking_forecast"):
+                    event.get("modelProvenance") in (
+                        "v1_live_braking_forecast", "v1_no_further_correction_baseline")):
                 issues.append(f"line {line}: target-aware planning submitted during {event['phase']}")
             case = cases.get((session, event["submissionId"]))
             refresh = next((item for item in (case.get("decisions", []) if case else [])
@@ -93,7 +94,8 @@ def audit_lifecycle(document, require_active=False):
             continue
         if event.get("phase") in TERMINAL_PHASES and not (
                 event.get("phase") == "DecelerationBurn" and
-                submission.get("modelProvenance") == "v1_live_braking_forecast"):
+                submission.get("modelProvenance") in (
+                    "v1_live_braking_forecast", "v1_no_further_correction_baseline")):
             issues.append(f"line {line}: target-aware planning published during {event['phase']}")
         if not targeted_by_session.get(session):
             issues.append(f"line {line}: target-aware result published after landing stopped")
@@ -104,14 +106,19 @@ def audit_lifecycle(document, require_active=False):
         decisions = case.get("decisions", []) if case else []
         accepted = any(item.get("decision") == "target_aware_atomic_accept"
                        for item in decisions)
+        impact = worker and worker.get("outcome") == "IMPACT"
+        baseline_impact = impact and validation and \
+            validation.get("forecastKind") == "ImpactForecast"
         if (not validation or validation.get("stage") != "Complete" or
                 not validation.get("terrainResolved") or
                 not validation.get("clearPath") or
-                not validation.get("terminalNecessaryBoundPasses") or
+                (not baseline_impact and not validation.get("terminalNecessaryBoundPasses")) or
                 not worker or worker.get("recordType") != "worker_result" or
                 not worker.get("complete") or not resolved or not accepted):
             issues.append(f"line {line}: target-aware publication lacks complete validation")
             continue
+        if impact and not baseline_impact:
+            issues.append(f"line {line}: impact published without first-contact classification")
         if (validation.get("generation") != submission.get("generation") or
                 validation.get("generation") != event.get("currentGeneration") or
                 resolved.get("currentGeneration") != event.get("currentGeneration")):
@@ -121,16 +128,22 @@ def audit_lifecycle(document, require_active=False):
         if not (math.isfinite(age) and 0 <= age <= 10):
             issues.append(f"line {line}: target-aware snapshot exceeded provisional age gate")
         if validation.get("brakeTimeBracketed", True):
-            if (abs(validation["signedDownrangeError"]) >= tolerance or
-                    validation["timingDistanceEstimate"] >= tolerance or
-                    validation["timingInterval"] <= 0):
+            downrange = validation.get("signedDownrangeError")
+            timing_distance = validation.get("timingDistanceEstimate")
+            timing_interval = validation.get("timingInterval")
+            if (not all(isinstance(value, (int, float)) and math.isfinite(value)
+                        for value in (downrange, timing_distance, timing_interval)) or
+                    abs(downrange) >= tolerance or
+                    timing_distance >= tolerance or timing_interval <= 0):
                 issues.append(f"line {line}: signed refinement did not meet V1 distance gate")
-        elif not validation.get("directForecast", False) and not math.isfinite(
-                validation["signedDownrangeError"]):
+        elif not validation.get("directForecast", False) and not (
+                isinstance(validation.get("signedDownrangeError"), (int, float)) and
+                math.isfinite(validation["signedDownrangeError"])):
             issues.append(f"line {line}: unbracketed miss is not recorded")
         if (validation["terrainQueryCount"] > 1024 or
-                validation["minimumSampledClearance"] < 0 or
-                validation["handoffClearance"] < 0):
+                (not baseline_impact and
+                 (validation["minimumSampledClearance"] < 0 or
+                  validation["handoffClearance"] < 0))):
             issues.append(f"line {line}: terrain clearance or query cap failed")
         sequence = validation["sequence"]
         previous_sequence = last_sequence_by_session.get(session)

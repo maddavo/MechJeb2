@@ -17,6 +17,7 @@ RECORD_TYPES = {
     "submission", "worker_result", "worker_exception", "resolved_result",
     "published", "capture_error", "submission_abandoned", "discarded", "lifecycle",
     "selection_decision", "target_aware_validation", "target_aware_worker_stage",
+    "map_draw",
 }
 INPUT_NUMBERS = (
     "inputUT", "captureEpochUT", "bodyRadius", "bodyMu", "bodyGeeASL",
@@ -82,7 +83,9 @@ def _validate_submission(record, line_number):
     provenance = record.get("modelProvenance")
     if provenance is not None and (not isinstance(provenance, str) or not provenance):
         raise CaptureError(f"line {line_number}: invalid model provenance")
-    if provenance in ("v1_controller_policy_forecast", "v1_live_braking_forecast"):
+    if provenance in ("v1_controller_policy_forecast", "v1_live_braking_forecast",
+                      "v1_no_further_correction_baseline",
+                      "v1_safe_brake_timing_no_further_correction"):
         for name in ("controllerInitialMass", "controllerMaximumThrust",
                      "controllerMinimumThrust", "controllerMaximumMassFlow",
                      "controllerMinimumMassFlow", "controllerPolicyTerrainRadius",
@@ -130,9 +133,30 @@ def _validate_result(record, line_number):
                 vector = record.get(name)
                 if not isinstance(vector, list) or len(vector) != 4 or not all(map(_finite, vector)):
                     raise CaptureError(f"line {line_number}: complete result has invalid {name}")
-            for name in ("inputUT", "endUT", "virtualBrakeUT", "endSurfaceSpeed", "virtualDeltaV"):
+            for name in ("inputUT", "endUT", "endSurfaceSpeed"):
                 if not _finite(record.get(name)):
                     raise CaptureError(f"line {line_number}: complete result has invalid {name}")
+            if record.get("outcome") == "IMPACT":
+                # The simulator may continue after first physical contact;
+                # full-run virtual delta-v is then unavailable at impact.
+                if record.get("virtualDeltaV") is not None and not _finite(
+                        record["virtualDeltaV"]):
+                    raise CaptureError(f"line {line_number}: invalid impact virtualDeltaV")
+                if record.get("forecastKind") != "ImpactForecast" or not all(
+                        _finite(record.get(name)) for name in
+                        ("endVerticalSpeed", "endHorizontalSpeed", "endTerrainClearance")):
+                    raise CaptureError(f"line {line_number}: impact lacks contact state")
+            else:
+                unknown_terminal_dv = (record.get("virtualDeltaV") is None and
+                                       record.get("forecastKind") == "LandableForecast" and
+                                       all(_finite(record.get(name)) for name in
+                                           ("endVerticalSpeed", "endHorizontalSpeed", "endTerrainClearance")))
+                # Terrain contact truncates the terminal model; its total
+                # expended delta-v was not captured. Preserve null as unknown.
+                if not _finite(record.get("virtualDeltaV")) and not unknown_terminal_dv:
+                    raise CaptureError(f"line {line_number}: complete result has invalid virtualDeltaV")
+                if not _finite(record.get("virtualBrakeUT")):
+                    raise CaptureError(f"line {line_number}: complete result lacks brake UT")
     elif record["recordType"] == "resolved_result":
         if not _finite(record.get("processUT")) or not record.get("disposition"):
             raise CaptureError(f"line {line_number}: invalid resolution time or disposition")
@@ -165,6 +189,28 @@ def _validate_target_aware(record, line_number):
     for name in ("terrainQueryCount",):
         if type(record.get(name)) is not int or record[name] < 0:
             raise CaptureError(f"line {line_number}: invalid target-aware {name}")
+    if "terrainCacheHits" in record:
+        for name in ("terrainCacheHits", "terrainSampleCount"):
+            if type(record.get(name)) is not int or record[name] < 0:
+                raise CaptureError(f"line {line_number}: invalid {name}")
+        accounted = record["terrainCacheHits"] + record["terrainQueryCount"]
+        if not accounted <= record["terrainSampleCount"] <= accounted + 1:
+            raise CaptureError(f"line {line_number}: inconsistent terrain cache accounting")
+        samples = record.get("terrainCacheSamples")
+        if not isinstance(samples, list) or any(not isinstance(s, list) or
+                len(s) != 3 or not all(map(_finite, s)) for s in samples):
+            raise CaptureError(f"line {line_number}: invalid cached terrain samples")
+        if len({tuple(s[:2]) for s in samples}) != len(samples):
+            raise CaptureError(f"line {line_number}: duplicate cached terrain coordinates")
+    if "terrainCacheModel" in record:
+        if record["terrainCacheModel"] != "demand_quantized_pqs":
+            raise CaptureError(f"line {line_number}: unknown terrain cache model")
+        for name in ("coarseTerrainResolutionMetres", "fineTerrainResolutionMetres"):
+            if not _finite(record.get(name)) or record[name] <= 0:
+                raise CaptureError(f"line {line_number}: invalid {name}")
+        offset = record.get("terrainMaximumQueryOffsetMetres")
+        if not _finite(offset) or not 0 <= offset <= record["coarseTerrainResolutionMetres"]:
+            raise CaptureError(f"line {line_number}: invalid terrain query offset")
     for name in ("terrainQueryElapsedMs", "workerElapsedMs"):
         if not _finite(record.get(name)) or record[name] < 0:
             raise CaptureError(f"line {line_number}: invalid target-aware {name}")
@@ -174,6 +220,17 @@ def _validate_target_aware(record, line_number):
                                           record["policyEscalations"] < 0):
         raise CaptureError(f"line {line_number}: invalid policy escalation count")
     if record["stage"] == "Complete":
+        if record.get("directForecast") and "forecastKind" in record:
+            for name in ("minimumSampledClearance", "localTerrainASL"):
+                if not _finite(record.get(name)):
+                    raise CaptureError(f"line {line_number}: baseline terrain lacks {name}")
+            if record["forecastKind"] == "ImpactForecast":
+                for name in ("firstContactUT", "endVerticalSpeed", "endSurfaceSpeed"):
+                    if not _finite(record.get(name)):
+                        raise CaptureError(f"line {line_number}: baseline impact lacks {name}")
+            elif record["forecastKind"] not in ("NoForecast", "LandableForecast"):
+                raise CaptureError(f"line {line_number}: unsupported baseline forecast kind")
+            return
         for name in ("ballisticContactUT", "virtualBrakeUT",
                      "minimumSampledClearance", "handoffClearance", "localTerrainASL",
                      "endVerticalSpeed", "endSurfaceSpeed", "transitionVerticalSpeed",
@@ -230,6 +287,14 @@ def read_capture(path, allow_incomplete=False):
             if kind == "capture_error":
                 capture_errors.append({"line": line_number, **record})
                 continue
+            if kind == "map_draw":
+                if type(record.get("resultVersion")) is not int or not _finite(record.get("processUT")):
+                    raise CaptureError(f"line {line_number}: invalid map draw lineage")
+                for name in ("mapEnabled", "cameraTrajectory", "predictorEnabled",
+                             "vesselLanded", "markerRequested"):
+                    if type(record.get(name)) is not bool:
+                        raise CaptureError(f"line {line_number}: invalid map draw {name}")
+                continue
             if kind == "lifecycle":
                 lifecycle.append(record)
                 continue
@@ -251,7 +316,7 @@ def read_capture(path, allow_incomplete=False):
             if kind == "target_aware_worker_stage":
                 if record.get("stage") not in ("Ballistic", "Coarse", "Refinement",
                                                "PolicyRevalidation", "PolicyEscalation",
-                                               "DirectForecast") or \
+                                               "DirectForecast", "Terminal") or \
                         not _finite(record.get("processUT")) or \
                         not _finite(record.get("elapsedMs")) or record["elapsedMs"] < 0 or \
                         type(record.get("outputCount")) is not int or record["outputCount"] < 0:

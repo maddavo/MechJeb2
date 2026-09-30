@@ -11,6 +11,9 @@ namespace MuMech
             // Terminal descent needs a speed envelope as well as a braking-distance
             // calculation.  The latter alone produces impractically large allowed
             // speeds for high-TWR vessels on low-gravity bodies.
+            private const double MinimumTerminalDescentSpeed = 5.0;
+            private const double MaximumTerminalDescentSpeed = 25.0;
+            private const double TerminalDescentGravityTime = 4.0;
             private IDescentSpeedPolicy _aggressivePolicy;
 
             public FinalDescent(MechJebCore core) : base(core)
@@ -93,14 +96,16 @@ namespace MuMech
                 else
                 {
                     // last 300 meters:
+                    double desiredSpeed = V1LandingControlPolicy.FinalDescentSpeed(minalt,
+                        VesselState.LimitedMaxThrustAcceleration, VesselState.LocalGravity,
+                        Core.Landing.TouchdownSpeed, Core.Landing.AirlessTargetedForecast);
+
                     // At this height a direct, full-throttle retrograde burn can turn a
                     // few metres per second of drift into an ascent on a high-TWR craft.
                     // Keep vertical speed under closed-loop control and let the thrust
                     // controller remove the remaining lateral velocity at the same time.
                     Core.Thrust.Tmode = MechJebModuleThrustController.TMode.KEEP_VERTICAL;
-                    Core.Thrust.TransSpdAct = (float)V1LandingControlPolicy.FinalDescentSpeed(
-                        minalt, VesselState.LimitedMaxThrustAcceleration,
-                        VesselState.LocalGravity, Core.Landing.TouchdownSpeed);
+                    Core.Thrust.TransSpdAct = (float)Math.Min(-Core.Landing.TouchdownSpeed, desiredSpeed);
                     Core.Thrust.TransKillH = true;
                 }
 

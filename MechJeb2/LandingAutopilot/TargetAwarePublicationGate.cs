@@ -19,12 +19,18 @@ namespace MuMech.Landing
         internal readonly bool TerrainResolved;
         internal readonly bool ClearPath;
         internal readonly bool TerminalNecessaryBoundPasses;
+        internal readonly bool TerminalTouchdownValidated;
+        internal readonly ReentrySimulation.LandingForecastKind ForecastKind;
+        internal readonly bool HasFirstContact;
 
         internal TargetAwareResultLineage(long generation, long sequence, object body,
             double targetLatitude, double targetLongitude, double targetTerrainASL,
             double captureUT, double inputUT,
             bool targetAwareModel, bool complete, bool terrainResolved, bool clearPath,
-            bool terminalNecessaryBoundPasses)
+            bool terminalNecessaryBoundPasses,
+            ReentrySimulation.LandingForecastKind forecastKind,
+            bool hasFirstContact,
+            bool terminalTouchdownValidated)
         {
             Generation = generation;
             Sequence = sequence;
@@ -39,6 +45,9 @@ namespace MuMech.Landing
             TerrainResolved = terrainResolved;
             ClearPath = clearPath;
             TerminalNecessaryBoundPasses = terminalNecessaryBoundPasses;
+            TerminalTouchdownValidated = terminalTouchdownValidated;
+            ForecastKind = forecastKind;
+            HasFirstContact = hasFirstContact;
         }
     }
 
@@ -50,6 +59,7 @@ namespace MuMech.Landing
         TerrainUnresolved,
         TerrainIntersection,
         TerminalNecessaryBoundFailed,
+        ImpactOnly,
         StaleGeneration,
         ChangedBodyOrTarget,
         ExpiredSnapshot,
@@ -64,10 +74,23 @@ namespace MuMech.Landing
             double currentUT, double maximumSnapshotAge, double maximumTerrainChange)
         {
             if (!candidate.TargetAwareModel) return TargetAwarePublicationDecision.WrongModel;
+            // V1 Beta's sole readiness gate accepts Outcome.LANDED. An impact
+            // may be captured for diagnosis but cannot own its active slot.
+            if (candidate.ForecastKind == ReentrySimulation.LandingForecastKind.ImpactForecast)
+                return TargetAwarePublicationDecision.ImpactOnly;
+            if ((candidate.ForecastKind != ReentrySimulation.LandingForecastKind.ImpactForecast &&
+                 candidate.ForecastKind != ReentrySimulation.LandingForecastKind.LandableForecast) ||
+                (candidate.ForecastKind == ReentrySimulation.LandingForecastKind.ImpactForecast &&
+                 (!candidate.HasFirstContact || candidate.TerminalTouchdownValidated)) ||
+                (candidate.ForecastKind == ReentrySimulation.LandingForecastKind.LandableForecast &&
+                 (!candidate.TerminalTouchdownValidated || candidate.HasFirstContact)))
+                return TargetAwarePublicationDecision.Incomplete;
             if (!candidate.Complete) return TargetAwarePublicationDecision.Incomplete;
             if (!candidate.TerrainResolved) return TargetAwarePublicationDecision.TerrainUnresolved;
             if (!candidate.ClearPath) return TargetAwarePublicationDecision.TerrainIntersection;
-            if (!candidate.TerminalNecessaryBoundPasses)
+            if (candidate.ForecastKind ==
+                ReentrySimulation.LandingForecastKind.LandableForecast &&
+                !candidate.TerminalNecessaryBoundPasses)
                 return TargetAwarePublicationDecision.TerminalNecessaryBoundFailed;
             if (candidate.Generation != currentGeneration)
                 return TargetAwarePublicationDecision.StaleGeneration;

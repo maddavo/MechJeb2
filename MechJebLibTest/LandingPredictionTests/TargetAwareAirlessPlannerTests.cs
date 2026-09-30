@@ -20,7 +20,8 @@ namespace MechJebLibTest.LandingPredictionTests
                 (latitude, longitude) => snapshot.TargetTerrainASL, 200, 32, 1024);
             DriveThroughRefinement(planner);
 
-            Assert.Equal(TargetAwarePlannerStage.Complete, planner.Stage);
+            Assert.True(planner.Stage == TargetAwarePlannerStage.Complete,
+                planner.Failure ?? planner.Stage.ToString());
             Assert.True(planner.SelectedTerrain.ClearPath);
             Assert.True(planner.SelectedTerrain.HandoffClearance >= 0);
             Assert.InRange(planner.SignedDownrangeError, -200, 200);
@@ -37,30 +38,178 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
-        public void V1ControlForecastRefinesMunBrakeReference()
+        public void ApprovedTerminalPoliciesCanValidateMunTimingSearch()
         {
             var source = AirlessTargetAwareSimulationTests.MunSnapshot();
             var snapshot = new AirlessTargetAwareSnapshot(source, 79, 640, 0,
                 0.27, 0, source.BodyRadius + source.DecelEndASL,
                 source.BodyGeeASL * 9.81, source.MaximumThrustAcceleration);
             var planner = new TargetAwareAirlessPlanner(snapshot, 1, 1, new object(),
-                (latitude, longitude) => snapshot.TargetTerrainASL, 200, 32, 1024);
+                (latitude, longitude) => snapshot.TargetTerrainASL, 200, 32, 1536);
             DriveThroughRefinement(planner);
             Assert.Equal(TargetAwarePlannerStage.Complete, planner.Stage);
-            Assert.True(planner.SelectedOutput.UsesV1ControlModel);
-            Assert.InRange(planner.SignedDownrangeError, -200, 200);
-            _output.WriteLine($"V1 forecast brake={planner.SelectedOutput.BrakeUT:F3} " +
-                $"downrange={planner.SignedDownrangeError:F1} " +
-                $"crossrange={planner.CrossrangeError:F1} " +
+            Assert.True(planner.TerminalTouchdownValidated);
+            Assert.InRange(planner.TerrainQueryCount, 1, 1536);
+            _output.WriteLine($"Approved terminal result={planner.PathEndpointKind} " +
                 $"queries={planner.TerrainQueryCount}");
         }
 
         [Fact]
-        public void FailedMunRefresh24FallsBackToARealSafeMissInsteadOfFreezingCorrection()
+        public void CapturedMunFirstBallisticIntersectionFindsPoweredCandidateOnFlatTerrain()
+        {
+            // Submission 101 of the 2026-09-30 failed deorbit. PQS samples
+            // were not captured; target-height terrain isolates the timing
+            // search from unknown off-target terrain.
+            const double ut = 24604034.297638249;
+            var source = new AirlessTargetAwareSnapshot(ut, ut, 200000,
+                65138397520.780693, 0.16605670009835341, 138984.37657447491,
+                0.67416666666666658, 23.473055555555554, 492.18766502593644,
+                692.18766502593644, 8.1485774582046222, 0.2,
+                0.019999999552965164, 0.5, -400, 8300,
+                new Vector3d(-110771.32007350624, 2746.8805482437429, 194786.49761048483),
+                new Vector3d(-433.08841679591922, -5.882039743143495, -245.25398543228636),
+                new Vector3d(0, -4.5207853300063085E-05, 0),
+                new Vector3d(-0.25558771502106337, 0, 0.96678587077507072),
+                new Vector3d(-0.96678587077507072, 0, -0.25558771502106331),
+                new Vector3d(-1.5649716988686863E-17, 1, 5.9196606006842562E-17));
+            var snapshot = new AirlessTargetAwareSnapshot(source, 78.541345069119416,
+                640.00023396729716, 0, 0.27192431688308716, 0,
+                200692.18766502594, 1.629016227964847, 8.1485774582046222,
+                false, new Vector3d(0.85455363988876343, 0.013799682259559631,
+                    0.51917988061904907), 0, 1, 0, 0, 0.5, 2.9194062313181348, 0);
+            var planner = new TargetAwareAirlessPlanner(snapshot, 1, 101, new object(),
+                (latitude, longitude) => source.TargetTerrainASL, 200, 32, 1536);
+            planner.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(snapshot));
+            DriveUntilSettled(planner);
+            Assert.Equal(TargetAwarePlannerStage.ReadyCoarse, planner.Stage);
+            planner.BeginCoarseWorker();
+            var coarse = planner.RunCoarse();
+            foreach (var candidate in coarse)
+            {
+                var site = AirlessTargetAwareSimulation.ToAbsolute(candidate.End.Position,
+                    candidate.End.UT, snapshot);
+                _output.WriteLine($"candidate brake={candidate.BrakeUT - ut:F1}s " +
+                    $"longitude={site.Longitude:F2} speed={candidate.EndSurfaceSpeed:F1} " +
+                    $"handoff={candidate.ReachedHandoff}");
+            }
+            planner.SetCoarseOutputs(coarse);
+            DriveUntilSettled(planner);
+            _output.WriteLine($"coarse stage={planner.Stage} queries={planner.TerrainQueryCount}");
+            Assert.Equal(TargetAwarePlannerStage.ReadyRefinement, planner.Stage);
+            planner.BeginRefinementWorker();
+            planner.SetRefinement(planner.RunRefinement());
+            DriveUntilSettled(planner);
+            _output.WriteLine($"final stage={planner.Stage} failure={planner.Failure} " +
+                $"brake={planner.SelectedOutput?.BrakeUT - ut:F1}s " +
+                $"landable={planner.TerminalTouchdownValidated} queries={planner.TerrainQueryCount}");
+            Assert.Equal(TargetAwarePlannerStage.Complete, planner.Stage);
+            Assert.True(planner.TerminalTouchdownValidated);
+
+            var raised = new TargetAwareAirlessPlanner(snapshot, 1, 102, new object(),
+                (latitude, longitude) => longitude > 40 ? 2932 :
+                    source.TargetTerrainASL, 200, 32, 1536);
+            raised.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(snapshot));
+            DriveUntilSettled(raised);
+            raised.BeginCoarseWorker();
+            raised.SetCoarseOutputs(raised.RunCoarse());
+            DriveUntilSettled(raised);
+            if (raised.Stage == TargetAwarePlannerStage.ReadyRefinement)
+            {
+                raised.BeginRefinementWorker();
+                raised.SetRefinement(raised.RunRefinement());
+                DriveUntilSettled(raised);
+            }
+            _output.WriteLine($"raised stage={raised.Stage} failure={raised.Failure} " +
+                $"brake={raised.SelectedOutput?.BrakeUT - ut:F1}s " +
+                $"landable={raised.TerminalTouchdownValidated} " +
+                $"policyTerrain={raised.SelectedPolicyTerrainASL:F1} " +
+                $"queries={raised.TerrainQueryCount}");
+            Assert.Equal(TargetAwarePlannerStage.Complete, raised.Stage);
+            Assert.True(raised.TerminalTouchdownValidated);
+            Assert.NotNull(raised.SelectedOutput);
+            Assert.True(raised.SelectedOutput.BrakeUT >= ut + 15);
+            Assert.Equal(2932, raised.SelectedPolicyTerrainASL, 0);
+            Assert.InRange(raised.TerrainQueryCount, 1, 1536);
+        }
+
+        [Fact]
+        public void LatestMunFirstIntersectionProducesPoweredForecastAcrossSampledTerrain()
+        {
+            // Submission 100 of the 30 September flight. The capture contains
+            // ballistic contacts, not the full PQS map. Interpolate those
+            // measured heights to challenge the endpoint-policy feedback.
+            const double ut = 24604031.736792564;
+            var source = new AirlessTargetAwareSnapshot(ut, ut, 200000,
+                65138397520.78069, 0.1660567000983534, 138984.37657447575,
+                0.6741666666666666, 23.473055555555554, 492.18766502593644,
+                692.1876650259364, 8.075855316204823, 0.2,
+                0.019999999552965164, 0.5, -400, 8300,
+                new Vector3d(-70451.54261689488, 2758.4874235945067, 212717.23347697995),
+                new Vector3d(-492.9175996172553, -6.319988545222581, -161.79268432363656),
+                new Vector3d(0, -4.5207853300062813e-05, 0),
+                new Vector3d(-0.06684665250743577, 0, 0.9977632610236509),
+                new Vector3d(-0.9977632610236509, 0, -0.06684665250743571),
+                new Vector3d(-4.093041769618119e-18, 1, 6.10933614530049e-17));
+            var snapshot = new AirlessTargetAwareSnapshot(source, 79.24860520095535,
+                640.0002696139525, 0, 0.27192431688308716, 0,
+                200692.18766502594, 1.629016227964847, 8.075855316204823,
+                false, new Vector3d(0.947510302066803, -0.017922893166542053,
+                    0.3192228674888611), 0, 1, 0, 0, 0.5, 2.955644091911381, 0);
+            var measured = new[] {
+                (23.473, 492.188), (25.873, 1575.939),
+                (28.298, 1787.120), (31.078, 1823.541),
+                (33.973, 2692.722), (38.115, 2462.647),
+                (43.256, 2829.106), (51.574, 2534.990),
+                (65.084, 3635.904), (117.667, 4062.097)
+            };
+            double Terrain(double latitude, double longitude)
+            {
+                if (longitude <= measured[0].Item1) return measured[0].Item2;
+                for (int i = 1; i < measured.Length; ++i)
+                    if (longitude <= measured[i].Item1)
+                    {
+                        double fraction = (longitude - measured[i - 1].Item1) /
+                            (measured[i].Item1 - measured[i - 1].Item1);
+                        return measured[i - 1].Item2 + fraction *
+                            (measured[i].Item2 - measured[i - 1].Item2);
+                    }
+                return measured[measured.Length - 1].Item2;
+            }
+            var planner = new TargetAwareAirlessPlanner(snapshot, 1, 100,
+                new object(), Terrain, 200, 32, 1536);
+            planner.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(snapshot));
+            DriveUntilSettled(planner);
+            Assert.Equal(TargetAwarePlannerStage.ReadyCoarse, planner.Stage);
+            planner.BeginCoarseWorker();
+            planner.SetCoarseOutputs(planner.RunCoarse());
+            DriveUntilSettled(planner);
+            if (planner.Stage == TargetAwarePlannerStage.ReadyRefinement)
+            {
+                planner.BeginRefinementWorker();
+                planner.SetRefinement(planner.RunRefinement());
+                DriveUntilSettled(planner);
+            }
+            _output.WriteLine($"first intersection stage={planner.Stage} " +
+                $"failure={planner.Failure} queries={planner.TerrainQueryCount} " +
+                $"brake={planner.SelectedOutput?.BrakeUT - ut:F1}s");
+            Assert.True(planner.Stage == TargetAwarePlannerStage.Complete &&
+                planner.TerminalTouchdownValidated, planner.Failure ?? planner.Stage.ToString());
+            var endpoint = planner.NominalTerminalTerrain.Contact;
+            var site = AirlessTargetAwareSimulation.ToAbsolute(endpoint.Position,
+                endpoint.UT, snapshot);
+            _output.WriteLine($"powered terminal lon={site.Longitude:F3} " +
+                $"target lon={source.TargetLongitude:F3} " +
+                $"horizontal={planner.TerminalHandoff.EndHorizontalSpeed:F2}m/s");
+            Assert.True(site.Longitude > source.TargetLongitude);
+            Assert.InRange(planner.TerrainQueryCount, 1, 1536);
+        }
+
+        [Fact]
+        public void FailedMunRefresh24CanRevalidateRaisedEndpointTerrain()
         {
             // Submission 24 from the 2026-09-29 failed KSP flight. PQS is
-            // unavailable offline, so the target-height terrain oracle tests
-            // the handoff and search branch rather than actual Mun clearance.
+            // unavailable offline, so a raised-ridge oracle tests whether
+            // the selected endpoint terrain feeds back into V1's speed policy.
             const double inputUT = 24603579.228602532;
             var source = new AirlessTargetAwareSnapshot(inputUT, inputUT, 200000,
                 65138397520.780693, 0.16605670009835341, 138984.37657447575,
@@ -93,12 +242,9 @@ namespace MechJebLibTest.LandingPredictionTests
             }
             Assert.True(planner.Stage == TargetAwarePlannerStage.Complete,
                 planner.Failure ?? planner.Stage.ToString());
-            Assert.True(planner.SelectedTerrain.ClearPath);
-            Assert.True(planner.TerminalHandoff.NecessaryControlBoundPasses);
-            Assert.True(Math.Abs(planner.SignedDownrangeError) > 200);
-            Assert.True(planner.SelectedPolicyTerrainASL >= source.TargetTerrainASL);
-            _output.WriteLine($"Captured refresh 24: downrange={planner.SignedDownrangeError:F1} " +
-                $"brake={planner.SelectedOutput.BrakeUT:F2} queries={planner.TerrainQueryCount}");
+            Assert.True(planner.TerminalTouchdownValidated);
+            Assert.True(planner.SelectedOutput.BrakeUT > inputUT);
+            Assert.True(planner.PolicyEscalations > 0);
         }
 
         [Fact]
@@ -140,42 +286,35 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.True(planner.Stage == TargetAwarePlannerStage.Complete,
                 planner.Failure ?? planner.Stage.ToString());
             Assert.True(planner.PolicyEscalations > 0);
-            Assert.True(planner.SelectedPolicyTerrainASL > source.TargetTerrainASL);
-            Assert.True(planner.SelectedTerrain.ClearPath);
-            Assert.True(planner.TerminalHandoff.NecessaryControlBoundPasses);
-            Assert.True(Math.Abs(planner.SignedDownrangeError) > 200);
+            Assert.True(planner.TerminalTouchdownValidated);
+            Assert.False(double.IsNaN(planner.SelectedOutput.BrakeUT));
             Assert.InRange(planner.TerrainQueryCount, 1, 1024);
-            _output.WriteLine($"No-reticle Mun replay: policyASL={planner.SelectedPolicyTerrainASL:F1} " +
-                $"downrange={planner.SignedDownrangeError:F1} " +
-                $"queries={planner.TerrainQueryCount} escalations={planner.PolicyEscalations}");
+            _output.WriteLine($"Raised-terrain Mun replay: powered brake at " +
+                $"{planner.SelectedOutput.BrakeUT:F2}; queries={planner.TerrainQueryCount}");
 
-            var refreshed = new TargetAwareAirlessPlanner(
-                snapshot.WithV1LandingTerrain(planner.SelectedPolicyTerrainASL),
-                1, 2, new object(),
-                (latitude, longitude) => longitude < 20 ? 835 : source.TargetTerrainASL,
-                200, 32, 1024);
-            refreshed.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(
-                refreshed.Snapshot));
-            DriveUntilSettled(refreshed);
-            Assert.Equal(TargetAwarePlannerStage.ReadyCoarse, refreshed.Stage);
-            refreshed.BeginCoarseWorker();
-            refreshed.SetCoarseOutputs(refreshed.RunCoarse());
-            DriveUntilSettled(refreshed);
-            if (refreshed.Stage == TargetAwarePlannerStage.ReadyRefinement)
+            var activeBaseline = new TargetAwareAirlessPlanner(snapshot, 1, 3,
+                new object(), (latitude, longitude) => longitude < 20 ? 835 :
+                    source.TargetTerrainASL, 200, 32, 1024, directForecast: true);
+            activeBaseline.SetDirectOutput(AirlessTargetAwareSimulation.RunNominalV1(snapshot));
+            DriveUntilSettled(activeBaseline);
+            if (activeBaseline.Stage == TargetAwarePlannerStage.ReadyTerminal)
             {
-                refreshed.BeginRefinementWorker();
-                refreshed.SetRefinement(refreshed.RunRefinement());
-                DriveUntilSettled(refreshed);
+                activeBaseline.BeginTerminalWorker();
+                activeBaseline.SetTerminalEnvelope(activeBaseline.RunTerminalEnvelope());
+                DriveUntilSettled(activeBaseline);
             }
-            Assert.True(refreshed.Stage == TargetAwarePlannerStage.Complete,
-                refreshed.Failure ?? refreshed.Stage.ToString());
-            Assert.True(refreshed.SelectedTerrain.ClearPath);
-            Assert.True(refreshed.TerminalHandoff.NecessaryControlBoundPasses);
-            Assert.True(refreshed.SelectedPolicyTerrainASL >= planner.SelectedPolicyTerrainASL);
+            Assert.Equal(TargetAwarePlannerStage.Complete, activeBaseline.Stage);
+            Assert.True(activeBaseline.SelectedTerrain.HasFirstContact ||
+                activeBaseline.TerminalTouchdownValidated ||
+                activeBaseline.TerminalImpactForecast);
+            _output.WriteLine($"Direct V1 baseline: impact=" +
+                $"{(activeBaseline.SelectedTerrain.HasFirstContact || activeBaseline.TerminalImpactForecast)} " +
+                $"landable={activeBaseline.TerminalTouchdownValidated} " +
+                $"terrainQueries={activeBaseline.TerrainQueryCount}");
         }
 
         [Fact]
-        public void UnreachableTargetPublishesTerrainClearV1MissForCourseCorrection()
+        public void ChangingTargetDoesNotChangeControllerCompatibleTerminalValidity()
         {
             var source = AirlessTargetAwareSimulationTests.MunSnapshot();
             var farTarget = new AirlessTargetAwareSnapshot(source.InputUT, source.EpochUT,
@@ -190,22 +329,40 @@ namespace MechJebLibTest.LandingPredictionTests
                 0.27, 0, source.BodyRadius + source.DecelEndASL,
                 source.BodyGeeASL * 9.81, source.MaximumThrustAcceleration);
             var planner = new TargetAwareAirlessPlanner(snapshot, 1, 1, new object(),
-                (latitude, longitude) => snapshot.TargetTerrainASL, 200, 32, 1024);
+                (latitude, longitude) => snapshot.TargetTerrainASL, 200, 32, 1536);
             planner.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(snapshot));
             DriveUntilSettled(planner);
             Assert.Equal(TargetAwarePlannerStage.ReadyCoarse, planner.Stage);
             planner.BeginCoarseWorker();
             planner.SetCoarseOutputs(planner.RunCoarse());
             DriveUntilSettled(planner);
-            Assert.True(planner.Stage == TargetAwarePlannerStage.Complete,
-                planner.Failure ?? planner.Stage.ToString());
-            Assert.True(planner.SelectedOutput.UsesV1ControlModel);
-            Assert.True(Math.Abs(planner.SignedDownrangeError) > 200);
-            Assert.True(planner.SelectedTerrain.ClearPath);
+            if (planner.Stage == TargetAwarePlannerStage.ReadyRefinement)
+            {
+                planner.BeginRefinementWorker();
+                planner.SetRefinement(planner.RunRefinement());
+                DriveUntilSettled(planner);
+            }
+            Assert.Equal(TargetAwarePlannerStage.Complete, planner.Stage);
+            Assert.True(planner.TerminalTouchdownValidated);
+            var nearSnapshot = new AirlessTargetAwareSnapshot(source, 79, 640, 0,
+                0.27, 0, source.BodyRadius + source.DecelEndASL,
+                source.BodyGeeASL * 9.81, source.MaximumThrustAcceleration);
+            var near = new TargetAwareAirlessPlanner(nearSnapshot, 1, 2, new object(),
+                (latitude, longitude) => nearSnapshot.TargetTerrainASL, 200, 32, 1536);
+            near.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(nearSnapshot));
+            DriveUntilSettled(near);
+            near.BeginCoarseWorker();
+            near.SetCoarseOutputs(near.RunCoarse());
+            DriveUntilSettled(near);
+            near.BeginRefinementWorker();
+            near.SetRefinement(near.RunRefinement());
+            DriveUntilSettled(near);
+            Assert.Equal(TargetAwarePlannerStage.Complete, near.Stage);
+            Assert.True(near.TerminalTouchdownValidated);
         }
 
         [Fact]
-        public void LiveBrakingForecastRejectsRaisedTerrainWithoutChangingV1Policy()
+        public void LiveBrakingForecastReportsFirstRaisedTerrainImpactWithoutChangingV1Policy()
         {
             var source = AirlessTargetAwareSimulationTests.MunSnapshot();
             Vector3d retrograde = -(source.Velocity -
@@ -220,9 +377,118 @@ namespace MechJebLibTest.LandingPredictionTests
             planner.SetDirectOutput(AirlessTargetAwareSimulation.Run(snapshot,
                 snapshot.InputUT, true));
             DriveUntilSettled(planner);
-            Assert.Equal(TargetAwarePlannerStage.Failed, planner.Stage);
-            Assert.Equal("ControllerPathTerrainUnsafe", planner.Failure);
-            Assert.Null(planner.SelectedOutput);
+            Assert.Equal(TargetAwarePlannerStage.Complete, planner.Stage);
+            Assert.True(planner.SelectedTerrain.HasFirstContact);
+            Assert.Equal(TargetAwarePathEndpointKind.BrakingImpact,
+                planner.PathEndpointKind);
+            Assert.InRange(planner.SelectedTerrain.FirstContact.Position.magnitude -
+                snapshot.BodyRadius, 1499, 1501);
+            Assert.Equal(source.DecelEndASL - 200, planner.SelectedPolicyTerrainASL);
+        }
+
+        [Fact]
+        public void ClearHandoffWithLargeHorizontalStopRemainsAnUncertainContinuation()
+        {
+            var source = AirlessTargetAwareSimulationTests.MunSnapshot();
+            var snapshot = new AirlessTargetAwareSnapshot(source, 79, 640, 0,
+                0.27, 0, source.BodyRadius + source.DecelEndASL,
+                source.BodyGeeASL * 9.81, source.MaximumThrustAcceleration);
+            var position = new Vector3d(source.BodyRadius + 697, 0, 0);
+            var state = new AirlessTargetAwareState(position,
+                new Vector3d(-5, 100, 0), source.InputUT + 1);
+            var output = new AirlessTargetAwareOutput(source.InputUT,
+                new System.Collections.Generic.List<AirlessTargetAwareState>(),
+                new System.Collections.Generic.List<AirlessTargetAwareState> { state },
+                true, 100, 0, 1, true, snapshot.InitialMass);
+            var planner = new TargetAwareAirlessPlanner(snapshot, 1, 1, new object(),
+                (latitude, longitude) => 492, 200, 32, 1024,
+                directForecast: true);
+            planner.SetDirectOutput(output);
+            DriveUntilSettled(planner, false);
+            Assert.Equal(TargetAwarePlannerStage.ReadyTerminal, planner.Stage);
+            Assert.Equal(TargetAwarePathEndpointKind.BrakingHandoff,
+                planner.PathEndpointKind);
+            Assert.False(planner.SelectedTerrain.HasFirstContact);
+            Assert.InRange(planner.TerminalHandoff.EndHorizontalSpeed, 99, 101);
+            Assert.True(planner.TerminalHandoff.IdealHoverHorizontalStoppingDistance > 10000);
+            Assert.True(planner.TerminalHandoff.IdealHoverHorizontalStoppingTime > 200);
+            planner.BeginTerminalWorker();
+            planner.SetTerminalEnvelope(planner.RunTerminalEnvelope());
+            Assert.False(planner.TerminalTouchdownValidated);
+        }
+
+        [Fact]
+        public void DirectMunBaselineResolvesTerrainWithApprovedTerminalPolicies()
+        {
+            var source = AirlessTargetAwareSimulationTests.MunSnapshot();
+            var snapshot = new AirlessTargetAwareSnapshot(source, 79, 640, 0,
+                0.27, 0, source.BodyRadius + source.DecelEndASL,
+                source.BodyGeeASL * 9.81, source.MaximumThrustAcceleration);
+            var planner = new TargetAwareAirlessPlanner(snapshot, 1, 1, new object(),
+                (latitude, longitude) => source.TargetTerrainASL,
+                200, 32, 1024, directForecast: true);
+            planner.SetDirectOutput(AirlessTargetAwareSimulation.RunNominalV1(snapshot));
+            DriveUntilSettled(planner, false);
+            Assert.Equal(TargetAwarePlannerStage.ReadyTerminal, planner.Stage);
+            var handoffSite = AirlessTargetAwareSimulation.ToAbsolute(
+                planner.SelectedOutput.End.Position, planner.SelectedOutput.End.UT, snapshot);
+            _output.WriteLine($"direct handoff longitude={handoffSite.Longitude:F3}");
+            planner.BeginTerminalWorker();
+            planner.SetTerminalEnvelope(planner.RunTerminalEnvelope());
+            var terminalSite = AirlessTargetAwareSimulation.ToAbsolute(
+                planner.TerminalEnvelope.Nominal.Trajectory[
+                    planner.TerminalEnvelope.Nominal.Trajectory.Count - 1].Position,
+                planner.TerminalEnvelope.Nominal.Trajectory[
+                    planner.TerminalEnvelope.Nominal.Trajectory.Count - 1].UT, snapshot);
+            _output.WriteLine($"direct terminal longitude={terminalSite.Longitude:F3}");
+            DriveUntilSettled(planner);
+            Assert.Equal(TargetAwarePlannerStage.Complete, planner.Stage);
+            Assert.True(planner.NominalTerminalTerrain.Resolved);
+            Assert.True(planner.DelayedTerminalTerrain.Resolved);
+            Assert.True(planner.TerminalTouchdownValidated);
+            Assert.InRange(planner.TerrainQueryCount, 1, 1024);
+            Assert.InRange(planner.TerminalEndpointSeparation, 0, 200);
+        }
+
+        [Fact]
+        public void TerminalPathContinuesToLowerTerrainInsteadOfRejectingNoContact()
+        {
+            var source = AirlessTargetAwareSimulationTests.MunSnapshot();
+            var snapshot = new AirlessTargetAwareSnapshot(source, 79, 640, 0,
+                0.27, 0, source.BodyRadius + source.DecelEndASL,
+                source.BodyGeeASL * 9.81, source.MaximumThrustAcceleration);
+            // The braking handoff is west of this boundary; terminal motion
+            // crosses it before the modelled touchdown on lower ground.
+            var planner = new TargetAwareAirlessPlanner(snapshot, 1, 1, new object(),
+                (latitude, longitude) => longitude < -16.364 ?
+                    source.TargetTerrainASL : source.TargetTerrainASL - 92,
+                200, 32, 1024, directForecast: true);
+            planner.SetDirectOutput(AirlessTargetAwareSimulation.RunNominalV1(snapshot));
+            DriveUntilSettled(planner);
+            Assert.Equal(TargetAwarePlannerStage.Complete, planner.Stage);
+            Assert.True(planner.NominalTerminalTerrain.HasContact);
+            Assert.True(planner.DelayedTerminalTerrain.HasContact);
+            Assert.True(planner.TerminalTouchdownValidated);
+            Assert.InRange(planner.TerrainQueryCount, 1, 1024);
+        }
+
+
+        [Fact]
+        public void DirectForecastRejectsMissingPathBeforeTerrainResolution()
+        {
+            var source = AirlessTargetAwareSimulationTests.MunSnapshot();
+            var snapshot = new AirlessTargetAwareSnapshot(source, 79, 640, 0,
+                0.27, 0, source.BodyRadius + source.DecelEndASL,
+                source.BodyGeeASL * 9.81, source.MaximumThrustAcceleration);
+            var incomplete = new AirlessTargetAwareOutput(source.InputUT,
+                new System.Collections.Generic.List<AirlessTargetAwareState>(),
+                new System.Collections.Generic.List<AirlessTargetAwareState>(),
+                false, double.NaN, 0, 0, true);
+            var planner = new TargetAwareAirlessPlanner(snapshot, 1, 1, new object(),
+                (latitude, longitude) => 492, 200, 32, 1024,
+                directForecast: true);
+            Assert.Throws<InvalidOperationException>(() =>
+                planner.SetDirectOutput(incomplete));
         }
 
         [Fact]
@@ -314,7 +580,61 @@ namespace MechJebLibTest.LandingPredictionTests
             ridgePresent = true;
             planner.AdvanceTerrain();
             Assert.Equal(TargetAwarePlannerStage.Failed, planner.Stage);
-            Assert.Equal("NoTerrainClearControllerForecast", planner.Failure);
+            Assert.Contains("TerrainChangedDuringTransaction", planner.Failure);
+        }
+
+        [Fact]
+        public void MunRepeatedRefreshReusesTerrainAndPreservesForecastExactly()
+        {
+            var source = AirlessTargetAwareSimulationTests.MunSnapshot();
+            var snapshot = new AirlessTargetAwareSnapshot(source, 79, 640, 0,
+                0.27, 0, source.BodyRadius + source.DecelEndASL,
+                source.BodyGeeASL * 9.81, source.MaximumThrustAcceleration);
+            var cache = new TargetAwareTerrainCache();
+            int calls = 0;
+            double Terrain(double lat, double lon)
+            {
+                calls++;
+                return source.TargetTerrainASL;
+            }
+            TargetAwareAirlessPlanner Run(long sequence, int budget)
+            {
+                var p = new TargetAwareAirlessPlanner(snapshot, 1, sequence,
+                    this, Terrain, 200, 32, budget, 1, false, cache);
+                p.SetBallisticSamples(AirlessTargetAwareSimulation.BallisticTerrainPass(snapshot));
+                DriveUntilSettled(p);
+                Assert.Equal(TargetAwarePlannerStage.ReadyCoarse, p.Stage);
+                p.BeginCoarseWorker();
+                p.SetCoarseOutputs(p.RunCoarse());
+                DriveUntilSettled(p);
+                if (p.Stage == TargetAwarePlannerStage.ReadyRefinement)
+                {
+                    p.BeginRefinementWorker();
+                    p.SetRefinement(p.RunRefinement());
+                    DriveUntilSettled(p);
+                }
+                Assert.True(p.Stage == TargetAwarePlannerStage.Complete,
+                    p.Failure ?? p.Stage.ToString());
+                Assert.True(p.TerminalTouchdownValidated);
+                Assert.Equal(p.TerrainSampleCount, p.TerrainCacheHits + p.TerrainQueryCount);
+                return p;
+            }
+            var first = Run(1, 1536);
+            Assert.Equal(calls, first.TerrainQueryCount);
+            Assert.True(first.TerrainCacheHits > 0);
+            int before = calls;
+            var second = Run(2, 1536);
+            Assert.Equal(calls - before, second.TerrainQueryCount);
+            Assert.True(second.TerrainQueryCount < first.TerrainQueryCount);
+            Assert.True(second.TerrainCacheHits > first.TerrainCacheHits);
+            Assert.Equal(first.SelectedOutput.BrakeUT, second.SelectedOutput.BrakeUT);
+            Assert.Equal(first.NominalTerminalTerrain.Contact.UT, second.NominalTerminalTerrain.Contact.UT);
+            Assert.Equal(first.NominalTerminalTerrain.Contact.Position.x, second.NominalTerminalTerrain.Contact.Position.x);
+            Assert.Equal(first.NominalTerminalTerrain.Contact.Position.y, second.NominalTerminalTerrain.Contact.Position.y);
+            Assert.Equal(first.NominalTerminalTerrain.Contact.Position.z, second.NominalTerminalTerrain.Contact.Position.z);
+            _output.WriteLine($"PQS calls cold={first.TerrainQueryCount}, warm={second.TerrainQueryCount}; " +
+                $"cache hits cold={first.TerrainCacheHits}, warm={second.TerrainCacheHits}; " +
+                $"terrain samples={first.TerrainSampleCount}; identical brake and touchdown");
         }
 
         private void DriveThroughRefinement(TargetAwareAirlessPlanner planner)
@@ -339,7 +659,8 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.True(planner.Stage == destination, planner.Failure ?? planner.Stage.ToString());
         }
 
-        private static void DriveUntilSettled(TargetAwareAirlessPlanner planner)
+        private static void DriveUntilSettled(TargetAwareAirlessPlanner planner,
+            bool includeTerminal = true)
         {
             for (int i = 0; i < 200 && (planner.Stage == TargetAwarePlannerStage.ResolveBallistic ||
                                           planner.Stage == TargetAwarePlannerStage.ResolveCoarse ||
@@ -347,7 +668,10 @@ namespace MechJebLibTest.LandingPredictionTests
                                           planner.Stage == TargetAwarePlannerStage.ReadyPolicyEscalation ||
                                           planner.Stage == TargetAwarePlannerStage.ResolvePolicyEscalation ||
                                           planner.Stage == TargetAwarePlannerStage.ResolveDirectForecast ||
-                                          planner.Stage == TargetAwarePlannerStage.ResolveSelectedCoast); ++i)
+                                          planner.Stage == TargetAwarePlannerStage.ResolveSelectedCoast ||
+                                          (includeTerminal && planner.Stage == TargetAwarePlannerStage.ReadyTerminal) ||
+                                          planner.Stage == TargetAwarePlannerStage.ResolveTerminalNominal ||
+                                          planner.Stage == TargetAwarePlannerStage.ResolveTerminalDelayed); ++i)
             {
                 if (planner.Stage == TargetAwarePlannerStage.ReadyPolicyEscalation)
                 {
@@ -355,9 +679,17 @@ namespace MechJebLibTest.LandingPredictionTests
                     planner.SetPolicyEscalation(planner.RunPolicyEscalation());
                     continue;
                 }
+                if (planner.Stage == TargetAwarePlannerStage.ReadyTerminal)
+                {
+                    planner.BeginTerminalWorker();
+                    planner.SetTerminalEnvelope(planner.RunTerminalEnvelope());
+                    continue;
+                }
                 int before = planner.TerrainQueryCount;
+                int samplesBefore = planner.TerrainSampleCount;
                 planner.AdvanceTerrain();
                 Assert.InRange(planner.TerrainQueryCount - before, 0, 32);
+                Assert.InRange(planner.TerrainSampleCount - samplesBefore, 0, 32);
             }
         }
     }

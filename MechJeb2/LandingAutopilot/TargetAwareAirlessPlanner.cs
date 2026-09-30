@@ -9,7 +9,14 @@ namespace MuMech.Landing
         AwaitBallistic, ResolveBallistic, ReadyCoarse, AwaitCoarse,
         ResolveCoarse, ReadyRefinement, AwaitRefinement, ResolveRefinement,
         ReadyPolicyEscalation, AwaitPolicyEscalation, ResolvePolicyEscalation,
-        ResolveDirectForecast, ResolveSelectedCoast, Complete, Failed
+        ResolveDirectForecast, ResolveSelectedCoast, ReadyTerminal,
+        AwaitTerminal, ResolveTerminalNominal, ResolveTerminalDelayed,
+        Complete, Failed
+    }
+
+    internal enum TargetAwarePathEndpointKind
+    {
+        Unresolved, BallisticImpact, CoastImpact, BrakingImpact, BrakingHandoff
     }
 
     internal sealed class TargetAwareTerrainCandidate
@@ -23,9 +30,16 @@ namespace MuMech.Landing
         internal double MinimumSampledClearance = double.PositiveInfinity;
         internal double HandoffClearance = double.NaN;
         internal double LocalTerrainASL = double.NaN;
+        internal bool HasFirstContact;
+        internal AirlessTargetAwareState FirstContact;
+        internal bool HasPreviousClearSample;
+        internal AirlessTargetAwareState PreviousClearState;
+        internal double PreviousClearance;
+        internal double PreviousTerrainASL;
 
         internal TargetAwareTerrainCandidate(AirlessTargetAwareOutput output,
-            AirlessTargetAwareSnapshot snapshot, bool endpointOnly = false)
+            AirlessTargetAwareSnapshot snapshot, bool endpointOnly = false,
+            bool includeCoast = false)
         {
             Output = output;
             // The ballistic terrain pass already validates the shared coast
@@ -34,6 +48,14 @@ namespace MuMech.Landing
             // redundant and would multiply PQS work across the batch.
             QueryPath = new List<AirlessTargetAwareState>();
             double lastQueryUT = double.NegativeInfinity;
+            if (includeCoast)
+                foreach (AirlessTargetAwareState state in output.CoastSamples)
+                    if (state.Position.magnitude - snapshot.BodyRadius <= snapshot.MaximumTerrainASL &&
+                        state.UT - lastQueryUT >= 0.2)
+                    {
+                        QueryPath.Add(state);
+                        lastQueryUT = state.UT;
+                    }
             foreach (AirlessTargetAwareState state in output.Trajectory)
                 if (!endpointOnly &&
                     state.Position.magnitude - snapshot.BodyRadius <= snapshot.MaximumTerrainASL &&
@@ -78,6 +100,18 @@ namespace MuMech.Landing
         }
     }
 
+    internal sealed class TargetAwareTerminalEnvelope
+    {
+        internal readonly AirlessNominalTerminalOutput Nominal, Delayed;
+
+        internal TargetAwareTerminalEnvelope(AirlessNominalTerminalOutput nominal,
+            AirlessNominalTerminalOutput delayed)
+        {
+            Nominal = nominal;
+            Delayed = delayed;
+        }
+    }
+
     // This state machine is driven only on the flight thread. Worker methods
     // consume the copied snapshot and post immutable outputs back to it.
     internal sealed class TargetAwareAirlessPlanner
@@ -88,21 +122,58 @@ namespace MuMech.Landing
         internal bool IsDirectForecast { get; private set; }
         internal TargetAwarePlannerStage Stage { get; private set; } = TargetAwarePlannerStage.AwaitBallistic;
         internal string Failure { get; private set; }
+        internal string LastCandidateFailure { get; private set; }
         internal AirlessTargetAwareOutput SelectedOutput { get; private set; }
         internal TargetAwareTerrainCandidate SelectedTerrain { get; private set; }
         internal TargetAwareTerminalHandoff TerminalHandoff { get; private set; }
+        internal TargetAwareTerminalEnvelope TerminalEnvelope { get; private set; }
+        internal TargetAwareTerminalTerrainProbeResult NominalTerminalTerrain { get; private set; }
+        internal TargetAwareTerminalTerrainProbeResult DelayedTerminalTerrain { get; private set; }
+        internal bool TerminalTouchdownValidated { get; private set; }
+        internal bool TerminalImpactForecast { get; private set; }
+        internal double TerminalEndpointSeparation { get; private set; } = double.NaN;
+        internal TargetAwarePathEndpointKind PathEndpointKind
+        {
+            get
+            {
+                if (SelectedOutput == null || SelectedTerrain == null ||
+                    !SelectedTerrain.Resolved) return TargetAwarePathEndpointKind.Unresolved;
+                if (SelectedTerrain.HasFirstContact)
+                {
+                    if (double.IsNaN(SelectedOutput.BrakeUT))
+                        return TargetAwarePathEndpointKind.BallisticImpact;
+                    double burnStartUT = SelectedOutput.Trajectory[0].UT;
+                    return SelectedTerrain.FirstContact.UT < burnStartUT ?
+                        TargetAwarePathEndpointKind.CoastImpact :
+                        TargetAwarePathEndpointKind.BrakingImpact;
+                }
+                return SelectedOutput.ReachedHandoff && SelectedTerrain.ClearPath ?
+                    TargetAwarePathEndpointKind.BrakingHandoff :
+                    TargetAwarePathEndpointKind.Unresolved;
+            }
+        }
         internal double SignedDownrangeError { get; private set; }
         internal double CrossrangeError { get; private set; }
         internal double TimingInterval { get; private set; }
         internal double TimingDistanceEstimate { get; private set; }
         internal double BallisticContactUT { get; private set; }
         internal AbsoluteVector BallisticContact { get; private set; }
+        private AirlessTargetAwareState _ballisticContactState;
         internal double SelectedPolicyTerrainASL { get; private set; }
         internal int PolicyEscalations { get; private set; }
         internal double TerrainQueryMilliseconds => 1000d * _terrainTicks / Stopwatch.Frequency;
         internal int TerrainQueryCount { get; private set; }
+        internal int TerrainSampleCount { get; private set; }
+        internal int TerrainCacheHits { get; private set; }
+        internal double TerrainMaximumQueryOffsetMetres { get; private set; }
+        internal const double CoarseTerrainResolutionMetres = 25;
+        internal const double FineTerrainResolutionMetres = 1;
 
         private readonly Func<double, double, double> _terrainAltitude;
+        private readonly TargetAwareTerrainCache _terrainCache;
+        internal readonly Dictionary<(double Latitude, double Longitude), double> TerrainSamples =
+            new Dictionary<(double Latitude, double Longitude), double>();
+        private const int MaximumTerrainSamples = 32768;
         private readonly int _queriesPerTick, _maximumQueries;
         private readonly double _maximumTerrainMillisecondsPerTick;
         private readonly double _targetTolerance;
@@ -115,19 +186,27 @@ namespace MuMech.Landing
         private long _terrainTicks;
         private TargetAwareBrakingPlan.Bracket _bracket;
         private TargetAwareRefinementBatch _refinement;
+        private double _safetyWindowEarlier, _safetyWindowLater;
         private bool _fallbackSelection;
         private List<TargetAwareTerrainCandidate> _fallbackOptions;
         private int _fallbackIndex;
         private int _nextSelectedCoast;
-        private double _pendingPolicyTerrainASL;
-        private double _policyEscalationBrakeUT;
+        private bool _selectedCoastFreshChecked;
+        private double _pendingPolicyTerrainASL = double.NaN;
+        private double _policyEscalationBrakeUT = double.NaN;
         private const int MaximumPolicyEscalations = 8;
+        private TargetAwareTerminalTerrainResolver _terminalTerrainResolver;
+        private double _terminalModelTerrainASL = double.NaN;
+        private double _delayedTerminalModelTerrainASL = double.NaN;
+        private int _terminalTerrainReplays;
+        private bool _hasPriorTerminalContact;
+        private AirlessTargetAwareState _priorTerminalContact;
 
         internal TargetAwareAirlessPlanner(AirlessTargetAwareSnapshot snapshot, long generation,
             long sequence, object bodyIdentity, Func<double, double, double> terrainAltitude,
             double targetTolerance, int queriesPerTick, int maximumQueries,
             double maximumTerrainMillisecondsPerTick = 1,
-            bool directForecast = false)
+            bool directForecast = false, TargetAwareTerrainCache terrainCache = null)
         {
             Snapshot = snapshot;
             Generation = generation;
@@ -135,10 +214,15 @@ namespace MuMech.Landing
             BodyIdentity = bodyIdentity;
             IsDirectForecast = directForecast;
             _terrainAltitude = terrainAltitude ?? throw new ArgumentNullException(nameof(terrainAltitude));
+            _terrainCache = terrainCache ?? new TargetAwareTerrainCache();
             _targetTolerance = targetTolerance;
             _queriesPerTick = queriesPerTick;
             _maximumQueries = maximumQueries;
             _maximumTerrainMillisecondsPerTick = maximumTerrainMillisecondsPerTick;
+            TimingInterval = double.NaN;
+            TimingDistanceEstimate = double.NaN;
+            SignedDownrangeError = double.NaN;
+            CrossrangeError = double.NaN;
             SelectedPolicyTerrainASL = snapshot.PolicyTerrainRadius - snapshot.BodyRadius - 200;
             if (bodyIdentity == null || !Finite(targetTolerance) || targetTolerance <= 0 ||
                 queriesPerTick <= 0 || maximumQueries < queriesPerTick ||
@@ -157,12 +241,13 @@ namespace MuMech.Landing
         internal void SetDirectOutput(AirlessTargetAwareOutput output)
         {
             if (Stage != TargetAwarePlannerStage.AwaitBallistic ||
-                output == null || !output.UsesV1ControlModel)
+                output == null || !output.UsesV1ControlModel ||
+                output.Trajectory == null || output.Trajectory.Count == 0)
                 throw new InvalidOperationException("Incomplete live V1 forecast");
             IsDirectForecast = true;
             _fallbackSelection = true;
             _candidates = new List<TargetAwareTerrainCandidate> {
-                new TargetAwareTerrainCandidate(output, Snapshot) };
+                new TargetAwareTerrainCandidate(output, Snapshot, includeCoast: true) };
             _nextCandidate = 0;
             Stage = TargetAwarePlannerStage.ResolveDirectForecast;
         }
@@ -182,6 +267,20 @@ namespace MuMech.Landing
         internal void SetRefinement(TargetAwareRefinementBatch refinement)
         {
             if (Stage != TargetAwarePlannerStage.AwaitRefinement) throw new InvalidOperationException();
+            if (Snapshot.HasV1ControlModel)
+            {
+                if (refinement?.Outputs == null || refinement.Outputs.Count != 17 ||
+                    refinement.Outputs.Exists(item => item == null || !item.UsesV1ControlModel))
+                { Fail("IncompleteSafetyTimingBatch"); return; }
+                _coarseCandidates = _candidates;
+                _refinement = refinement;
+                _candidates = new List<TargetAwareTerrainCandidate>(17);
+                foreach (AirlessTargetAwareOutput output in refinement.Outputs)
+                    _candidates.Add(new TargetAwareTerrainCandidate(output, Snapshot, true));
+                _nextCandidate = 0;
+                Stage = TargetAwarePlannerStage.ResolveRefinement;
+                return;
+            }
             if (refinement == null || !refinement.Converged || refinement.Selected == null ||
                 refinement.BracketEarlier == null || refinement.BracketLater == null ||
                 refinement.Outputs == null)
@@ -207,6 +306,58 @@ namespace MuMech.Landing
 
         internal void WorkerFailed(string reason) => Fail(reason);
 
+        internal void BeginTerminalWorker()
+        {
+            if (Stage != TargetAwarePlannerStage.ReadyTerminal)
+                throw new InvalidOperationException();
+            Stage = TargetAwarePlannerStage.AwaitTerminal;
+        }
+
+        internal TargetAwareTerminalEnvelope RunTerminalEnvelope()
+        {
+            if (SelectedOutput == null || SelectedTerrain == null ||
+                !SelectedTerrain.ClearPath)
+                throw new InvalidOperationException("Incomplete terminal handoff");
+            var nominal = AirlessTargetAwareSimulation.RunNominalTerminal(Snapshot,
+                SelectedOutput, _terminalModelTerrainASL, FineTerrainResolutionMetres);
+            // The old Mun trace measured 5.1 s to settle a 62 degree KHV
+            // turn. This no-thrust sensitivity path is a recorded uncertainty
+            // bound for the diagnostic vessel, not a new V1 command law.
+            var delayedKill = AirlessTargetAwareSimulation.RunDelayedHorizontalKillBound(
+                Snapshot, SelectedOutput.End, SelectedOutput.EndMass, 5.1);
+            double delayedTerrain = Finite(_delayedTerminalModelTerrainASL) ?
+                _delayedTerminalModelTerrainASL : _terminalModelTerrainASL;
+            var delayedFinal = delayedKill.ReachedFinalDescent ?
+                AirlessTargetAwareSimulation.RunIdealFinalDescentBound(Snapshot,
+                    delayedKill, delayedTerrain,
+                    Snapshot.TouchdownSpeed, Snapshot.PreviousTransThrottle,
+                    Snapshot.BottomOffset, FineTerrainResolutionMetres) : null;
+            return new TargetAwareTerminalEnvelope(nominal,
+                new AirlessNominalTerminalOutput(delayedKill, delayedFinal,
+                    delayedTerrain));
+        }
+
+        internal void SetTerminalEnvelope(TargetAwareTerminalEnvelope envelope)
+        {
+            if (Stage != TargetAwarePlannerStage.AwaitTerminal || envelope == null ||
+                envelope.Nominal == null || envelope.Delayed == null)
+                throw new InvalidOperationException("Incomplete terminal worker result");
+            TerminalEnvelope = envelope;
+            if (!envelope.Nominal.HorizontalKill.ReachedFinalDescent ||
+                envelope.Nominal.FinalDescent == null ||
+                !envelope.Nominal.FinalDescent.ReachedTerrain ||
+                !envelope.Delayed.HorizontalKill.ReachedFinalDescent ||
+                envelope.Delayed.FinalDescent == null ||
+                !envelope.Delayed.FinalDescent.ReachedTerrain)
+            {
+                TryNextCandidate("TerminalControllerContinuationIncomplete");
+                return;
+            }
+            _terminalTerrainResolver = new TargetAwareTerminalTerrainResolver(Snapshot,
+                envelope.Nominal.Trajectory, Query, MaximumTerrainSamples);
+            Stage = TargetAwarePlannerStage.ResolveTerminalNominal;
+        }
+
         internal void BeginPolicyEscalation()
         {
             if (Stage != TargetAwarePlannerStage.ReadyPolicyEscalation)
@@ -231,6 +382,14 @@ namespace MuMech.Landing
             }
             SelectedPolicyTerrainASL = _pendingPolicyTerrainASL;
             PolicyEscalations++;
+            TerminalEnvelope = null;
+            NominalTerminalTerrain = default(TargetAwareTerminalTerrainProbeResult);
+            DelayedTerminalTerrain = default(TargetAwareTerminalTerrainProbeResult);
+            TerminalTouchdownValidated = false;
+            TerminalImpactForecast = false;
+            _terminalModelTerrainASL = double.NaN;
+            _delayedTerminalModelTerrainASL = double.NaN;
+            _terminalTerrainReplays = 0;
             _candidates = new List<TargetAwareTerrainCandidate> {
                 new TargetAwareTerrainCandidate(output, Snapshot) };
             _nextCandidate = 0;
@@ -261,6 +420,7 @@ namespace MuMech.Landing
                         remaining--;
                         if (state.Position.magnitude - Snapshot.BodyRadius <= terrain)
                         {
+                            _ballisticContactState = state;
                             BallisticContact = position;
                             BallisticContactUT = state.UT;
                             Vector3d target = AirlessTargetAwareSimulation.SurfaceDirection(
@@ -286,7 +446,8 @@ namespace MuMech.Landing
                            _nextCandidate < _candidates.Count)
                     {
                         TargetAwareTerrainCandidate candidate = _candidates[_nextCandidate];
-                        if (!candidate.Output.ReachedHandoff || candidate.QueryPath.Count == 0)
+                        if ((!IsDirectForecast && !candidate.Output.ReachedHandoff) ||
+                            candidate.QueryPath.Count == 0)
                         {
                             candidate.Resolved = true;
                             candidate.EarlyIntersection = true;
@@ -308,7 +469,41 @@ namespace MuMech.Landing
                         double clearance = state.Position.magnitude - Snapshot.BodyRadius - terrain;
                         candidate.MinimumSampledClearance = Math.Min(candidate.MinimumSampledClearance, clearance);
                         bool endpoint = index == candidate.QueryPath.Count - 1;
-                        if (endpoint)
+                        if (IsDirectForecast && clearance <= 0)
+                        {
+                            candidate.HasFirstContact = true;
+                            double fraction = candidate.HasPreviousClearSample ?
+                                Math.Max(0, Math.Min(1, candidate.PreviousClearance /
+                                    (candidate.PreviousClearance - clearance))) : 1;
+                            candidate.FirstContact = candidate.HasPreviousClearSample ?
+                                new AirlessTargetAwareState(
+                                    candidate.PreviousClearState.Position + fraction *
+                                        (state.Position - candidate.PreviousClearState.Position),
+                                    candidate.PreviousClearState.Velocity + fraction *
+                                        (state.Velocity - candidate.PreviousClearState.Velocity),
+                                    candidate.PreviousClearState.UT + fraction *
+                                        (state.UT - candidate.PreviousClearState.UT)) : state;
+                            candidate.LocalTerrainASL = candidate.HasPreviousClearSample ?
+                                candidate.PreviousTerrainASL + fraction *
+                                    (terrain - candidate.PreviousTerrainASL) : terrain;
+                            candidate.HandoffClearance = candidate.FirstContact.Position.magnitude -
+                                Snapshot.BodyRadius - candidate.LocalTerrainASL;
+                            candidate.Resolved = true;
+                            _nextCandidate++;
+                        }
+                        else if (IsDirectForecast)
+                        {
+                            candidate.HasPreviousClearSample = true;
+                            candidate.PreviousClearState = state;
+                            candidate.PreviousClearance = clearance;
+                            candidate.PreviousTerrainASL = terrain;
+                            if (endpoint)
+                            {
+                                candidate.HandoffClearance = clearance;
+                                candidate.LocalTerrainASL = terrain;
+                            }
+                        }
+                        else if (endpoint)
                         {
                             candidate.HandoffClearance = clearance;
                             candidate.LocalTerrainASL = terrain;
@@ -317,6 +512,8 @@ namespace MuMech.Landing
                         else if (clearance <= 0)
                         {
                             candidate.EarlyIntersection = true;
+                            candidate.HasFirstContact = true;
+                            candidate.FirstContact = state;
                             candidate.LocalTerrainASL = terrain;
                             candidate.HandoffClearance = clearance;
                             candidate.Resolved = true;
@@ -345,7 +542,16 @@ namespace MuMech.Landing
                             continue;
                         AbsoluteVector position = AirlessTargetAwareSimulation.ToAbsolute(
                             state.Position, state.UT, Snapshot);
-                        double terrain = Query(position);
+                        // Reuse the snapshot's checked coast. Rechecking every
+                        // point against PQS on every policy replay defeated the
+                        // cache. Critical selected endpoint checks remain fresh.
+                        bool refresh = !_selectedCoastFreshChecked;
+                        if (refresh && Snapshot.HasV1ControlModel && _terrainCache.SpatialReuseEnabled)
+                            TargetAwareTerrainCache.QueryLocation(position.Latitude, position.Longitude,
+                                Snapshot.BodyRadius, FineTerrainResolutionMetres,
+                                out position.Latitude, out position.Longitude);
+                        double terrain = Query(position.Latitude, position.Longitude, refresh);
+                        _selectedCoastFreshChecked = true;
                         remaining--;
                         if (state.Position.magnitude - Snapshot.BodyRadius <= terrain)
                         {
@@ -361,7 +567,70 @@ namespace MuMech.Landing
                         }
                     }
                     if (_nextSelectedCoast == SelectedOutput.CoastSamples.Count)
-                        Stage = TargetAwarePlannerStage.Complete;
+                        Stage = Snapshot.HasV1ControlModel ?
+                            TargetAwarePlannerStage.ReadyTerminal :
+                            TargetAwarePlannerStage.Complete;
+                }
+                else if (Stage == TargetAwarePlannerStage.ResolveTerminalNominal ||
+                         Stage == TargetAwarePlannerStage.ResolveTerminalDelayed)
+                {
+                    _terminalTerrainResolver.Advance(remaining,
+                        _maximumTerrainMillisecondsPerTick);
+                    if (_terminalTerrainResolver.Done)
+                    {
+                        TargetAwareTerminalTerrainProbeResult terrain =
+                            _terminalTerrainResolver.Result;
+                        if (!terrain.Resolved)
+                        {
+                            Fail("TerminalTerrainUnresolved:resolved=" + terrain.Resolved +
+                                ":contact=" + terrain.HasContact +
+                                ":queries=" + TerrainQueryCount);
+                            return;
+                        }
+                        if (!terrain.HasContact)
+                        {
+                            // The worker stops at its provisional ground height.
+                            // Lower PQS ground is a request to continue V1 final
+                            // descent, not proof that no landing exists.
+                            AirlessTargetAwareState end = Stage ==
+                                TargetAwarePlannerStage.ResolveTerminalNominal ?
+                                TerminalEnvelope.Nominal.Trajectory[
+                                    TerminalEnvelope.Nominal.Trajectory.Count - 1] :
+                                TerminalEnvelope.Delayed.Trajectory[
+                                    TerminalEnvelope.Delayed.Trajectory.Count - 1];
+                            double actualTerrain = end.Position.magnitude -
+                                Snapshot.BodyRadius - Snapshot.BottomOffset -
+                                terrain.EndClearance;
+                            double currentTerrain = Stage == TargetAwarePlannerStage.ResolveTerminalNominal ||
+                                !Finite(_delayedTerminalModelTerrainASL) ?
+                                _terminalModelTerrainASL : _delayedTerminalModelTerrainASL;
+                            if (!Finite(actualTerrain) ||
+                                actualTerrain >= currentTerrain - 0.01 ||
+                                ++_terminalTerrainReplays > 3)
+                            {
+                                TryNextCandidate("TerminalContinuationCannotReachTerrain");
+                                return;
+                            }
+                            if (Stage == TargetAwarePlannerStage.ResolveTerminalNominal)
+                                _terminalModelTerrainASL = actualTerrain;
+                            else _delayedTerminalModelTerrainASL = actualTerrain;
+                            Stage = TargetAwarePlannerStage.ReadyTerminal;
+                            return;
+                        }
+                        if (Stage == TargetAwarePlannerStage.ResolveTerminalNominal)
+                        {
+                            NominalTerminalTerrain = terrain;
+                            _terminalTerrainResolver = new TargetAwareTerminalTerrainResolver(
+                                Snapshot, TerminalEnvelope.Delayed.Trajectory,
+                                Query, MaximumTerrainSamples);
+                            Stage = TargetAwarePlannerStage.ResolveTerminalDelayed;
+                        }
+                        else
+                        {
+                            DelayedTerminalTerrain = terrain;
+                            FinishTerminalEnvelope();
+                        }
+                    }
                 }
             }
             catch (Exception ex)
@@ -398,6 +667,17 @@ namespace MuMech.Landing
 
         internal TargetAwareRefinementBatch RunRefinement()
         {
+            if (Snapshot.HasV1ControlModel)
+            {
+                var safetyOutputs = new List<AirlessTargetAwareOutput>(17);
+                for (int i = 0; i < 17; i++)
+                    safetyOutputs.Add(AirlessTargetAwareSimulation.Run(Snapshot,
+                        _safetyWindowEarlier + (i + 1) / 18d *
+                        (_safetyWindowLater - _safetyWindowEarlier), true));
+                double interval = (_safetyWindowLater - _safetyWindowEarlier) / 18d;
+                return new TargetAwareRefinementBatch(safetyOutputs, null, null, null, true,
+                    interval, double.NaN, double.NaN, double.NaN);
+            }
             TargetAwareBrakingPlan.Candidate low = _bracket.Earlier;
             TargetAwareBrakingPlan.Candidate high = _bracket.Later;
             AirlessTargetAwareOutput lowOutput = _candidates.Find(item =>
@@ -479,18 +759,56 @@ namespace MuMech.Landing
         }
 
         private double Query(AbsoluteVector position)
+            => Query(position.Latitude, position.Longitude);
+
+        private double Query(double latitude, double longitude) => Query(latitude, longitude, false);
+
+        private double Query(double latitude, double longitude, bool refresh)
         {
+            if (!refresh && Snapshot.HasV1ControlModel && _terrainCache.SpatialReuseEnabled)
+            {
+                bool coarse = Stage == TargetAwarePlannerStage.ResolveBallistic ||
+                    Stage == TargetAwarePlannerStage.ResolveCoarse ||
+                    (Stage == TargetAwarePlannerStage.ResolveRefinement && !_fallbackSelection);
+                double originalLatitude = latitude, originalLongitude = longitude;
+                TargetAwareTerrainCache.QueryLocation(latitude, longitude, Snapshot.BodyRadius,
+                    coarse ? CoarseTerrainResolutionMetres : FineTerrainResolutionMetres,
+                    out latitude, out longitude);
+                double longitudeOffset = ((longitude - originalLongitude + 180) % 360 + 360) % 360 - 180;
+                double latitudeOffset = latitude - originalLatitude;
+                double offset = Math.Sqrt(latitudeOffset * latitudeOffset +
+                    Math.Pow(longitudeOffset * Math.Cos(originalLatitude * Math.PI / 180), 2)) *
+                    Snapshot.BodyRadius * Math.PI / 180;
+                TerrainMaximumQueryOffsetMetres = Math.Max(TerrainMaximumQueryOffsetMetres, offset);
+            }
+            if (TerrainSampleCount >= MaximumTerrainSamples)
+                throw new InvalidOperationException("TerrainSampleBudgetExceeded");
+            TerrainSampleCount++;
+            bool hasCached = _terrainCache.TryGet(latitude, longitude, out double cached);
+            if (!refresh && hasCached)
+            {
+                TerrainCacheHits++;
+                TerrainSamples[(latitude, longitude)] = cached;
+                return cached;
+            }
             if (TerrainQueryCount >= _maximumQueries)
                 throw new InvalidOperationException("TerrainQueryBudgetExceeded");
             long start = Stopwatch.GetTimestamp();
             double terrain;
-            try { terrain = _terrainAltitude(position.Latitude, position.Longitude); }
+            try { terrain = _terrainAltitude(latitude, longitude); }
             finally
             {
                 _terrainTicks += Stopwatch.GetTimestamp() - start;
                 TerrainQueryCount++;
             }
             if (!Finite(terrain)) throw new InvalidOperationException("TerrainUnresolved");
+            if (hasCached && cached != terrain)
+            {
+                _terrainCache.Clear();
+                throw new InvalidOperationException("TerrainChangedDuringTransaction");
+            }
+            _terrainCache.Store(latitude, longitude, terrain);
+            TerrainSamples[(latitude, longitude)] = terrain;
             return terrain;
         }
 
@@ -500,6 +818,35 @@ namespace MuMech.Landing
 
         private void FinishCoarse()
         {
+            if (Snapshot.HasV1ControlModel)
+            {
+                TargetAwareTerrainCandidate latestSafe = null;
+                TargetAwareTerrainCandidate nextLater = null;
+                foreach (TargetAwareTerrainCandidate candidate in _candidates)
+                {
+                    if (latestSafe != null && nextLater == null)
+                        nextLater = candidate;
+                    if (SafetyMarginPasses(candidate))
+                    {
+                        latestSafe = candidate;
+                        nextLater = null;
+                    }
+                }
+                if (latestSafe == null)
+                {
+                    PrepareFallbackFromCoarse();
+                    return;
+                }
+                if (nextLater == null)
+                {
+                    PrepareFallbackFromCoarse();
+                    return;
+                }
+                _safetyWindowEarlier = latestSafe.Output.BrakeUT;
+                _safetyWindowLater = nextLater.Output.BrakeUT;
+                Stage = TargetAwarePlannerStage.ReadyRefinement;
+                return;
+            }
             var points = new List<TargetAwareBrakingPlan.Candidate>(_candidates.Count);
             foreach (TargetAwareTerrainCandidate candidate in _candidates)
             {
@@ -533,6 +880,13 @@ namespace MuMech.Landing
             _fallbackOptions = new List<TargetAwareTerrainCandidate>();
             foreach (TargetAwareTerrainCandidate candidate in source)
             {
+                if (Snapshot.HasV1ControlModel)
+                {
+                    if (SafetyMarginPasses(candidate) ||
+                        CanRevalidateWithEndpointTerrain(candidate))
+                        _fallbackOptions.Add(candidate);
+                    continue;
+                }
                 if (!candidate.Resolved || !candidate.Output.ReachedHandoff ||
                     !candidate.Output.UsesV1ControlModel ||
                     !TryProject(candidate.Output, out double down, out _))
@@ -547,11 +901,24 @@ namespace MuMech.Landing
             }
             if (_fallbackOptions.Count == 0)
             {
-                Fail("NoTerrainClearControllerForecast");
+                if (Snapshot.HasV1ControlModel)
+                    PrepareBallisticImpact();
+                else Fail("NoTerrainClearControllerForecast");
                 return;
             }
             _fallbackOptions.Sort((a, b) =>
             {
+                if (Snapshot.HasV1ControlModel)
+                {
+                    bool aSafe = SafetyMarginPasses(a);
+                    bool bSafe = SafetyMarginPasses(b);
+                    if (aSafe != bSafe) return aSafe ? -1 : 1;
+                    // For paths hitting terrain above the provisional policy,
+                    // try the earlier braking reference first. The final
+                    // endpoint and policy must still be revalidated.
+                    return aSafe ? b.Output.BrakeUT.CompareTo(a.Output.BrakeUT) :
+                        a.Output.BrakeUT.CompareTo(b.Output.BrakeUT);
+                }
                 TryProject(a.Output, out double aDown, out _);
                 TryProject(b.Output, out double bDown, out _);
                 return Math.Abs(aDown).CompareTo(Math.Abs(bDown));
@@ -567,11 +934,18 @@ namespace MuMech.Landing
         {
             if (_fallbackIndex >= _fallbackOptions.Count)
             {
-                Fail("NoTerrainClearControllerForecast");
+                if (Snapshot.HasV1ControlModel)
+                    PrepareBallisticImpact();
+                else Fail("NoTerrainClearControllerForecast");
                 return;
             }
             AirlessTargetAwareOutput output = _fallbackOptions[_fallbackIndex].Output;
             SelectedPolicyTerrainASL = Snapshot.PolicyTerrainRadius - Snapshot.BodyRadius - 200;
+            PolicyEscalations = 0;
+            _hasPriorTerminalContact = false;
+            _terminalModelTerrainASL = double.NaN;
+            _delayedTerminalModelTerrainASL = double.NaN;
+            _terminalTerrainReplays = 0;
             TryProject(output, out double down, out double across);
             SignedDownrangeError = down;
             CrossrangeError = across;
@@ -581,8 +955,30 @@ namespace MuMech.Landing
             Stage = TargetAwarePlannerStage.ResolveRefinement;
         }
 
+        private void PrepareBallisticImpact()
+        {
+            // No candidate reaches the terminal handoff with V1's speed and
+            // thrust margin. The resolved unpowered first contact remains a
+            // useful correction datum, but can never be labelled a landing.
+            IsDirectForecast = true;
+            var impact = new AirlessTargetAwareOutput(double.NaN,
+                new List<AirlessTargetAwareState>(),
+                new List<AirlessTargetAwareState> { _ballisticContactState },
+                false, double.NaN, 0, 0, true, Snapshot.InitialMass);
+            _candidates = new List<TargetAwareTerrainCandidate> {
+                new TargetAwareTerrainCandidate(impact, Snapshot) };
+            _nextCandidate = 0;
+            Stage = TargetAwarePlannerStage.ResolveDirectForecast;
+        }
+
         private void FinishRefinement()
         {
+            if (Snapshot.HasV1ControlModel && !_fallbackSelection)
+            {
+                _coarseCandidates.AddRange(_candidates);
+                PrepareFallbackFromCoarse();
+                return;
+            }
             if (_fallbackSelection)
             {
                 TargetAwareTerrainCandidate candidate = _candidates[0];
@@ -648,6 +1044,16 @@ namespace MuMech.Landing
             SelectedPolicyTerrainASL = Snapshot.PolicyTerrainRadius - Snapshot.BodyRadius - 200;
             SignedDownrangeError = double.NaN;
             CrossrangeError = double.NaN;
+            if (candidate.HasFirstContact)
+            {
+                Stage = TargetAwarePlannerStage.Complete;
+                return;
+            }
+            if (!candidate.Output.ReachedHandoff)
+            {
+                Fail("BallisticContactTerrainChanged");
+                return;
+            }
             CompleteOrRevalidateSelected();
         }
 
@@ -677,22 +1083,71 @@ namespace MuMech.Landing
 
         private bool TryEscalatePolicy()
         {
-            if (!Snapshot.HasV1ControlModel || IsDirectForecast ||
-                PolicyEscalations >= MaximumPolicyEscalations ||
-                !Finite(SelectedTerrain.LocalTerrainASL) ||
-                SelectedTerrain.LocalTerrainASL <= SelectedPolicyTerrainASL + 5)
+            // Before the first publication, V1's live policy uses its old
+            // endpoint height. Publication replaces that input with this
+            // forecast's terrain. Re-run the same brake time with the higher
+            // prospective endpoint terrain, then check the resulting endpoint
+            // again. An impact during the ballistic coast cannot be repaired
+            // by changing the later braking policy.
+            if (!CanRevalidateWithEndpointTerrain(SelectedTerrain) ||
+                PolicyEscalations >= MaximumPolicyEscalations)
                 return false;
-            _pendingPolicyTerrainASL = Math.Min(Snapshot.MaximumTerrainASL,
-                SelectedTerrain.LocalTerrainASL + 5);
-            if (_pendingPolicyTerrainASL <= SelectedPolicyTerrainASL + 5)
-                return false;
+            _pendingPolicyTerrainASL = SelectedTerrain.LocalTerrainASL;
             _policyEscalationBrakeUT = SelectedOutput.BrakeUT;
             Stage = TargetAwarePlannerStage.ReadyPolicyEscalation;
             return true;
         }
 
+        private bool CanRevalidateWithEndpointTerrain(TargetAwareTerrainCandidate candidate)
+        {
+            if (candidate == null || !candidate.Resolved ||
+                !candidate.Output.ReachedHandoff ||
+                !candidate.Output.UsesV1ControlModel ||
+                !Finite(candidate.LocalTerrainASL) ||
+                candidate.LocalTerrainASL <= SelectedPolicyTerrainASL + 1 ||
+                !(candidate.HandoffBelowTerrain || candidate.EarlyIntersection))
+                return false;
+            return !candidate.EarlyIntersection ||
+                (candidate.HasFirstContact &&
+                 candidate.FirstContact.UT >= candidate.Output.Trajectory[0].UT);
+        }
+
+        private bool SafetyMarginPasses(TargetAwareTerrainCandidate candidate)
+        {
+            if (!candidate.Resolved || !candidate.ClearPath ||
+                !candidate.Output.ReachedHandoff ||
+                !candidate.Output.UsesV1ControlModel) return false;
+            AirlessTargetAwareSnapshot effectiveSnapshot = Snapshot.WithV1LandingTerrain(
+                SelectedPolicyTerrainASL);
+            TargetAwareTerminalHandoff handoff = TargetAwareTerminalHandoff.Assess(
+                effectiveSnapshot, candidate.Output, candidate.LocalTerrainASL);
+            if (!handoff.NecessaryControlBoundPasses) return false;
+            double allowedHandoffSpeed = V1LandingControlPolicy.SafeDescentMaximumSpeed(
+                candidate.Output.End.Position.magnitude, effectiveSnapshot.PolicyTerrainRadius,
+                effectiveSnapshot.PolicyGravity,
+                effectiveSnapshot.PolicyThrust * Snapshot.InitialMass /
+                    candidate.Output.EndMass);
+            // Reaching the handoff radius without having reduced the actual
+            // surface speed to V1's envelope is an impact path, even if its
+            // vertical component alone has a short stopping distance.
+            if (double.IsNaN(allowedHandoffSpeed) ||
+                candidate.Output.EndSurfaceSpeed > 1.1 * allowedHandoffSpeed)
+                return false;
+            // Reserve at least one fifth of the current engine acceleration
+            // above the ideal vertical stop requirement. This is a screening
+            // bound; the selected path still needs full terminal validation.
+            double radius = candidate.Output.End.Position.magnitude;
+            double gravity = Snapshot.BodyMu / (radius * radius);
+            double maxAcceleration = Snapshot.MaximumThrust / Snapshot.InitialMass;
+            double required = gravity +
+                Math.Pow(Math.Max(0, -handoff.EndVerticalSpeed), 2) /
+                (2 * Math.Max(1, handoff.RemainingClearance));
+            return required <= 0.8 * maxAcceleration;
+        }
+
         private void TryNextCandidate(string reason)
         {
+            LastCandidateFailure = reason;
             if (_fallbackSelection && !IsDirectForecast)
             {
                 _fallbackIndex++;
@@ -705,27 +1160,146 @@ namespace MuMech.Landing
 
         private void CompleteOrRevalidateSelected()
         {
-            // V1 will adopt this exact policy height when the complete result
-            // commits. Raise it monotonically only where live PQS proves the
-            // current handoff would be underground; repropagate on the worker.
+            // A terrain-clear handoff is only an intermediate event. The
+            // direct baseline records it even if a necessary terminal bound
+            // fails; neither case is a publishable landing prediction.
             if (!SelectedTerrain.ClearPath)
             {
                 if (!TryEscalatePolicy())
                     TryNextCandidate("ControllerPathTerrainUnsafe");
                 return;
             }
+            // Beta uses the eventual endpoint's terrain for its braking
+            // handoff. A lower local surface can leave a provisional handoff
+            // above the final 300 m branch. Correct that prospective policy
+            // input before terminal replay instead of declaring no forecast.
+            if (Snapshot.HasV1ControlModel && !IsDirectForecast &&
+                SelectedTerrain.HandoffClearance - Snapshot.BottomOffset > 300 &&
+                Math.Abs(SelectedTerrain.LocalTerrainASL - SelectedPolicyTerrainASL) > 1)
+            {
+                if (PolicyEscalations >= MaximumPolicyEscalations)
+                {
+                    TryNextCandidate("V1EndpointTerrainPolicyDidNotConverge");
+                    return;
+                }
+                _pendingPolicyTerrainASL = SelectedTerrain.LocalTerrainASL;
+                _policyEscalationBrakeUT = SelectedOutput.BrakeUT;
+                Stage = TargetAwarePlannerStage.ReadyPolicyEscalation;
+                return;
+            }
             var effectiveSnapshot = Snapshot.HasV1ControlModel ?
                 Snapshot.WithV1LandingTerrain(SelectedPolicyTerrainASL) : Snapshot;
             TerminalHandoff = TargetAwareTerminalHandoff.Assess(effectiveSnapshot,
                 SelectedOutput, SelectedTerrain.LocalTerrainASL);
-            if (!TerminalHandoff.NecessaryControlBoundPasses)
+            if (Snapshot.HasV1ControlModel && !IsDirectForecast &&
+                !SafetyMarginPasses(SelectedTerrain))
+            {
+                TryNextCandidate("ControllerThrottleMarginFailed");
+                return;
+            }
+            if (!TerminalHandoff.NecessaryControlBoundPasses && !IsDirectForecast)
             {
                 TryNextCandidate("TerminalVerticalStoppingBoundFailed");
                 return;
             }
             _nextSelectedCoast = 0;
+            _selectedCoastFreshChecked = false;
+            if (!Finite(_terminalModelTerrainASL))
+                _terminalModelTerrainASL = SelectedTerrain.LocalTerrainASL;
             Stage = SelectedOutput.CoastSamples.Count == 0 ?
-                TargetAwarePlannerStage.Complete : TargetAwarePlannerStage.ResolveSelectedCoast;
+                (Snapshot.HasV1ControlModel ? TargetAwarePlannerStage.ReadyTerminal :
+                    TargetAwarePlannerStage.Complete) :
+                TargetAwarePlannerStage.ResolveSelectedCoast;
+        }
+
+        private void FinishTerminalEnvelope()
+        {
+            double endpointTerrain = NominalTerminalTerrain.ContactTerrainASL;
+            AirlessTargetAwareState nominal = NominalTerminalTerrain.Contact;
+            AirlessTargetAwareState delayed = DelayedTerminalTerrain.Contact;
+            double nominalVertical, nominalHorizontal, delayedVertical, delayedHorizontal;
+            SurfaceSpeeds(nominal, out nominalVertical, out nominalHorizontal);
+            SurfaceSpeeds(delayed, out delayedVertical, out delayedHorizontal);
+            TerminalEndpointSeparation = (nominal.Position - delayed.Position).magnitude;
+            bool contactsInFinalDescent = nominal.UT >= TerminalEnvelope.Nominal.HorizontalKillEndUT &&
+                delayed.UT >= TerminalEnvelope.Delayed.HorizontalKillEndUT;
+            double delayedModel = Finite(_delayedTerminalModelTerrainASL) ?
+                _delayedTerminalModelTerrainASL : _terminalModelTerrainASL;
+            // A higher local ground contact is terrain feedback for V1's
+            // final-descent altitude input, not an irreparable speed failure.
+            // Re-run the same controller equations with the resolved height.
+            if (contactsInFinalDescent &&
+                (Math.Abs(nominalVertical) > Snapshot.TouchdownSpeed ||
+                 Math.Abs(delayedVertical) > Snapshot.TouchdownSpeed) &&
+                (Math.Abs(endpointTerrain - _terminalModelTerrainASL) > 0.01 ||
+                 Math.Abs(DelayedTerminalTerrain.ContactTerrainASL - delayedModel) > 0.01) &&
+                _terminalTerrainReplays < 3)
+            {
+                _terminalTerrainReplays++;
+                _terminalModelTerrainASL = endpointTerrain;
+                _delayedTerminalModelTerrainASL = DelayedTerminalTerrain.ContactTerrainASL;
+                Stage = TargetAwarePlannerStage.ReadyTerminal;
+                return;
+            }
+            TerminalTouchdownValidated = contactsInFinalDescent &&
+                Math.Abs(nominalVertical) <= Snapshot.TouchdownSpeed &&
+                Math.Abs(delayedVertical) <= Snapshot.TouchdownSpeed &&
+                nominalHorizontal <= 1 && delayedHorizontal <= 1 &&
+                TerminalEndpointSeparation <= _targetTolerance;
+            TerminalImpactForecast = !TerminalTouchdownValidated &&
+                (!contactsInFinalDescent ||
+                 Math.Abs(nominalVertical) > Snapshot.TouchdownSpeed ||
+                 nominalHorizontal > 1);
+            if (!TerminalTouchdownValidated && !IsDirectForecast)
+            {
+                TryNextCandidate("TerminalTouchdownUnsafe");
+                return;
+            }
+            // Beta derives its next speed-policy height from the published
+            // endpoint. A one-metre equality requirement caused the captured
+            // Mun transaction to repropagate eight times and publish nothing.
+            // Compare consecutive, fully terrain-validated landing positions:
+            // when both policies produce the same site within the targeting
+            // tolerance, their remaining terrain-height feedback cannot move
+            // V1's landing site materially. A moving endpoint remains unsafe.
+            if (!IsDirectForecast &&
+                Math.Abs(endpointTerrain - SelectedPolicyTerrainASL) > 1.0)
+            {
+                if (!Finite(endpointTerrain))
+                {
+                    TryNextCandidate("V1EndpointTerrainInvalid");
+                    return;
+                }
+                if (_hasPriorTerminalContact &&
+                    (nominal.Position - _priorTerminalContact.Position).magnitude <=
+                    _targetTolerance)
+                {
+                    Stage = TargetAwarePlannerStage.Complete;
+                    return;
+                }
+                if (PolicyEscalations >= MaximumPolicyEscalations)
+                {
+                    TryNextCandidate("V1EndpointTerrainPolicyDidNotConverge");
+                    return;
+                }
+                _priorTerminalContact = nominal;
+                _hasPriorTerminalContact = true;
+                _pendingPolicyTerrainASL = endpointTerrain;
+                _policyEscalationBrakeUT = SelectedOutput.BrakeUT;
+                Stage = TargetAwarePlannerStage.ReadyPolicyEscalation;
+                return;
+            }
+            Stage = TargetAwarePlannerStage.Complete;
+        }
+
+        private void SurfaceSpeeds(AirlessTargetAwareState state,
+            out double vertical, out double horizontal)
+        {
+            Vector3d up = state.Position.normalized;
+            Vector3d velocity = state.Velocity -
+                Vector3d.Cross(Snapshot.AngularVelocity, state.Position);
+            vertical = Vector3d.Dot(velocity, up);
+            horizontal = Vector3d.Exclude(up, velocity).magnitude;
         }
 
         private TargetAwareTerrainCandidate FindTerrain(AirlessTargetAwareOutput output) =>

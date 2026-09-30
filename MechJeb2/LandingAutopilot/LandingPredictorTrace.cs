@@ -180,7 +180,43 @@ namespace MuMech.Landing
             string directory = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(directory))
                 Directory.CreateDirectory(directory);
-            _writer = new StreamWriter(new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read));
+            _writer = new StreamWriter(OpenAppendStream(path));
+        }
+
+        // A forced KSP exit can leave the last buffered line incomplete.  Before a
+        // new trace session appends, remove only that unterminated fragment so the
+        // next record starts on its own JSONL line.
+        private static FileStream OpenAppendStream(string path)
+        {
+            var stream = new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.Read);
+            if (stream.Length > 0)
+            {
+                stream.Seek(-1, SeekOrigin.End);
+                if (stream.ReadByte() != '\n')
+                {
+                    long newline = FindLastNewline(stream);
+                    stream.SetLength(newline + 1);
+                }
+            }
+            stream.Seek(0, SeekOrigin.End);
+            return stream;
+        }
+
+        private static long FindLastNewline(FileStream stream)
+        {
+            const int bufferSize = 4096;
+            byte[] buffer = new byte[bufferSize];
+            long end = stream.Length;
+            while (end > 0)
+            {
+                int count = (int)Math.Min(bufferSize, end);
+                end -= count;
+                stream.Seek(end, SeekOrigin.Begin);
+                int read = stream.Read(buffer, 0, count);
+                for (int i = read - 1; i >= 0; i--)
+                    if (buffer[i] == '\n') return end + i;
+            }
+            return -1;
         }
 
         private static double TargetDistance(CelestialBody body, AbsoluteVector endpoint, double targetLatitude, double targetLongitude)

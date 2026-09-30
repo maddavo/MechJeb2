@@ -8,25 +8,34 @@ namespace MuMech.Landing
         internal readonly double RemainingClearance;
         internal readonly double EndVerticalSpeed;
         internal readonly double EndSurfaceSpeed;
+        internal readonly double EndHorizontalSpeed;
         internal readonly double ControllerTransitionClearance;
         internal readonly double ControllerTransitionVerticalSpeed;
         internal readonly double ControllerTransitionSurfaceSpeed;
         internal readonly double OptimisticVerticalStoppingDistance;
+        internal readonly double IdealHoverHorizontalStoppingDistance;
+        internal readonly double IdealHoverHorizontalStoppingTime;
         internal readonly bool NecessaryControlBoundPasses;
 
         private TargetAwareTerminalHandoff(double localTerrainASL, double remainingClearance,
-            double endVerticalSpeed, double endSurfaceSpeed, double transitionClearance,
+            double endVerticalSpeed, double endSurfaceSpeed, double endHorizontalSpeed,
+            double transitionClearance,
             double transitionVerticalSpeed, double transitionSurfaceSpeed,
-            double optimisticStoppingDistance, bool necessaryControlBoundPasses)
+            double optimisticStoppingDistance, double idealHoverHorizontalStoppingDistance,
+            double idealHoverHorizontalStoppingTime,
+            bool necessaryControlBoundPasses)
         {
             LocalTerrainASL = localTerrainASL;
             RemainingClearance = remainingClearance;
             EndVerticalSpeed = endVerticalSpeed;
             EndSurfaceSpeed = endSurfaceSpeed;
+            EndHorizontalSpeed = endHorizontalSpeed;
             ControllerTransitionClearance = transitionClearance;
             ControllerTransitionVerticalSpeed = transitionVerticalSpeed;
             ControllerTransitionSurfaceSpeed = transitionSurfaceSpeed;
             OptimisticVerticalStoppingDistance = optimisticStoppingDistance;
+            IdealHoverHorizontalStoppingDistance = idealHoverHorizontalStoppingDistance;
+            IdealHoverHorizontalStoppingTime = idealHoverHorizontalStoppingTime;
             NecessaryControlBoundPasses = necessaryControlBoundPasses;
         }
 
@@ -52,15 +61,24 @@ namespace MuMech.Landing
                     Vector3d.Cross(snapshot.AngularVelocity, endpoint.Position);
                 double horizontalSpeed = Vector3d.Exclude(endpoint.Position.normalized,
                     surfaceVelocity).magnitude;
-                double horizontalStoppingDistance = availableAcceleration > 0 ?
-                    horizontalSpeed * horizontalSpeed / (2 * availableAcceleration) :
+                // KHV commands a 0.2 lateral-to-vertical tilt while hovering.
+                // Its ideal lateral deceleration is 0.2 g, not full thrust.
+                // This is a horizontal travel distance; comparing it with
+                // vertical clearance would reject or accept for the wrong reason.
+                double idealHoverHorizontalStoppingDistance = gravity > 0 ?
+                    horizontalSpeed * horizontalSpeed / (0.4 * gravity) :
                     double.PositiveInfinity;
-                bool passes = clearance >= 0 && availableAcceleration > 0 &&
+                double idealHoverHorizontalStoppingTime = gravity > 0 ?
+                    horizontalSpeed / (0.2 * gravity) : double.PositiveInfinity;
+                bool passes = clearance >= 0 &&
+                    snapshot.MaximumThrust / snapshot.InitialMass >
+                    gravity * Math.Sqrt(1 + 0.2 * 0.2) &&
                     stoppingDistance <= clearance &&
-                    horizontalStoppingDistance <= clearance && Finite(surfaceSpeed);
+                    Finite(surfaceSpeed);
                 return new TargetAwareTerminalHandoff(localTerrainASL, clearance, endVertical,
-                    surfaceSpeed, clearance, endVertical, surfaceSpeed,
-                    stoppingDistance, passes);
+                    surfaceSpeed, horizontalSpeed, clearance, endVertical, surfaceSpeed,
+                    stoppingDistance, idealHoverHorizontalStoppingDistance,
+                    idealHoverHorizontalStoppingTime, passes);
             }
             double transitionRadius = snapshot.BodyRadius + localTerrainASL + 205;
             for (int i = 1; i < output.Trajectory.Count; ++i)
@@ -84,11 +102,15 @@ namespace MuMech.Landing
                 bool passes = clearance >= 0 && snapshot.MaximumThrustAcceleration > gravity &&
                     stoppingDistance <= 205 && Finite(surfaceSpeed) && Finite(endVertical);
                 return new TargetAwareTerminalHandoff(localTerrainASL, clearance, endVertical,
-                    output.EndSurfaceSpeed, 205, vertical, surfaceSpeed, stoppingDistance, passes);
+                    output.EndSurfaceSpeed,
+                    Vector3d.Exclude(position.normalized,
+                        velocity - Vector3d.Cross(snapshot.AngularVelocity, position)).magnitude,
+                    205, vertical, surfaceSpeed, stoppingDistance,
+                    double.NaN, double.NaN, passes);
             }
             return new TargetAwareTerminalHandoff(localTerrainASL, clearance, endVertical,
-                output.EndSurfaceSpeed, double.NaN, double.NaN, double.NaN,
-                double.PositiveInfinity, false);
+                output.EndSurfaceSpeed, double.NaN, double.NaN, double.NaN, double.NaN,
+                double.PositiveInfinity, double.NaN, double.NaN, false);
         }
 
         private static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);

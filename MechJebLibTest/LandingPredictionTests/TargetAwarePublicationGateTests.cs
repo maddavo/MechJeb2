@@ -1,3 +1,4 @@
+using MuMech;
 using MuMech.Landing;
 using Xunit;
 
@@ -31,6 +32,45 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.Equal(TargetAwarePublicationDecision.TerrainIntersection, Check(collision, committed, 104));
             Assert.Equal(TargetAwarePublicationDecision.TerminalNecessaryBoundFailed,
                 Check(terminal, committed, 104));
+        }
+
+        [Fact]
+        public void ResolvedImpactRemainsDiagnosticForBetaGuidance()
+        {
+            var first = new TargetAwareResultLineage(1, 1, _mun, 0.5, 23, 492,
+                100, 100, true, true, true, true, false,
+                ReentrySimulation.LandingForecastKind.ImpactForecast, true, false);
+            var second = new TargetAwareResultLineage(1, 2, _mun, 0.5, 23, 492,
+                103, 103, true, true, true, true, false,
+                ReentrySimulation.LandingForecastKind.ImpactForecast, true, false);
+            var noContact = new TargetAwareResultLineage(1, 3, _mun, 0.5, 23, 492,
+                105, 105, true, true, true, true, false,
+                ReentrySimulation.LandingForecastKind.ImpactForecast, false, false);
+            Assert.Equal(TargetAwarePublicationDecision.ImpactOnly, Check(first, null, 101));
+            Assert.Equal(TargetAwarePublicationDecision.ImpactOnly, Check(second, first, 104));
+            Assert.Equal(TargetAwarePublicationDecision.ImpactOnly,
+                Check(noContact, second, 106));
+        }
+
+        [Fact]
+        public void HandoffOrUnvalidatedTerminalCannotClaimLandableTouchdown()
+        {
+            var committed = Candidate(1, 100);
+            var handoff = new TargetAwareResultLineage(1, 2, _mun, 0.5, 23, 492,
+                103, 103, true, true, true, true, true,
+                ReentrySimulation.LandingForecastKind.LandableForecast, false, false);
+            var contactMislabelledAsLanding = new TargetAwareResultLineage(1, 3, _mun,
+                0.5, 23, 492, 104, 104, true, true, true, true, true,
+                ReentrySimulation.LandingForecastKind.LandableForecast, true, true);
+            Assert.Equal(TargetAwarePublicationDecision.Incomplete,
+                Check(handoff, committed, 104));
+            Assert.Equal(TargetAwarePublicationDecision.Incomplete,
+                Check(contactMislabelledAsLanding, committed, 105));
+            var unknown = new TargetAwareResultLineage(1, 4, _mun, 0.5, 23,
+                492, 106, 106, true, true, true, true, true,
+                (ReentrySimulation.LandingForecastKind)99, false, true);
+            Assert.Equal(TargetAwarePublicationDecision.Incomplete,
+                Check(unknown, committed, 107));
         }
 
         [Fact]
@@ -113,7 +153,8 @@ namespace MechJebLibTest.LandingPredictionTests
             bool clearPath = true, bool terminalNecessaryBoundPasses = true) =>
             new TargetAwareResultLineage(1, sequence, _mun, 0.5, 23.0, 492, inputUT, inputUT,
                 targetAware, complete, terrainResolved, clearPath,
-                terminalNecessaryBoundPasses);
+                terminalNecessaryBoundPasses,
+                ReentrySimulation.LandingForecastKind.LandableForecast, false, true);
 
         private TargetAwarePublicationDecision Check(TargetAwareResultLineage candidate,
             TargetAwareResultLineage? committed, double currentUT) =>

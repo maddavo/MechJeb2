@@ -4,10 +4,11 @@
 
 **Update this record for every commit that changes V1 Landing Guidance, its predictor, its landing-autopilot phases, or its associated V1 tests.** Add the commit tag, the intended issue, the evidenced runtime result, whether that exact version landed, and every subsequently identified issue. Do not infer a landing result from a successful build or automated test.
 
-`v1-proven-c47337ff` is the last known good V1 landing version. Dave confirmed that it performed plane change, deorbit, course correction, and landing.
+`v1-gamma` is the latest successful tested V1 landing version, designated by Dave on 2026-09-30. It landed 888.58 m west of the Mun target. The earlier `v1-proven-c47337ff` remains a historical successful reference.
 
 | Commit tag | Issue the version tries to fix | Did it fix the issue? | Did it land? | What other issues were identified or introduced after performance analysis? |
 |---|---|---|---|---|
+| `v1-gamma` | Preserve the exact tested demand-loaded spatial terrain reuse and local terminal terrain feedback build. | **Yes** for supplying visible deorbit predictions and completing this flight. Prior focused acceptance: 79 C# tests and 32 Python tests passed; Release build had zero warnings/errors. | **Yes** — Dave confirmed; KSP `LANDED` event and saved landed vessel corroborate it. | Landed 888.58 m west of target. Deorbit updates had a 4.96 s median and 9.98 s maximum gap; the final deorbit endpoint crossed the target in a 2,056 m step. Dave observed overshoot and no course correction; capture shows direct entry into braking. Final forecast was 8.33 m from the actual landed position. The lifecycle audit misclassifies bounded direct braking forecasts as candidate searches because its provenance allow-list is outdated; this audit is not claimed to pass. See the Gamma flight record. |
 | `v1-proven-c47337ff` / `c47337ff` | Restored the known good Solver Basis V1 controller and UI. | **Yes**, baseline restored. | **Yes** — user confirmed. | Terrain-sensitive prediction instability later identified. |
 | `1cb795d0` | Preserve the restored PlaneChange → DeorbitBurn handoff. | **Likely yes** in source; no separate runtime proof. | Not recorded. | Predictor and terrain issues remained. |
 | `4543bc39` | Stabilize V1 prediction acceptance. | **Partial.** It did not solve terrain branch switching. | Not recorded. | Alternating flat/mountain terrain contacts still drove opposing corrections. |

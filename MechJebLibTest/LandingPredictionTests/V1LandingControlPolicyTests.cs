@@ -36,6 +36,10 @@ namespace MechJebLibTest.LandingPredictionTests
                 -2, 1.63, 1, 8), 5);
             Assert.Equal(-6.52, V1LandingControlPolicy.FinalDescentSpeed(
                 100, 10, 1.63, 0.5), 5);
+            Assert.Equal(-6.52, V1LandingControlPolicy.FinalDescentSpeed(
+                5, 10, 1.63, 0.5), 5);
+            Assert.InRange(V1LandingControlPolicy.FinalDescentSpeed(
+                5, 10, 1.63, 0.5, true), -3.67, -3.65);
         }
 
         [Fact]
@@ -69,6 +73,22 @@ namespace MechJebLibTest.LandingPredictionTests
             result.ControllerBrakeReferenceUT = 60;
             Assert.Equal(60, result.BrakeReferenceUT(10));
             Assert.Equal(20, result.Trajectory[0].UT);
+        }
+
+        [Fact]
+        public void HorizontalKillAlwaysAimsAgainstMeasuredLateralTravel()
+        {
+            Vector3d up = new Vector3d(0, 0, 1);
+            foreach (double speed in new[] { -113.0, -1.1, 1.1, 92.0 })
+            {
+                Vector3d velocity = new Vector3d(speed, 0, -33);
+                Vector3d direction = V1LandingControlPolicy.HorizontalKillThrustDirection(
+                    velocity, up);
+                Assert.True(Vector3d.Dot(direction,
+                    Vector3d.Exclude(up, velocity)) < 0);
+                Assert.True(Vector3d.Dot(direction, up) > 0);
+                Assert.Equal(1.0, direction.magnitude, 10);
+            }
         }
     }
 }

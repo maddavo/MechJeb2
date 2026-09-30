@@ -133,16 +133,30 @@ namespace MuMech.Landing
             return 0;
         }
 
+        internal static Vector3d HorizontalKillThrustDirection(Vector3d surfaceVelocity,
+            Vector3d up)
+        {
+            Vector3d horizontal = Vector3d.Exclude(up, surfaceVelocity);
+            return horizontal.sqrMagnitude > 1e-12 ?
+                (up - 0.2 * horizontal.normalized).normalized : up;
+        }
+
         internal static double FinalDescentSpeed(double altitudeAboveTerrain,
-            double limitedMaxThrustAcceleration, double localGravity, double touchdownSpeed)
+            double limitedMaxThrustAcceleration, double localGravity,
+            double touchdownSpeed, bool targetedAirless = false)
         {
             const double MinimumTerminalDescentSpeed = 5.0;
             const double MaximumTerminalDescentSpeed = 25.0;
             const double TerminalDescentGravityTime = 4.0;
             double netBrakingAcceleration = Math.Max(0,
                 limitedMaxThrustAcceleration - localGravity);
+            // KEEP_VERTICAL uses a cumulative PID throttle, so its commanded
+            // thrust does not jump to the available maximum at the point of
+            // the ideal stopping-distance curve. The captured Mun handoff is
+            // replayed with that same PID before this lead factor is accepted.
             double brakingDistanceSpeed = Math.Sqrt(2 * netBrakingAcceleration *
-                Math.Max(0, altitudeAboveTerrain)) * 0.90;
+                Math.Max(0, altitudeAboveTerrain)) *
+                (targetedAirless ? 0.40 : 0.90);
             double bodyAwareSpeedCap = Math.Max(MinimumTerminalDescentSpeed,
                 Math.Min(MaximumTerminalDescentSpeed, TerminalDescentGravityTime * localGravity));
             double desiredSpeed = -Math.Min(brakingDistanceSpeed, bodyAwareSpeedCap);

@@ -82,8 +82,7 @@ namespace MuMech
                 }
 
                 double maxAllowedSpeed = Core.Landing.MaxAllowedSpeed();
-                if (V1LandingControlPolicy.ShouldStartDeceleration(VesselState.SpeedSurface,
-                        maxAllowedSpeed))
+                if (VesselState.SpeedSurface > 0.9 * maxAllowedSpeed)
                 {
                     Core.Warp.MinimumWarp();
                     if (Core.Landing.RCSAdjustment)
@@ -117,8 +116,7 @@ namespace MuMech
                 }
 
                 // If we're already low, skip directly to the Deceleration burn
-                if (V1LandingControlPolicy.BelowTerminalHandoff(VesselState.AltitudeASL,
-                        Core.Landing.DecelerationEndAltitude()))
+                if (VesselState.AltitudeASL < Core.Landing.DecelerationEndAltitude() + 5)
                 {
                     Core.Warp.MinimumWarp();
                     if (Core.Landing.RCSAdjustment)
@@ -134,7 +132,9 @@ namespace MuMech
                 {
                     if (VesselState.DragAcceleration < 0.01)
                     {
-                        double decelerationStartTime = Core.Landing.Prediction.BrakeReferenceUT(VesselState.Time);
+                        double decelerationStartTime = Core.Landing.Prediction.Trajectory.Any()
+                            ? Core.Landing.Prediction.Trajectory.First().UT
+                            : VesselState.Time;
                         Vector3d decelerationStartAttitude = -Orbit.WorldOrbitalVelocityAtUT(decelerationStartTime);
                         decelerationStartAttitude += MainBody.getRFrmVel(Orbit.WorldPositionAtUT(decelerationStartTime));
                         decelerationStartAttitude = decelerationStartAttitude.normalized;

@@ -2,7 +2,7 @@
 
 import unittest
 
-from landing_predictor_sequence_harness import audit_sequence
+from landing_predictor_sequence_harness import audit_sequence, terminal_observation
 
 
 def captured_case():
@@ -35,6 +35,28 @@ def controller_state(ut, phase, throttle=0, altitude=5000):
 
 
 class SequenceHarnessTests(unittest.TestCase):
+    def test_terminal_observation_reports_ideal_horizontal_stop_lower_bound(self):
+        report = terminal_observation([{
+            "recordType": "guidance_state", "phase": "KillHorizontalVelocity",
+            "ut": 1, "surfaceVelocity": [100, 0, -10], "up": [0, 0, 1],
+            "forward": [-1, 0, 0], "altitudeTrue": 200,
+            "localGravity": 1.6, "commandedThrottle": 0.2,
+        }])
+        self.assertAlmostEqual(312.5, report["last"]["idealHorizontalStopTime"])
+        self.assertAlmostEqual(15625, report["last"]["idealHorizontalStopDistance"])
+        self.assertIsNone(report["attitudeSettlingSeconds"])
+
+    def test_terminal_observation_measures_actual_attitude_settling(self):
+        common = {"recordType": "guidance_state", "phase": "KillHorizontalVelocity",
+                  "surfaceVelocity": [100, 0, -10], "up": [0, 0, 1],
+                  "forward": [-1, 0, 0], "altitudeTrue": 200,
+                  "localGravity": 1.6, "commandedThrottle": 0.2}
+        report = terminal_observation([
+            {**common, "ut": 1, "attitudeErrorDegrees": 62},
+            {**common, "ut": 6, "attitudeErrorDegrees": 4},
+        ])
+        self.assertEqual(5, report["attitudeSettlingSeconds"])
+
     def document(self):
         case = captured_case()
         return {"cases": [case], "events": [
@@ -109,6 +131,46 @@ class SequenceHarnessTests(unittest.TestCase):
                   controller_state(205, "FinalDescent", .3)]
         report = audit_sequence(document, trace, actual, [], "flight")
         self.assertTrue(report["passed"], report["issues"] + report["unknowns"])
+
+    def test_impact_without_brake_is_not_a_landing_phase_prediction(self):
+        document = self.document()
+        case = document["cases"][0]
+        case["submission"]["modelProvenance"] = "v1_no_further_correction_baseline"
+        document["events"][1]["modelProvenance"] = "v1_no_further_correction_baseline"
+        case["worker"].update(outcome="IMPACT", forecastKind="ImpactForecast",
+                              virtualBrakeUT=None, trajectoryStart=[0, 0, 210000, 100])
+        case["validation"].update(directForecast=True, brakeTimeBracketed=False,
+                                  forecastKind="ImpactForecast", firstContactUT=200,
+                                  minimumSampledClearance=-1, handoffClearance=0,
+                                  terminalNecessaryBoundPasses=False)
+        guidance = [{"recordType": "guidance_state", "ut": 102,
+                     "phase": "CourseCorrection", "lineNumber": 10,
+                     "predictionVersion": 24, "predictionInputUT": 100,
+                     "commandedThrottle": 0, "warpRate": 1}]
+        report = audit_sequence(document, guidance, [], [], "flight")
+        self.assertFalse(any("brake time absent" in gap for gap in report["unknowns"]))
+        self.assertFalse(any("impact forecast authorized" in issue for issue in report["issues"]))
+        guidance.append({**guidance[0], "ut": 103, "phase": "DecelerationBurn",
+                         "lineNumber": 11})
+        report = audit_sequence(document, guidance, [], [], "flight")
+        self.assertTrue(any("impact forecast authorized DecelerationBurn" in issue
+                            for issue in report["issues"]))
+
+    def test_approved_safe_timing_model_still_requires_brake_path_and_reference(self):
+        document = self.document()
+        case = document["cases"][0]
+        provenance = "v1_safe_brake_timing_no_further_correction"
+        case["submission"]["modelProvenance"] = provenance
+        document["events"][1]["modelProvenance"] = provenance
+        case["worker"].update(controllerBrakeReferenceUT=150,
+                              controllerBrakeReferencePosition=[0, 0, 205000, 150],
+                              trajectoryStart=[0, 0, 210000, 100])
+        report = audit_sequence(document, self.trace(), [], [], "flight")
+        self.assertFalse(any("provenance" in issue for issue in report["issues"]))
+        case["worker"]["controllerBrakeReferenceUT"] = None
+        report = audit_sequence(document, self.trace(), [], [], "flight")
+        self.assertTrue(any("brake reference or preceding path missing" in issue
+                            for issue in report["issues"]))
 
 
 if __name__ == "__main__":

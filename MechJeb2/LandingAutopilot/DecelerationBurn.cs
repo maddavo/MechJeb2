@@ -11,6 +11,7 @@ namespace MuMech
         {
             private bool _decelerationBurnTriggered;
 
+            // Read-only predictor snapshot flag; does not change V1 decisions.
             internal bool BrakingTriggered => _decelerationBurnTriggered;
 
             public DecelerationBurn(MechJebCore core) : base(core)
@@ -19,8 +20,7 @@ namespace MuMech
 
             public override AutopilotStep OnFixedUpdate()
             {
-                if (V1LandingControlPolicy.BelowTerminalHandoff(VesselState.AltitudeASL,
-                        Core.Landing.DecelerationEndAltitude()))
+                if (VesselState.AltitudeASL < Core.Landing.DecelerationEndAltitude() + 5)
                 {
                     Core.Warp.MinimumWarp();
 
@@ -29,9 +29,9 @@ namespace MuMech
                     return new KillHorizontalVelocity(Core);
                 }
 
-                double decelerationStartTime = Core.Landing.Prediction.BrakeReferenceUT(VesselState.Time);
-                if (V1LandingControlPolicy.ShouldCoastToBrake(decelerationStartTime,
-                        VesselState.Time, _decelerationBurnTriggered))
+                double decelerationStartTime =
+                    Core.Landing.Prediction.Trajectory.Any() ? Core.Landing.Prediction.Trajectory.First().UT : VesselState.Time;
+                if (decelerationStartTime - VesselState.Time > 5 && !_decelerationBurnTriggered)
                 {
                     Core.Thrust.ThrustOff();
 
@@ -42,8 +42,7 @@ namespace MuMech
                     decelerationStartAttitude += MainBody.getRFrmVel(Orbit.WorldPositionAtUT(decelerationStartTime));
                     decelerationStartAttitude = decelerationStartAttitude.normalized;
                     Core.Attitude.attitudeTo(decelerationStartAttitude, AttitudeReference.INERTIAL, Core.Landing);
-                    bool warpReady = V1LandingControlPolicy.BrakeWarpReady(
-                        Core.Attitude.attitudeAngleFromTarget(), Core.vessel.angularVelocity.magnitude);
+                    bool warpReady = Core.Attitude.attitudeAngleFromTarget() < 5 && Core.vessel.angularVelocity.magnitude < 0.001;
 
                     if (warpReady && Core.Node.Autowarp)
                         Core.Warp.WarpToUT(decelerationStartTime - 5);
@@ -56,13 +55,15 @@ namespace MuMech
                 if (!_decelerationBurnTriggered)
                     _decelerationBurnTriggered = true;
 
-                Vector3d courseCorrection = Core.Landing.ComputeCourseCorrection(false);
-                Vector3d desiredThrustVector = V1LandingControlPolicy.BrakeThrustDirection(
-                    VesselState.SurfaceVelocity, courseCorrection, VesselState.LimitedMaxThrustAcceleration);
+                Vector3d desiredThrustVector = -VesselState.SurfaceVelocity.normalized;
 
-                if (V1LandingControlPolicy.BrakeAttitudeGate(
-                        Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up),
-                        Vector3d.Dot(VesselState.Forward, desiredThrustVector)))
+                Vector3d courseCorrection = Core.Landing.ComputeCourseCorrection(false);
+                double correctionAngle = courseCorrection.magnitude / (2.0 * VesselState.LimitedMaxThrustAcceleration);
+                correctionAngle = Math.Min(0.1, correctionAngle);
+                desiredThrustVector = (desiredThrustVector + correctionAngle * courseCorrection.normalized).normalized;
+
+                if (Vector3d.Dot(VesselState.SurfaceVelocity, VesselState.Up) > 0
+                    || Vector3d.Dot(VesselState.Forward, desiredThrustVector) < 0.75)
                 {
                     Core.Thrust.RequestActiveThrottle(0.0f);
                     Status = Localizer.Format("#MechJeb_LandingGuidance_Status5"); //"Braking"
@@ -77,9 +78,12 @@ namespace MuMech
                     double minAccel = -VesselState.LocalGravity * Math.Abs(Vector3d.Dot(VesselState.SurfaceVelocity.normalized, VesselState.Up));
                     double maxAccel = VesselState.MaxThrustAcceleration * Vector3d.Dot(VesselState.Forward, -VesselState.SurfaceVelocity.normalized) -
                         VesselState.LocalGravity * Math.Abs(Vector3d.Dot(VesselState.SurfaceVelocity.normalized, VesselState.Up));
-                    Core.Thrust.RequestActiveThrottle(V1LandingControlPolicy.BrakingThrottle(
-                        controlledSpeed, desiredSpeed, desiredSpeedAfterDt,
-                        VesselState.DeltaT, minAccel, maxAccel));
+                    const double SPEED_CORRECTION_TIME_CONSTANT = 0.3;
+                    double speedError = desiredSpeed - controlledSpeed;
+                    double desiredAccel = speedError / SPEED_CORRECTION_TIME_CONSTANT + (desiredSpeedAfterDt - desiredSpeed) / VesselState.DeltaT;
+                    if (maxAccel - minAccel > 0)
+                        Core.Thrust.RequestActiveThrottle(Mathf.Clamp((float)((desiredAccel - minAccel) / (maxAccel - minAccel)), 0.0f, 1.0f));
+                    else Core.Thrust.RequestActiveThrottle(0);
                     Status = Localizer.Format("#MechJeb_LandingGuidance_Status6",
                         desiredSpeed >= double.MaxValue ? "∞" : Math.Abs(desiredSpeed).ToString("F1")); //"Braking: target speed = " +  + " m/s"
                 }

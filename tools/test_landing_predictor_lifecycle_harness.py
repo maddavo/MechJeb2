@@ -141,6 +141,28 @@ class LifecycleHarnessTests(unittest.TestCase):
         report = audit_lifecycle(document, require_active=True)
         self.assertTrue(report["passed"], report["issues"])
 
+    def test_baseline_impact_replaces_only_with_complete_contact_lineage(self):
+        first = case(1, 0, 1)
+        first["submission"]["modelProvenance"] = "v1_no_further_correction_baseline"
+        first["validation"].update(directForecast=True, brakeTimeBracketed=False,
+            forecastKind="ImpactForecast", signedDownrangeError=None,
+            minimumSampledClearance=-1, handoffClearance=0,
+            terminalNecessaryBoundPasses=False, firstContactUT=120)
+        first["worker"].update(outcome="IMPACT", forecastKind="ImpactForecast")
+        document = {"cases": [first], "events": [
+            event(1, "lifecycle", action="target_reset"),
+            event(2, "submission", 1, kind="target_aware_transaction",
+                  modelProvenance="v1_no_further_correction_baseline",
+                  phase="CourseCorrection"),
+            event(3, "published", 1, resultVersion=10, currentGeneration=1,
+                  processUT=106, phase="CourseCorrection"),
+        ]}
+        report = audit_lifecycle(document, require_active=True)
+        self.assertTrue(report["passed"], report["issues"])
+        first["worker"]["outcome"] = "LANDED"
+        report = audit_lifecycle(document, require_active=True)
+        self.assertFalse(report["passed"])
+
 
 if __name__ == "__main__":
     unittest.main()

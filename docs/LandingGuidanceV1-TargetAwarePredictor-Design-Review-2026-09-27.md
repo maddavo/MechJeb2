@@ -2,9 +2,728 @@
 
 **Reviewed:** 2026-09-27; `design/landing-guidance-v2` at `8db84cf3`
 **Reference only:** V1 Beta `d8ac3dd5` still has the Mun early-braking fault.
-**Status:** A source-only active predictor prototype and offline replay are in progress on 2026-09-28. No revised DLL has been installed or tested in KSP. The original Mun capture is complete for the old predictor; terrain along newly refined paths and actual terminal-controller behaviour remain unobserved.
+**Status:** **V1 Gamma**, designated after Dave's successful 30 September Mun
+landing. The demand-loaded spatial-reuse build supplied visible predictions
+during deorbit and completed landing. The saved landed position is 888.58 m
+west of the target. Deorbit publication cadence remains inadequate: median
+4.96 seconds, maximum 9.98 seconds. Dave observed deorbit overshoot and no course
+correction, consistent with the captured endpoint crossing in a 2,056 m update
+and direct transition to DecelerationBurn. See
+[the Gamma flight record](LandingGuidanceV1-Gamma-2026-09-30.md).
+The earlier exact-coordinate-cache DLL failed its Mun deorbit test.
+The binding integrated-system and corridor-reuse amendment immediately below
+supersedes the exact-coordinate cache contract and conflicting acceptance claims
+later in this historical review. It supplements the existing approved file-level
+plan and V1 Beta control boundary; it does not replace that plan or authorise new
+guidance, controller, UI, or actuator behaviour.
+
+### 30 September implementation: moving-flight reuse and local terrain feedback
+
+**Fault ownership.** Dave reports that the tested landing region has no
+significant mountains. The capture establishes repeated nearby queries and
+failed forecast delivery, not a terrain-complexity explanation. The earlier
+implementation was inadequate: exact-coordinate cache keys missed advancing
+samples, selected-coast checks repeated PQS work, and terminal replay treated
+small differences between its provisional ground plane and resolved local ground
+as candidate failures. Failure to supply a forecast allowed the unchanged
+prediction-driven low-deorbit step to continue its burn without landing-site
+feedback. A future mountain case needs clearance checks, but does not explain or
+excuse this availability failure.
+Submission 101's 1,536 PQS calls took 10.3176 ms in total (about 0.0067 ms per
+call), while its workers took 141.33 ms. Budget exhaustion and candidate
+rejection prevented publication; expensive mountain queries are not established
+as the cause of its long missing-forecast interval.
+
+**Implemented predictor slice (explicitly authorised in this turn).**
+
+- `TargetAwareTerrainCache` retains actual dynamic PQS samples at stable,
+  body-fixed query locations. The planner requests 25 m cells for preliminary
+  ballistic/candidate endpoint screening and 1 m cells for selected coast,
+  braking and terminal paths. These are provisional spatial resolutions, not
+  final accuracy guarantees. No entire corridor is queried or preloaded, and no
+  Mun terrain values are embedded in production code. Changing a target height
+  does not change already sampled body-fixed ground; body/PQS identity and
+  terrain-bound changes still invalidate coverage.
+- `TargetAwareAirlessPlanner` reuses checked selected-coast coverage, with one
+  fresh anchor on each selected-path/policy check instead of fresh queries at
+  every repeated point. Fresh selected endpoint checks remain. An observed
+  change at a checked cached location invalidates the transaction and coverage;
+  unobserved terrain edits cannot be detected without querying that location.
+- Where actual handoff ground is sufficiently lower than the candidate's
+  prospective policy ground that handoff lies above V1's supported 300 m
+  terminal-replay branch, recompute that same candidate against its local
+  ground. This uses the existing bounded terrain-policy feedback; it does not
+  substitute a new high-altitude descent controller.
+- Nominal and delayed terminal continuations keep separate resolved ground
+  heights. A terminal contact against a different ground plane causes a bounded
+  replay of the same existing final-descent equations before speed validity is
+  decided. The numerical path may extend 1 m below the provisional plane so a
+  slightly lower dynamic terrain contact can be resolved. This does not shift
+  the controller's altitude input, declare that lower point a landing, or bypass
+  contact/clearance/speed checks. Early coast/braking intersection remains a
+  rejected candidate; a braking handoff remains an intermediate state.
+- `MechJebModuleLandingPredictions` keeps the existing atomic target-aware slot,
+  freshness, ordinary-result exclusion and complete-terminal-result gates.
+  Its passive controller-reference metadata now reports the exact first
+  trajectory UT/position that Beta actually reads, rather than the brake-search
+  parameter. Search parameter, modeled braking-path start, and Beta's earliest
+  five-second release must be distinguished in replay. This changes no live
+  braking command or published trajectory. Scene teardown retires target work,
+  releases queued results and makes late update/map callbacks inert without
+  touching game state or joining a worker on the flight thread. This is not
+  evidence that the earlier exit crash was caused by MechJeb.
+- Capture records query-cell resolutions, maximum query displacement and the
+  last rejected-candidate reason beside demanded samples, work and lineage.
+  Existing readers/sequence checks recognise the approved safe-timing V1 policy
+  provenance while retaining brake-reference, phase and missing-data checks.
+  Recognising a provenance string is not proof of flight equivalence.
+
+The live V1 guidance, controller, UI, warp, phase laws and actuator files are
+unchanged **by this slice**. The previously approved Beta exceptions remain.
+There is no new burn interlock, missing-result response, abort system or relaxed
+landing classification. Terrain work remains incremental on the flight thread;
+powered simulations remain on workers. Existing caps remain 32 evaluations per
+terrain update, 1,536 actual queries per transaction, 32,768 evaluations and
+16,384 cached locations. Coarse-cell height is not an exact height everywhere
+inside the cell. Selected near-ground paths refine to 1 m; unresolved coverage,
+steep terrain between samples and actual PQS cost remain explicit measurement
+limitations, not assumed flat terrain or guaranteed mountain clearance.
+
+**Offline evidence from the failed session `d68083650058444fb4fe54a159b6b998`.**
+Fixtures retain four actual input snapshots (101–104) and 20,936 distinct PQS
+positions/heights captured during submissions 101–115. A local inverse-distance
+oracle uses only these captured samples and rejects queries more than 500 m from
+coverage. The largest nearest-sample distance actually used is 159.39 m. This
+oracle supports comparative regression and demanded-work measurement; it is not
+the full real Mun PQS surface, and its spatial interpolation uncertainty is not
+the production cache's 1 m query resolution.
+
+| Submission / input UT | Actual terrain queries | Cache hits | Terrain updates | Incremental time at captured 0.02 s tick |
+| --- | ---: | ---: | ---: | ---: |
+| 101 / 24604035.618424 | 1,027 | 3,096 | 158 | 3.16 s |
+| 102 / 24604040.638424 | 370 | 695 | 39 | 0.78 s |
+| 103 / 24604045.658424 | 302 | 591 | 37 | 0.74 s |
+| 104 / 24604050.678424 | 244 | 474 | 29 | 0.58 s |
+
+All four produce validated nominal/delayed modeled terminal contact, horizontal
+stopping-distance information and a complete compatible lineage accepted by the
+existing publication gate. Every individual terrain update stays within its
+32-evaluation/query bounds. These tick counts omit worker scheduling and real
+PQS wall time and therefore do not certify live latency. For the first snapshot,
+the same corrected predictor with unquantised queries needs 2,857 queries:
+spatial reuse needs 1,027, chooses the same brake-search time, and moves the
+modeled terminal endpoint by 1.730 m on this recorded oracle. The reference's
+larger query allowance is offline-only; the game's budget was not increased.
+
+Focused acceptance comprises 79 C# predictor tests and 32 Python capture,
+lifecycle and sequence tests, including ownership across phases, stale/ordinary
+rejection, terrain change/ridge cases, terminal validity, bounded slow-query work,
+advancing-state replay and inert teardown callbacks. The historical capture's
+lifecycle audit has one publication and no publication-order violations, with
+submission 120 incomplete at quit. Its whole-flight audit remains a negative
+observation: no horizontal-kill/final-descent/correction-settling flight evidence
+exists for that attempt. It is not converted into a successful landing by the
+new offline replay. Logs are retained in `MechJebLibTest/TestResults`.
+
+**Controlled KSP validation of this build.** Use the same vessel, target and
+starting orbit with passive trace/capture enabled and existing auto-warp. Record
+first ballistic intersection, deorbit completion, course correction, braking
+entry, horizontal-kill entry and touchdown/impact. At first intersection verify
+that a committed powered touchdown forecast and blue reticle appear while
+deorbit still has useful cutoff authority. Correlate its submission/version/input
+UT with low-deorbit consumption and actual throttle. Record search UT separately
+from the first trajectory UT consumed by Beta and its five-second release;
+measure actual thrust onset, attitude gate, warp, terminal travel/clearance and
+refresh age. Subsequent complete compatible work must replace atomically;
+ordinary or failed work must not. A missing forecast, overlong burn, stale
+retention, terrain collision, invisible marker or forecast/flight mismatch is
+measurement evidence for the next narrow repair. Full landing success is not
+claimed by the offline component tests or by deployment.
+
+**Build and explicit deployment — 30 September 2026, 18:42 AEST.** The focused
+79 C# / 32 Python acceptance tests passed before the separate Release build.
+`MechJeb2.csproj` built successfully with zero warnings/errors and repository-only
+outputs; the installed DLL's old hash remained unchanged throughout testing and
+building. Exact `KSPDIR` and closed KSP processes were verified by the installer.
+Only the authorised `GameData/MechJeb2/Plugins/MechJeb2.dll` was replaced.
+Source and installed SHA-256:
+`7DC051FED8F66960508012E2AF4841300D70B6E7505E8627FB4DCB559D04A3CD`.
+The previous DLL was backed up and verified against
+`40999DADBAD8E509D0CA7C97BE9538B8671A4E0300491E8129589E1099638FAE`.
+Manifest: `C:\Users\Dave\Documents\KSP Backups\MechJeb2 Explicit Install\20260930-184253-8753101\manifest.json`.
+Installed `alglib.dll`, `MechJebLib.dll`, `MechJebLibBindings.dll` and
+`JetBrains.Annotations.dll` retained their pre-install hashes. No companion DLL,
+`C:\GameData` tree or temporary staging directory was modified. Live controller
+and UI source hashes match this turn's starting state; pre-existing approved
+exceptions and other uncommitted work were preserved. This is the bounded
+KSP validation build described above, not evidence of a successful new landing.
+
+### 30 September binding amendment: integrated guidance and terrain-corridor reuse
+
+**Engineering responsibility.** User instructions state the intended outcome.
+Implementation must account for the practical geometry, changing sample positions,
+timing, consumers, and failure consequences needed to achieve that outcome. A
+literal feature implementation or an isolated passing test is insufficient when
+the component cannot perform its role in the existing landing sequence. Routine
+engineering implications belong to this repair; consequential changes to the
+approved live control boundary still require separate approval.
+
+**System contract.** The predictor supplies a timely, truthful powered landing
+forecast which the existing V1 guidance can consume, then refreshes from the
+changed real trajectory. Its selected brake reference must be executable by the
+approved V1 braking policies, including the two approved terminal fixes. Guidance
+compares the forecast with the target and controls the real deorbit/correction
+burns; the predictor must not erase that miss by substituting a target-reaching
+trajectory. The integration chain is:
+
+`physical snapshot -> rotation-adjusted terrain coverage -> powered simulation
+-> terrain/terminal validity -> atomic publication -> V1 readiness and guidance
+consumption -> existing controller commands`, with the same published forecast
+feeding the map display. Useful first publication and repeated refresh are part
+of correctness, not optional performance improvements. A result published after
+the real burn has passed the useful cutoff does not satisfy the contract.
+
+**Latest negative acceptance evidence.** Capture session
+`d68083650058444fb4fe54a159b6b998` contains 120 submissions and one powered
+publication. The first terrain-intersecting submission, 101, has input UT
+24,604,035.6184 and commanded throttle 1. It exhausts the 1,536-query budget
+despite 324 cache hits. Submission 116/version 17 is published at UT
+24,604,111.1584, approximately 75.54 simulated seconds later. Its input already
+has only 0.520 m/s surface speed at 23,504 m ASL. This is not useful validation
+of deorbit prediction delivery. The map records no committed result before that
+publication, then records a blue-marker request for version 17 with map/module
+gates enabled. A marker request proves eligibility, not visible pixels or lack
+of occlusion. The incomplete submission 120 at exit is a lifecycle observation,
+not proof of the reported KSP crash cause.
+
+**Terrain geometry and reuse.** The ballistic ground curve includes body rotation
+at each propagated UT. Terrain height belongs to body-fixed surface position and
+the terrain provider/configuration; advancing the vessel or changing the
+simulation sampling grid does not change a previously sampled height. Retain a
+spatially indexed, demand-loaded profile along that rotation-adjusted curve.
+The curve describes where reusable coverage may be needed; it is not a request
+to query or preload the entire curve or corridor. Query only positions needed
+by the current calculation or necessary local refinement, then reuse those
+values when later calculations need the same covered region. Powered candidates
+and approved terminal continuation may depart from the ballistic ground curve;
+represent those departures as additional covered curves or a narrow corridor.
+Do not claim one ballistic curve contains every powered landing site. Real
+deorbit burns and corrections can shift the required corridor, but that calls
+for extending coverage and recomputing trajectories, not discarding unchanged
+terrain data. A lateral adjustment is not the only possible change in coverage.
+
+Exact latitude/longitude equality is inadequate as the primary reuse mechanism.
+Use spatial quantisation and controlled interpolation where their accuracy is
+adequate for the calculation, with explicit coverage, sample spacing, and
+error/clearance uncertainty. Quantisation maps nearby queries to reusable
+coverage; it does not make the underlying terrain flat or exact. Coarse estimates
+and terrain bounds can establish adequate clearance without querying every
+position. Refine locally where uncertainty can materially change the forecast,
+candidate eligibility, or terminal contact; do not smooth away a consequential
+ridge or silently treat an estimate as an exact measurement. Prioritise
+coverage needed to complete a usable powered solution, then extend/refine for
+compatible refreshes. Record which terrain samples and uncertainty supported
+each published trajectory. Retaining terrain is not retaining an obsolete
+prediction; every forecast still belongs to one current physical snapshot and
+predictor model.
+
+**Fidelity follows the calculation and phase.** Do not run the most detailed
+terrain model for every search candidate or every deorbit refresh. A spherical
+or representative-radius surface is appropriate for preliminary intersection,
+coarse brake-time search and a rapid powered forecast during deorbit when its
+terrain sensitivity is acceptably bounded. This still forecasts the powered V1
+sequence; it does not substitute the ballistic intersection as the landing
+answer. Fine terrain detail should be acquired only where it affects the
+reported endpoint, executable braking, clearance, or terminal validity. A
+deorbit prediction of future near-ground flight may therefore need a few local
+height checks even though the vessel is currently high; phase alone is not the
+only accuracy criterion.
+
+**Mountains near the landing region.** Local target height alone cannot describe
+the surrounding terrain. A ridge before the target, higher ground along braking,
+or a mountain beside the approach may constrain a candidate even when its final
+endpoint is clear. Use the predicted paths and their spatial uncertainty to
+request local coverage of these obstacles; do not scan all mountains around the
+target indiscriminately. A coarse spherical surface is inadequate where plausible
+terrain relief could consume the predicted clearance or change first contact.
+Refine those relevant segments before relying on their clearance, including the
+remaining horizontal-kill travel. Keep ridge heights and steep slopes visible
+to the calculation; interpolation across widely spaced valley samples must not
+imply the ridge is absent. Do not inflate the whole body's surface to mountain
+height and thereby reproduce artificially early braking. The forecast must
+reflect the terrain actually relevant to its approach and landing region.
+
+| Calculation / live phase | Terrain work required |
+| --- | --- |
+| Deorbit and preliminary candidate search | Use cheap spherical/representative-height geometry and existing coarse coverage first. Obtain only the local samples necessary to constrain the powered landing location and its uncertainty. Do not densely scan every hypothetical path or preload the corridor. |
+| Course correction | Reuse the terrain coverage and refine where height uncertainty materially changes the landing-error information consumed by the existing correction law. Preserve consistent resolution between successive forecasts so a change in terrain fidelity is not mistaken for a real trajectory change. |
+| Braking | Use more accurate dynamic terrain coverage along the relevant near-surface coast/braking path and handoff region. Add local samples where clearance or stopping capability is sensitive to terrain. Reuse previous coverage instead of restarting the terrain search. |
+| Horizontal kill and final descent | Resolve the direct remaining path and local ground at the accuracy needed for contact and stopping conditions. Keep work bounded; do not restart a candidate brake-time search or query unrelated ground. |
+
+The forecast's terrain source, resolution, uncertainty and refinement stage must
+be recorded. A coarse powered landing estimate is an estimate with an error
+bound, not measured exact touchdown coordinates. Use sufficient fidelity for
+the existing publication/validity contract, rather than requiring exhaustive
+terrain detail before every deorbit result. Conversely, do not relabel an
+unsafe contact or unresolved terminal continuation as a safe landing merely
+because the coarse geometry completed. If increasing fidelity materially moves
+the endpoint, record the contribution of terrain-model change separately from
+the real trajectory change. This staged terrain calculation changes predictor
+cost and accuracy, not V1's controller, phase sequence, UI or actuator laws.
+
+Continue querying dynamic KSP/PQS terrain for missing or insufficient coverage
+and necessary selected-path checks. Do not hardwire Mun heights. Retain compatible
+body-fixed samples across refreshes and phase changes; invalidate affected
+coverage when body/PQS configuration or observed heights change. Target/result
+lineage changes must not be confused with a change in terrain itself. Bound
+storage, lookup/refinement work, and actual PQS queries separately. KSP queries
+remain incremental on the flight thread; simulation remains on workers. The
+existing budgets are implementation limits to measure against the moving Mun
+case, not evidence that timely publication is achieved. Increasing a budget or
+accepting an unresolved path is not a substitute for effective reuse.
+
+**Integrated acceptance sequence.** Extend the existing harnesses within the
+approved predictor slice; do not build another controller or replace its policy.
+
+| Gate | Required evidence |
+| --- | --- |
+| Advancing-state terrain reuse | Replay consecutive captured states from the first ballistic intersection through deorbit. Shift sample positions along the rotation-adjusted curve, include powered/terminal departures and real orbit changes, and show demanded terrain is reused while necessary missing coverage is added. Assert that unused corridor regions are not queried or preloaded. Identical-snapshot repeats are a subsidiary test only. Include slope/ridge and changed-height cases; preserve uncertainty rather than treating interpolation as exact PQS. |
+| Staged terrain fidelity | Compare the rapid coarse powered forecast with progressively refined local terrain on the same physical snapshot. Measure endpoint/brake-time sensitivity, query savings and uncertainty. Confirm coarse deorbit work remains useful to the existing guidance, detailed braking/terminal work finds consequential terrain, and resolution changes are distinguished from real motion. No dense search over unused candidates or unrelated ground is required. |
+| Mountain approach | Include a target in a depression with an intervening ridge, raised terrain under braking/horizontal kill, and a nearby mountain outside the predicted path/uncertainty corridor. Relevant obstacles must change clearance/contact or candidate eligibility; irrelevant obstacles must not force extra queries or globally premature braking. Test adaptive refinement across steep terrain and reuse after a real correction shifts the path toward a ridge. |
+| First usable powered result | Follow one snapshot through worker stages, terrain resolution, selection, publication, and `LowDeorbitBurn` consumption. Show a complete powered touchdown forecast becomes available while the existing guidance can still use its steering/cutoff feedback. Ballistic impact, braking handoff, or uncertain terminal continuation cannot satisfy this gate. Measure cold-cache latency as well as later refresh latency. |
+| Refresh and ownership | Repeat through deorbit and course correction, including real pulse settling. A newer complete compatible transaction replaces atomically; ordinary immediate-braking, failed, incomplete, stale, or late work cannot replace it. A retained result does not become fresh merely because its successor failed. |
+| Controller compatibility | Compare brake reference and earliest commanded braking thrust, phase transitions, policy speed/throttle/attitude gates, horizontal stopping distance, and terminal conditions with the existing V1 equations. Preserve the approved baseline and exceptions. Do not call a handoff a landing or use unmodelled response as an assumed safety margin. |
+| Map integration | Correlate published version/input UT, readiness and settling gates, phase, trajectory/endpoint coordinates, and marker request. In KSP confirm the intended path and blue touchdown reticle are visible; distinguish missing publication from drawing/occlusion. Do not bypass validity to make a marker appear. |
+| Responsiveness and terminal phases | Measure actual PQS calls, spatial reuse, refinement work, worker time, per-update flight-thread work, refresh age, and memory. No blocking simulation or expensive candidate search in terminal phases. Cached work must also remain bounded. |
+| Predictor teardown | Exercise disable, reset, scene unload, and quit with work pending. Retired transactions must become inert; late completions cannot publish, query unloaded terrain, reopen capture, or access destroyed game state. Verify resource/capture closure and bounded pending work. This is predictor lifecycle validation, not approval for a new live abort or actuator law. |
+
+Offline acceptance must cover the mechanics and consumer decisions that can be
+established from source and recorded inputs. It must not claim real Mun terrain
+equivalence from a flat or sparsely interpolated surrogate. Calibrate spatial
+resolution, uncertainty and latency limits against captured terrain and the
+guidance's observed useful decision window; do not invent final thresholds or
+arbitrary retry counts. Where capture coverage is incomplete, identify that
+specific uncertainty. Do not require complete proof of a successful in-game
+landing before implementation or a bounded test build. The controlled KSP test
+measures remaining game-physics, real-query performance, actuator and map
+uncertainties at first intersection/deorbit cutoff, course correction, braking
+entry, horizontal-kill entry, and touchdown or impact. An observed mismatch is
+evidence for the next narrow repair, and remains a failed acceptance condition.
+
+**Scope and reporting.** The initial amendment authorised documentation only;
+the subsequent explicit instruction authorises the narrow implementation, build
+and deployment recorded above. Source work follows the existing approved file-level plan:
+terrain representation/resolution in `TargetAwareTerrainCache` and
+`TargetAwareAirlessPlanner`, transaction/lifecycle integration in
+`MechJebModuleLandingPredictions`, and only narrowly necessary existing
+capture/harness tests. No new burn interlock, missing-result controller response,
+phase law, warp gate, UI behaviour, or unrelated tool change is approved here.
+Preserve the explicit Beta exceptions. Report component tests, integrated offline
+evidence, build/deployment state, and observed KSP outcome separately. The current
+DLL is a failed availability/performance test, not a completed predictor repair.
+
+### Historical 30 September exact-coordinate cache attempt and deployment
+
+This section records the earlier implementation and its offline test evidence.
+Its exact-coordinate-only contract is superseded by the binding corridor-reuse
+amendment above. Its deployment subsequently failed in session
+`d68083650058444fb4fe54a159b6b998`; the repeated-identical-snapshot result below
+did not establish adequate moving-flight performance.
+
+The preceding failed session was `c54b4e20f21c491a824b8279e48bfc42`.
+Submission 117 first resolved a ballistic terrain intersection at input UT
+24,604,030.8893. During the following deorbit burn, powered submissions
+repeatedly exhausted 1,536 terrain queries. Submission 127 alone published a
+powered touchdown forecast at process UT 24,604,080.5093 (version 16), about
+50 seconds after the first ballistic intersection. Subsequent refreshes
+failed and retained that version. This establishes a publication-latency
+failure; it does not establish that terrain complexity makes a powered
+landing mathematically impossible. The old capture lacks the complete PQS
+samples needed to replay each exhausted query. Sparse interpolated terrain
+fixtures are diagnostic terrain models, not the real Mun terrain map.
+
+**Implemented cache (historical; inadequate for the required reuse).** All ballistic, candidate, refinement, braking,
+and terminal terrain lookups pass through one flight-thread cache shared
+across compatible refreshes. Cache keys are exact body-fixed latitude and
+longitude; height/UT/inertial position do not identify a terrain sample.
+There is no coordinate rounding, terrain smoothing, corridor interpolation,
+or reuse of a landing result. An unseen coordinate still queries KSP/PQS.
+This preserves the current sampled-clearance calculation exactly. It does
+not assume that a ballistic orbital plane describes all powered paths.
+
+The cache retains at most 16,384 finite samples with FIFO eviction. Reset,
+predictor disable, body/PQS identity change, terrain radius-bound change, or
+target terrain-height change clears reuse. A final selected-coast check
+queries fresh heights even where a cached sample exists. A changed sampled
+height clears the cache and rejects that transaction. Exceptions and
+non-finite heights are not cached. These rules assume an unchanged PQS
+configuration between those checks; arbitrary unannounced terrain edits
+elsewhere cannot be detected without a new query there.
+
+Each transaction retains the existing limit of 1,536 actual PQS calls.
+Cached evaluations do not consume that call budget, including nominal and
+delayed terminal replays. They still consume the 32-sample-per-update and
+1-ms-work-per-update limits. A separate 32,768-evaluation ceiling bounds
+total cached work. A single slow PQS call can exceed the time slice; the
+next call is deferred. These storage/work limits do not tune braking or
+terminal control. Workers perform simulation; KSP terrain queries remain
+incremental on the flight thread. No terrain cache access occurs on workers.
+
+Publication ownership, fresh-result ordering, selected brake policy,
+terminal validity, and the approved V1 guidance exceptions remain unchanged.
+Failed or incomplete terrain work never publishes. No new interlock,
+abort/recovery response, warp rule, phase handoff, actuator law, UI control,
+or impact-as-landing route is introduced by this amendment. Ballistic
+intersection remains a request to seek a powered solution, not a landing
+result. The blue marker still requires a committed predicted touchdown.
+
+**Capture and offline evidence.** Each transaction records total evaluated
+samples, actual PQS calls, cache hits, and the unique body-fixed coordinates
+and finite heights used (including cache hits). This closes the previous
+missing-terrain-data gap for later replay. Validation summaries report
+terminal touchdown/contact rather than mislabelling a completed terminal
+replay as `NoForecast`/`BrakingHandoff`. The reader accepts terminal worker
+stages and validates the additive cache records; older captures remain
+readable.
+
+The existing terrain-truncated terminal result has no integrated total
+expended delta-v. The reader preserves that value as unknown (`null`) when
+the terminal contact state is complete, rather than inventing a fuel
+estimate or rejecting the entire contact record. This is an existing
+diagnostic limitation and does not change the live result or V1/UI.
+
+Map observations record result version/submission, phase, view/module gates,
+the correction-settling visibility gate, outcome, and whether a blue marker
+was requested. They are emitted only on result/gate changes, with logging
+enabled. They do not change drawing. A requested marker may still be hidden
+by camera occlusion; this observation does not claim the renderer drew
+visible pixels.
+
+The deterministic repeated-snapshot Mun test preserves the selected brake
+UT and all touchdown position components exactly. It reduces PQS calls from
+1,030 on the first run to 287 on the repeat, while retaining the fresh coast
+check (746 cache hits). The first flat run saves only three duplicate calls;
+this result must not be advertised as proof that every new, moving-vessel
+refresh or the real first-intersection workload now fits the budget.
+The captured-input sampled-terrain fixture also remains a powered forecast
+within the budget. Tests cover bounded storage, no nearby-coordinate alias,
+context/height invalidation, invalid samples, changed terrain, per-update
+cached-work bounds, terminal contact, and incompatible-result rejection.
+
+**Controlled KSP check specified for that build (subsequently failed).** Use the same Mun vessel/target with trace logging
+and auto-warp enabled. Record the first ballistic intersection, first powered
+publication and blue-marker request, deorbit cutoff, course-correction pulse
+and settled refresh, actual braking entry, horizontal-kill entry, and
+touchdown or impact. Compare cache hits/calls and publication latency with
+the failed session above. If no marker appears, correlate `map_draw` with
+`published` and `selection_decision`; do not infer absence of a result from
+the screenshot alone. The remaining validation is whether new real-flight
+PQS samples and controller motion yield timely accurate powered forecasts.
+This bounded test build does not certify a successful Mun landing offline.
+
+**Acceptance evidence for this slice:** 75 focused C# landing tests and 30
+Python reader/lifecycle/sequence tests pass. The reader validates all 1,034
+records and 132 submissions in the selected failed session without gaps;
+its lifecycle audit confirms only submission 127/version 16 was committed
+and failed refreshes did not replace it. The historical whole-flight audit
+still fails: it does not recognize that DLL's newer model-provenance label
+as equivalent, and the aborted flight has no observed correction-settling,
+horizontal-kill or final-descent sequence. That failed flight is a negative
+availability/latency fixture, not a passing flight of this terrain-cache
+change. The offline gates above establish reuse, result invariance and
+publication mechanics; new KSP data establishes real-flight timing and
+landing performance.
+
+**Installed test build, 30 September:** Release build succeeded with zero
+warnings/errors. The game DLL hash remained unchanged throughout building.
+After verifying KSP was closed and the exact authorised `KSPDIR`, the
+separate installer replaced only `MechJeb2.dll`. Source and installed SHA-256:
+`40999DADBAD8E509D0CA7C97BE9538B8671A4E0300491E8129589E1099638FAE`.
+The original DLL was backed up and hash-verified against
+`3F2D55AEB3515175697D3B2F6F19E7466C81F5EB69AACEB053BBD0A0438825BF`.
+Manifest: `C:\Users\Dave\Documents\KSP Backups\MechJeb2 Explicit Install\20260930-171247-0738656\manifest.json`.
+Installed `alglib.dll`, `MechJebLib.dll`, `MechJebLibBindings.dll`, and
+`JetBrains.Annotations.dll` were hash-compared before/after and unchanged.
+No live V1 controller or UI source was changed in this terrain-reuse slice;
+the previously approved guidance/terminal exceptions remain in the build.
+
+### 30 September flight evidence and corrected publication test
+
+In capture session `e7f437c03a704f5fbcb5b98e400a69a9`, submission 100 was
+the first ballistic terrain intersection (`inputUT=24604031.74`). The active
+planner ran powered candidates, but repeatedly changed its prospective V1
+speed-policy terrain and required nearly exact agreement with the final
+endpoint terrain. It rejected submission 100 after eight repropagations and
+1,001 terrain queries. Submissions 101, 104, 105, and 110 rejected terminal
+paths that ended above lower local ground without extending V1 final descent
+to that ground. Other refreshes exhausted the 1,536-query budget. The sole
+published powered result was submission 111 at UT 24604087.20, about 55 s
+after the first intersection. Later failed refreshes retained that old result;
+the real deorbit burn had already passed the useful cutoff. The trace confirms
+one publication but does not establish why its blue reticle was not visible.
+The post-crash pause is not attributable to the predictor from this capture.
+
+These are **predictor validation failures, not proofs that no powered landing
+is physically possible**. Before another deployment, a replay beginning at
+submission 100 must produce a terrain-resolved powered terminal contact
+within the transaction's bounded terrain work. A modelled final-descent path
+that ends above lower PQS terrain must continue with the newly resolved
+terrain height, then be checked again; it must not be discarded as “no
+contact.” Prospective endpoint-terrain policy feedback is acceptable when
+successive fully terrain-checked landing sites are within the intended
+targeting tolerance and each retains terminal speed and throttle margin.
+One-metre equality of policy and endpoint heights is not a meaningful
+publication criterion on sloped terrain. Moving or unsafe terminal endpoints,
+coast/braking terrain intersections, incomplete work, and query failures are
+still not publishable landings. Retaining a stale result cannot substitute for
+a timely first publication. No missing-result controller interlock is added.
+
+## Binding V1 Beta guidance and predictor contracts — amended 30 September 2026
+
+This is a **predictor and guidance-interface repair**, not a predictor-only
+change. A selected brake UT is consumed by live V1, and changing result
+availability can change V1's decisions even without editing a phase class.
+The approved exceptions are separated below. The no-result burn safeguard was
+explicitly rejected for this repair and is deferred; it is not an
+implementation or acceptance requirement. An unapproved controller change
+cannot be inferred from a predictor acceptance test. Earlier sections remain
+investigation history, not authority where they differ from this section.
+
+### Control-change boundary
+
+| Status | Control-visible behavior |
+| --- | --- |
+| Approved exception to Beta | At low-orbit `PlaneChange` completion, enter `LowDeorbitBurn` instead of Beta's geometric `DeorbitBurn`. `LowDeorbitBurn` existed in Beta but was dormant on this path. Its existing steering, throttle, and cutoff equations are otherwise the baseline. The high-orbit path remains geometric. |
+| Approved terminal exceptions | Horizontal-kill thrust direction opposes measured horizontal velocity. Targeted airless final descent uses the validated 0.40 braking-distance lead factor; all other modes retain Beta's 0.90 factor. These same equations are inputs to the forecast. |
+| Approved prediction-input contract | The predictor owns one active target-aware result; ordinary immediate-braking work cannot overwrite it. A completed course-correction pulse makes its pre-pulse forecast unusable until the existing post-burn settling and fresh-result rules are met. `CourseCorrection` still accepts only a complete `PredictionReady` landing and keeps Beta's pulse law, thresholds, and two-result consensus. The result-availability gate is control-visible and must be regression-tested as such. |
+| Explicitly deferred | No low-deorbit burn interlock, throttle hold, warp change, automatic abort, or other controller response to a missing forecast is part of this repair. Concentrate on producing a timely powered landing prediction for the existing guidance. |
+| Outside this repair without separate approval | Accepting ballistic `ImpactForecast` as a landing for course correction, changing correction-pulse limits or geometry, changing `CoastToDeceleration`/`DecelerationBurn` triggers or throttle law, new abort/recovery manoeuvres, target-fixed descent, UI changes, or any other phase/actuator change. |
+
+The predictor may change the *data* supplied to these unchanged consumers:
+landing position/UT, braking-release UT, endpoint terrain height, freshness,
+and availability. Those are consequential control inputs, so replay must show
+each consumer's decision from the new result. A forecast is not a new command
+to burn at its chosen time; V1's actual phase and policy still determine when
+and how a burn occurs.
+
+**Baseline behavior to preserve:** `PlaneChange` retains its plane-change
+decision and actuator law except for its low-orbit exit destination.
+`LowDeorbitBurn` retains Beta's target-range trigger, retrograde thrust,
+landing-site steering, throttle calculation, and predicted-site cutoff except
+without any new no-result response. `CourseCorrection` retains
+its landing-error calculation, pulse magnitude/direction, attitude and
+throttle gates, post-pulse settling, and two-result consensus; no
+`ImpactForecast` shortcut changes its accepted result type.
+`CoastToDeceleration` retains its speed/altitude entry conditions, RCS,
+attitude, and warp decisions. `DecelerationBurn` retains its five-second
+brake-UT guard, attitude gate, target-steering component, speed envelope, and
+closed-loop throttle. `KillHorizontalVelocity` and `FinalDescent` retain their
+phase transitions and throttle logic, subject only to the two listed terminal
+exceptions. High-orbit, atmospheric, untargeted, staging, and abort control
+retain Beta behavior, as does the V1 UI layout and button behavior. Changed
+forecast values may cause these same
+equations to choose different outputs; that is the intended feedback, and it
+must be measured rather than described as a controller-code change.
+
+1. **Guidance baseline.** V1 Beta commit `d8ac3dd5` is the behavioral reference
+   for `LandingAutopilot` and its deorbit, correction, coast, braking,
+   horizontal-kill, and final-descent steps. Restore its decision and actuator
+   equations exactly. Passive tracing and read-only predictor snapshot access
+   may remain only if they cannot change a decision or command. In particular,
+   remove the newer impact-ready correction gate, automatic unrecoverable stop,
+   target-fixed live descent policy, and altered pulse limits. Two narrowly
+   approved terminal corrections are retained: horizontal-kill attitude
+   opposes measured horizontal travel, and targeted airless final descent uses
+   the validated 0.40 braking-distance lead factor. Other bodies and modes
+   retain Beta's 0.90 factor. The predictor must use these same two policies.
+2. **Prediction-driven deorbit.** The low-orbit
+   `PlaneChange` handoff invokes `LowDeorbitBurn`, the prediction-driven step
+   present but dormant in V1 Beta; Beta actually handed off to geometric
+   `DeorbitBurn`. This is a deliberate guidance change, not a restoration of
+   Beta's active path. `LowDeorbitBurn` consumes `PredictionReady` and
+   `LandingSite` to steer and stop the real deorbit burn; the high-orbit
+   geometric path remains Beta. The predictor must supply a usable powered
+   result as soon as the ballistic path intersects terrain and refresh it as
+   the real burn changes the orbit. This repair makes no change to the step's
+   missing-prediction behavior, actuator commands, warp, or phase transitions.
+3. **Ballistic intersection is the trigger, not the answer.** At the first
+   terrain-intersecting ballistic snapshot, search brake-start times along that
+   current ballistic coast. For each candidate, simulate the powered V1 coast,
+   braking, horizontal-velocity kill, and final descent against dynamic terrain
+   and the two approved terminal policies. A candidate brake start is usable
+   only if V1 can reach and execute it through its existing phase transitions,
+   five-second guard, attitude gate, speed-triggered early entry, and throttle
+   law. The search must reject a nominally later time if live V1 would already
+   have commanded braking thrust earlier, lacked time to orient, crossed
+   terrain, or exceeded available thrust. Select from the executable
+   candidates with validated terrain clearance, terminal speed, and throttle
+   margin. The selected
+   brake time comes from physical state and the executable V1 braking policy;
+   target error is not a shortcut that moves the predicted endpoint to the
+   target. Publish the safe powered touchdown location and time so V1 can
+   compare it with the target and adjust the *real* deorbit burn or perform its
+   existing course-correction pulses. A ballistic intersection, a virtual
+   braking handoff, and an uncertain terminal continuation are intermediate
+   states, never a landing solution. During a real deorbit burn, each refresh
+   forecasts downstream flight *if that burn stopped at its captured state*;
+   after a real trajectory change, solve again from the new physical state.
+   The simulation must use the same decision equations as the live V1 braking
+   step, including its attitude-gated throttle, speed envelope, early-entry
+   conditions, and terminal stopping distance. Live braking target steering
+   and finite attitude/throttle response must be represented to the extent
+   needed to establish the claimed margin; unresolved effects are explicit
+   uncertainty, not an assumed successful touchdown. The search cannot call
+   a geometrically reachable endpoint "safe" before this policy equivalence
+   is demonstrated.
+4. **Beta result interface.** `PredictionReady` means a complete, safe,
+   terrain-resolved powered touchdown (`Outcome.LANDED`), as Beta expects.
+   `Trajectory.First().UT` is the selected braking-release time consumed by
+   coast and deceleration; never put the current-state or ballistic-coast
+   sample first. `EndPosition`/`EndUT` describe terminal terrain contact, not
+   ballistic impact or braking handoff. The contact height used by Beta's live
+   `DecelerationEndAltitude()` comes from the published endpoint. Resolve the
+   policy/endpoint feedback to a bounded landing-site displacement before publication. If no safe candidate exists,
+   or terrain/policy work is incomplete, record an explicit pending, failed,
+   or infeasible diagnostic state, never `LANDED`.
+5. **Active publication.** Target-aware work owns the result slot through
+   deorbit, correction, coast, and braking. An ordinary immediate-braking
+   result cannot replace it. Only a complete, newer, terrain-resolved,
+   controller-compatible safe contact can be presented to Beta as `LANDED`.
+   Keep ballistic collision, braking handoff, and uncertain terminal
+   continuation diagnostic; none may be disguised as a landing to get a
+   reticle or activate Beta's correction/braking gates. A failed, stale, or
+   incomplete refresh cannot overwrite a committed valid result. Its failure
+   state must be recorded. Retaining an obsolete landing across a changed physical
+   trajectory is not readiness.
+6. **Validation.** Apply the integrated acceptance sequence and corridor-reuse
+   requirements in the binding amendment at the start of this document. Compare
+   the full controller-bearing source diff with Beta:
+   the only approved decision changes are the `PlaneChange` handoff and the
+   two approved terminal corrections. Offline
+   replay must start at the **first ballistic terrain intersection** and cover
+   the actual deorbit cutoff, proving timely powered-solution publication and
+   consumption by `LowDeorbitBurn`, a later brake reference in
+   `Trajectory.First()`, endpoint and terrain-policy consistency, terminal
+   stopping-distance and throttle-margin validity, and atomic publication
+   under repeated refresh. At each candidate, compare the forecast's phase
+   transition, brake-start UT, attitude gate, speed target, throttle command,
+   and terminal-policy output with the live V1 equations on the same state;
+   use shared pure policy calculations where practical without changing live
+   outputs, and compare against the live phase decisions rather than testing
+   the predictor against another copy of itself. Include the
+   `LowDeorbitBurn`-to-`DecelerationBurn` path and the
+   `CoastToDeceleration` speed/altitude early-entry paths. Record the earliest
+   *actual commanded braking thrust*, which can differ from phase-entry UT;
+   demonstrate that the selected later start is executable and that any
+   model/actuator uncertainty fits within measured throttle and clearance
+   margins. A mismatch disqualifies the candidate from `LANDED` publication.
+   A pending, failed, stale, terrain-unresolved, or infeasible search must
+   leave no false landing. The primary replay gate is that the powered result
+   becomes available early enough for the existing deorbit controller to use.
+   Replay must measure the terrain-query budget and
+   refresh delay at the first intersection; the search must not block the
+   flight thread.
+   The captured Mun case must not be labelled safe if the retained terminal
+   policies predict impact. A KSP flight is the final physics check, not a
+   reason to substitute a different live controller or a different simulator.
+
+**Implementation gate:** The selected-time search may be developed within the
+approved predictor scope, but no candidate may be published as a safe
+`LANDED` result on search geometry alone. The offline policy-equivalence and
+transaction checks above gate active publication and a test build; the KSP
+flight then tests remaining physical uncertainty. No no-result controller
+response is authorized or required in this repair.
 
 This review checks the earlier version of this document against the current V1 source, V1 Beta, `LandingGuidanceV1-Predictor-Investigation.md`, `LandingGuidanceV2.md`, `LandingGuidanceV2-Handoff-2026-09-20.md`, `LandingGuidanceV1.trace.jsonl`, and its matching `KSP.log` event. The V2 handoff is historical; the current branch is authoritative. The V2 architecture is a separate opt-in project, not an implementation path for this V1 repair.
+
+**30 September test build and deployment (rejected by the subsequent flight).**
+The controller-bearing phase files match V1 Beta except for the
+prediction-driven low-deorbit handoff, the two approved terminal corrections,
+and read-only predictor state access. The predictor uses the same
+horizontal-kill direction and targeted-airless final descent speed policy.
+Its publication gate requires terminal continuation and terrain checks, and
+does not label the braking handoff a landing. In the actual flight this gate
+published **no** target-aware result after ballistic contact, exposing the
+unguarded `LowDeorbitBurn` no-result path.
+The focused C# landing suite passed 64/64 and the Python capture, lifecycle,
+and sequence suite passed 22/22. The complete C# suite passed 8,453/8,456;
+the three failures were the previously observed static-conversion test and two
+ascent tests, outside this repair. The Release build had zero warnings and
+errors. KSP was closed, the exact authorised KSP directory was verified, and
+only `MechJeb2.dll` was installed. Source and installed SHA-256 are
+`AD8A3EA25172244ADF7792F46133338371AAE7CE52F9B170859C01D0CE9C07A1`.
+The previous DLL and timestamped manifest are in
+`C:\Users\Dave\Documents\KSP Backups\MechJeb2 Explicit Install\20260930-044315-0465800`.
+The completed Mun attempt did not validate this build. The offline suite did
+not replay the first ballistic terrain intersection or assert that
+`LowDeorbitBurn` consumed a powered result before its cutoff.
+
+### Failed Mun deorbit attempt: binding acceptance case
+
+The newest capture session is `1db7182a1e3a4db9b85b43a0fa71b0b7` in
+`LandingGuidanceV1.capture.jsonl`. It contains 127 target-aware submissions,
+**zero target-aware publications**: 100 `NoBallisticTerrainPass`, 26 complete
+`BallisticImpact`/`ImpactForecast` candidates discarded as
+`beta_impact_diagnostic_not_active`, and one failed terminal terrain resolution
+(`TerminalTerrainUnresolved:resolved=False:contact=False:queries=1536`,
+submission 110). These impact records were evidence that the ballistic path
+crossed Mun terrain, not usable powered landing solutions.
+
+`PlaneChange` handed off to `LowDeorbitBurn` at UT 24,603,448.57. Its burn
+reached full throttle around UT 24,604,029.36. Submission 101 first found a
+ballistic terrain impact at UT 24,604,034.30, longitude 80.710°E against a
+target at 23.473°E. Submission 109 at UT 24,604,074.46 projected 24.742°E;
+submission 110 at UT 24,604,079.48 projected 22.582°E but exhausted its
+terrain-query budget; submission 111 at UT 24,604,084.50 projected 20.278°E.
+Thus the ballistic intersection swept across the target while no powered
+landing result was published. The burn continued until abort at UT
+24,604,149.26, with horizontal speed near zero and altitude about 23.5 km
+ASL. Final projected impact was 18.35°E, roughly 17.9 km short. This is not
+evidence that the two terminal corrections failed: the flight never reached
+those phases.
+
+The current `LowDeorbitBurn` defaults to full throttle; its predicted-site
+steering and cutoff are gated by `PredictionReady`. Consequently no published
+powered landing meant no prediction-driven cutoff. The blue reticle appearing
+after abort came from the ordinary predictor, whose legacy `LANDED` outcome
+had about 261.6 m/s end surface speed and about 17.86 km target error. That
+unsafe ordinary result must not be mistaken for the missing active solution.
+
+**Acceptance from this capture:** replay each submission from the first
+ballistic terrain crossing through the deorbit cutoff, including the rapid
+long-to-short sweep, asynchronous completions, and terrain-budget failure.
+The replacement must publish a complete feasible powered touchdown early
+enough for `LowDeorbitBurn` to consume it. A missing or invalid solution is a
+failed predictor acceptance case, not a reason to modify the guidance here.
+It must never substitute the ballistic impact or braking handoff or accept an
+ordinary immediate-braking overwrite. Verify the selected brake UT, terrain
+clearance, stopping
+distance, throttle margin, freshness, and terminal continuation before a
+`LANDED` publication. This gate precedes another KSP deployment.
+
+### Predictor-only raised-terrain repair under offline validation
+
+The first contact in submission 101 was at 80.710°E, where the capture
+resolved 2,931.76 m terrain ASL, versus the 492.19 m target terrain used as
+the first provisional speed-policy height. A deterministic replay of that
+captured vessel state with a **synthetic** 2,932 m plateau beyond 40°E
+reproduced the old planner's ballistic-only fallback. The same input with
+flat target-height terrain produced a powered result. This isolates the
+planner's failure to retry a candidate when the prospective endpoint terrain
+must raise V1's speed-policy height; it does not reproduce Mun's full PQS map.
+
+The predictor-only source change keeps terrain-intersecting braking paths as
+eligible for a bounded retry when their encountered terrain is higher than
+the provisional endpoint policy. It rejects coast impacts, re-runs the same
+brake UT with that terrain height, resolves the entire path and actual terminal
+contact again, and checks the final endpoint-policy feedback and throttle
+margin before `LANDED` can publish. On the synthetic replay it produced a
+terminal-validated powered result with brake reference 15 s after the first
+submission, policy terrain 2,932 m ASL, and 364 terrain queries within the
+existing 1,536-query cap. This predicted landing remains far long of the
+target, giving existing deorbit guidance a real miss to correct. The test
+establishes the missing search branch, not actual KSP terrain or landing
+accuracy; the next game flight must verify those.
 
 ## Evidence and limits
 
@@ -372,3 +1091,56 @@ The prior target-fixed policy made V1 hand off at target terrain + 205 m, about 
 The first failed-flight input snapshot is now a regression fixture. With a deliberately explicit 835 m uprange terrain corridor and the captured 492 m target height, the planner publishes a terrain-clear, terminal-bound-valid controller forecast about 27.1 km short, after one policy escalation and 365 PQS-oracle queries. A second refresh using the committed policy also completes. The prior post-pulse snapshot passes a separate raised-terrain surrogate. These tests exercise the missing publication route; the surrogate is not a replacement for real Mun PQS. The next KSP run must confirm live candidate clearance, first publication, correction pulses, updated prediction versions, brake timing, and actual terminal descent before landing accuracy is accepted.
 
 The Release build for this correction succeeded with zero warnings and errors. All 45 focused C# landing tests and 22 Python capture/replay/lifecycle/sequence tests passed. The full C# suite had 8,434 passes and the same three unrelated static/ascent failures recorded above. After KSP-closed and exact-path checks, only `MechJeb2.dll` was installed at 05:17 AEST. The source and installed DLL SHA-256 are both `16D861A47F4028D374BF3D3845FFC017D335576F363DDA95A944B9AA7899E98E`; the timestamped backup manifest is `C:\Users\Dave\Documents\KSP Backups\MechJeb2 Explicit Install\20260929-051748-4371108\manifest.json`. No companion DLL was replaced.
+
+### 2026-09-29 approved baseline forecast contract (supersedes the target-reaching design above)
+
+The active predictor answers one counterfactual question: from the current settled physical state, where will V1's nominal coast, braking, horizontal-velocity kill, and final descent end **without another target-seeking correction**? Course Correction owns comparison with the selected target and any correction pulse. The predictor must not choose a brake time or endpoint by target error, run a brake-time bracket/refinement, simulate future strategic correction pulses, or find a target-reaching fixed point with its own publication. Any earlier text describing those operations as the active result path is superseded. The selected target is retained only as result lineage and for existing V1 control inputs where unavoidable; target error is diagnostic, never a trajectory-selection objective.
+
+**One-way brake timing.** Starting at the current state, propagate an unpowered coast until V1's existing `ShouldStartDeceleration(surfaceSpeed, MaxAllowedSpeed)` first becomes true. The resulting physical trigger determines the brake reference (`trigger UT + V1's five-second coast guard`); an already-triggered DecelerationBurn starts from its observed state and command. Use the live V1 speed policy and handoff height as inputs. The result must not change `DecelerationEndAltitude`, the speed policy, throttle, attitude, or any other V1 control threshold. V1's braking `ComputeCourseCorrection(false)` term is excluded from the baseline (zero vector), recorded as bounded target-steering uncertainty, and never used to move the baseline endpoint toward the target. Existing coast RCS adjustment is likewise excluded as a future target correction; already-applied vessel velocity is part of the snapshot. A changing physical trajectory or completed real pulse requires a new prediction; pulse snapshots remain barred until V1's existing 0.75-second settling rule.
+
+**Forecast states and geometry.** `NoForecast` means no *fresh* usable baseline. `ImpactForecast` is a fully resolved first terrain contact on the nominal path, with contact position, UT, terrain ASL, vertical and horizontal surface speeds, and validated path clearance until that contact; it is available to Course Correction, never labelled `LANDED` or shown as safe touchdown. `LandableForecast` requires a terrain-clear braking handoff with validated vertical and horizontal state *and* continuation of V1's actual KillHorizontalVelocity and FinalDescent controls to a survivable touchdown. Its endpoint is that touchdown, not the handoff. A stopping-distance lower bound alone cannot establish this state. If terminal control cannot be simulated or validated, the result remains `NoForecast` or an `ImpactForecast` only when an actual first contact is known; it cannot become `LandableForecast` by optimism. Terrain comes from bounded KSP/PQS queries, with first-contact interpolation and no hardwired Mun profile.
+
+| V1 phase | NoForecast | ImpactForecast | LandableForecast |
+| --- | --- | --- | --- |
+| PlaneChange / DeorbitBurn | Existing geometric control; no result-dependent correction | Diagnostic only; finish existing deorbit operation | Diagnostic only; finish existing deorbit operation |
+| CourseCorrection | Wait only while a physically possible correction cycle remains; then end autoland as unrecoverable | Use contact position and UT in the existing finite-difference correction and impact-preserving pulse limiter; never transition to coast/braking merely because error is small | Use predicted touchdown in the same correction calculation and current completion/pulse consensus rules; may enter CoastToDeceleration |
+| CoastToDeceleration | No landing transition; return to correction if a usable impact result exists and time permits, otherwise end unrecoverable at the deadline | Return to CourseCorrection if a cycle remains; otherwise end unrecoverable; do not start DecelerationBurn or command forecast-based RCS | Existing coast, RCS, warp and speed-trigger behaviour; may start DecelerationBurn |
+| DecelerationBurn | Do not start from this state; if a committed result becomes unusable during the burn, end autoland rather than use a stale brake reference | Never use as a braking/landing prediction; end autoland with the recorded reason | Existing braking control and handoff transition; refresh from the live state with the same baseline model |
+| KillHorizontalVelocity / FinalDescent | No expensive predictor search or refresh; live terminal controller continues under its existing authority | No new terminal forecast is published | No new terminal forecast is published; existing live terminal controller runs to touchdown |
+| Manual abort / landed / target or body change | Release authority or invalidate lineage respectively | Same | Same |
+
+`PredictionReady` continues to mean only a fresh `LandableForecast`. New `CorrectionForecastReady` means a fresh `ImpactForecast` or `LandableForecast`; Course Correction alone uses it. The legacy `ReentrySimulation.Result` object cannot by itself express this distinction, so immutable published metadata must carry forecast kind, contact/handoff/terminal state, source snapshot, model identity, and expiry. Any UI reticle or label must distinguish predicted impact from predicted safe touchdown. A failed, stale, incomplete, or terrain-unresolved transaction cannot overwrite a committed fresh result. A retained result ceases to be decision-ready when its physical snapshot expires; retention for diagnostics cannot extend controller authority.
+
+**Unrecoverable deadline.** There is no retry-count timeout. For a fresh contact forecast, compare time remaining until predicted impact with the time needed to orient for one *existing* correction pulse, execute its impact-preserving Δv with current available acceleration, allow the existing 0.75-second post-burn settling interval, and obtain the required fresh result(s) under the measured predictor refresh/worker latency. Attitude time must come from observed attitude response or a conservative vessel-specific bound; unknown response is not zero. If the latest usable forecast is still impact-only after that physical deadline, or no impact-preserving pulse can be produced, enter explicit `UnrecoverableForecast`: set throttle to zero, minimum warp, release V1 guidance authority, and display/log the reason. Do not invent an abort manoeuvre, staging, target change, or new descent control law. An explicit user abort retains its existing behaviour.
+
+**Publication and replay gates.** A transaction publishes atomically only after one snapshot, one baseline model, complete terrain resolution, and terminal-state classification. Newer compatible complete transactions may replace earlier ones; ordinary immediate-braking, target-optimised, failed, incomplete, late, or out-of-order work cannot. The offline sequence harness must prove that a long baseline miss stays long, a target cannot affect brake reference or endpoint selection, an impact result feeds a correction but cannot authorize coast/braking, a completed real pulse invalidates its predecessor until settled, fresh compatible work replaces atomically, failed work does not, terminal searches never run, and an unrecoverable impact cannot wait forever. Compare predicted phase transitions, throttle, attitude gate, RCS/warp, terrain clearance, and final outcome against the captured whole sequence. No KSP DLL test is justified by a handoff-only or ideal stopping-distance result.
+
+**Latest completed-flight terminal evidence and implementation gate (29 September).** The newest captured session is `10ee86d75bca457eb20073c71cbd52b5`. The capture has 32 complete publications, but its final appended line is truncated; result version 38 exists in the JSONL guidance trace only, so the harness reports that lineage gap. The trace continues after the last predictor submission into `KillHorizontalVelocity`. At UT 24,604,105.67 it had 1,319.72 m terrain clearance, 113.26 m/s horizontal speed, and the projected vessel forward vector aligned almost exactly opposite horizontal travel. At UT 24,604,126.07, that projected vector aligned **with** travel (cosine 0.868); at the last complete state, UT 24,604,196.45, the craft still had 92.63 m/s horizontal speed at 39.30 m terrain clearance. `FinalDescent` was never entered. Source computed the horizontal thrust component from the current `VesselState.Forward` projection, not from negative horizontal velocity, so the commanded direction could switch sides as attitude passed vertical. These observations reject any terminal-handoff-only `LandableForecast` for this flight. Dave explicitly approved correcting that direction to oppose horizontal travel. The shared `HorizontalKillThrustDirection` policy now supplies the live step's attitude target; its 0.2 lateral-to-vertical tilt, hover throttle, and transition speed remain unchanged. This fixes the observed direction reversal, but its landing effect still needs a controller-equivalent terminal forecast and a new flight observation.
+
+**Current implementation status.** The baseline worker now uses the live V1 speed trigger without target brake-time search and can classify a resolved first terrain contact as `ImpactForecast`. `PredictionReady` does not admit that result; Course Correction has a separate impact-ready gate and a physical correction deadline. The worker still stops at the braking handoff when no prior terrain contact occurs. No validated continuation through the actual horizontal-kill and final-descent controllers exists, so **no `LandableForecast` is currently publishable**. The focused source tests and reader/lifecycle/sequence tests exercise the state boundaries, and the sequence harness correctly rejects the latest captured flight, but those passes are not a controller-equivalence or landing-success gate. This source must not be built for KSP deployment as a working landing predictor until a terrain-resolved terminal continuation passes the captured whole-sequence replay and the horizontal-kill behaviour is resolved within approved scope.
+
+**Approved terminal controller corrections and diagnostic replay.** Dave approved the narrowly scoped horizontal-kill direction correction and then approved a targeted-airless final-descent speed-envelope correction; other landing modes retain their previous speed factor. The horizontal-kill step now asks for thrust opposite the measured horizontal surface velocity rather than using the craft's moving forward direction. The targeted-airless final 300 m envelope uses a 0.40 braking-distance factor instead of the legacy 0.90. In a source-policy replay of captured Mun submission 177, nominal braking reaches a handoff at UT 24,604,188.58, 697.2 m ASL, with 3.61 m/s horizontal and −7.93 m/s vertical speed. An **ideal instantaneous-attitude** horizontal-kill continuation takes 3.4 s and travels 37.8 m before reaching 0.99 m/s horizontal. A fixed-height final-descent replay with the cumulative V1 throttle PID reaches the target terrain at approximately −0.20 m/s vertical speed for 0, 3, and 10 m vessel-bottom offsets. Source resets the PID when `Tmode` changes, but retains the preceding cumulative throttle value; the replay starts with the captured throttle value. The focused tests assert that the ideal replay meets the requested 0.5 m/s setting at captured and several synthetic vertical handoffs. At a separate 100 m/s horizontal handoff, the same ideal horizontal-kill policy requires about 337 s and 15.6 km of travel; a positive 200 m handoff clearance therefore cannot certify a landing. These calculations use shared V1 policy equations, but do not reproduce finite attitude response or dynamic terrain along the terminal path. `RunNominalTerminal` remains a diagnostic worker-side continuation and has **no active publication route**. The present Mun flight never entered FinalDescent, so an in-game terminal-equivalence comparison remains unavailable. A terminal result cannot become `LandableForecast` until the full controller and KSP/PQS path have been validated offline; the new envelope factor alone is not evidence of a safe touchdown.
+
+The sequence harness now records the ideal horizontal stop time and distance beside each observed horizontal-kill endpoint. On the failed flight's first KHV sample (113.26 m/s lateral speed), even ideal opposite-travel hover thrust needed about 354 s and 20.05 km. At its last sample, 92.63 m/s lateral speed and 39.30 m terrain clearance still implied about 289 s and 13.40 km in the ideal bound. These figures explain why correcting the KHV direction alone cannot rescue the already late, near-ground phase entry. They are lower-bound diagnostics, not a real-vessel trajectory or a safe-terrain proof.
+
+The same trace gives one vessel-specific attitude-response observation: KHV entered at 62.25° attitude error and first fell below 5° about 5.10 s later. The old and corrected horizontal-kill direction agree at this initial instant because the craft was pointing against lateral travel, but the old direction subsequently turned with the craft. The initial settling time is useful input to a bounded terminal forecast; assuming instant attitude throughout KHV would omit an observed five-second transient. One observed turn is not a certified bound for every later attitude change.
+
+The new `TargetAwareTerminalTerrainProbe` is a **synchronous offline terrain-oracle diagnostic**, never called with KSP/PQS on the flight thread. It interpolates the precomputed path at no more than 25 m or 0.25 s between queries, reports first contact and minimum sampled clearance, and returns unresolved when its explicit query budget is exhausted or the path is invalid. An offline flat-terrain case reaches the simulated terminal endpoint; an elevated corridor yields earlier contact; a one-query budget is explicitly unresolved. A production KSP/PQS resolver must instead spread bounded terrain queries across flight updates. The probe is **not connected to active publication**: a completed ideal-attitude terrain probe still cannot establish that the real vessel's attitude and throttle will follow that path, nor can sparse samples prove every point between queries clear. The active worker still stops at the braking handoff and retains the current no-`LandableForecast` gate.
+
+**29 September continuation check.** The latest completed Mun capture's final braking submission (ID 33, UT 24,604,103.748) used a live policy radius of 201,807.553 m, hence a handoff altitude of 1,807.553 m ASL, while the craft still had 131.30 m/s horizontal speed. The captured DLL's policy is not the target-fixed policy in the current uncommitted source, so its subsequent flight is a negative regression case, not a positive controller-equivalence replay for that source. The capture contains no `FinalDescent` observation, and its active-session tail is incomplete. The live `DecelerationBurn` attitude gate accepts 0.75 forward alignment; the worker had rejected alignment below 0.95 and assumed perfect retrograde thrust on the current tick. The worker now uses the shared 0.75 gate and the copied forward vector for that tick, with a focused source test. Future attitude response, the dynamic terrain along horizontal kill, and terminal touchdown still lack a validated active continuation. An ideal-attitude terminal path must not be promoted to `LandableForecast` or used to steer CourseCorrection. No Release build, commit, or installation is justified by this change alone.
+
+**Continuation evidence from the last braking input.** Replaying captured submission 33 from its actual UT, mass, thrust, orbit, and forward vector under the *current source* target-terrain-plus-200-m policy reaches the 697.2 m ASL handoff at UT 24,604,138.52 with 4.33 m/s horizontal and −7.37 m/s vertical speed. The ideal shared-policy horizontal-kill continuation then takes 5.8 s and travels 65.2 m; the low-altitude final-descent replay reaches flat target-height terrain at −0.20 m/s vertical and near-zero horizontal speed. A sensitivity replay coasts without thrust for the 5.1 s attitude-settling interval observed in the old KHV trace, then runs the same ideal controller policies. It also reaches flat terrain at about −0.21 m/s vertical, with an endpoint 78.4 m from the instantaneous-attitude result. This **does not** model V1's actual thrust while turning or establish a maximum settling delay. These are controlled counterfactuals, not observed flights of the changed source. They demonstrate that the old DLL's 1,807.6 m handoff, which left 113 m/s horizontal at phase transition, materially altered the outcome; they do **not** certify either terminal endpoint or the Mun terrain along the later path. The final-descent diagnostic now refuses to apply its low-altitude controller law above V1's 300 m branch boundary. A new incremental terrain resolver reproduces the offline flat and rising-terrain contact results under four queries per update, and reports unresolved on query exhaustion or PQS failure. It is not yet connected to active publication. These checks pass in the focused C# suite; the full-sequence flight audit remains negative because the only available flight used the earlier controller policy and never entered `FinalDescent`.
+
+**29 September test build and remaining equivalence limit.** The incremental KSP/PQS terminal resolver is now connected to the single active target-aware transaction. A clear braking handoff leads to an asynchronous nominal terminal replay and a second replay with the observed 5.1 s unpowered attitude-delay sensitivity. Each path is resolved incrementally against dynamic terrain, including the captured vessel-bottom offset. A first unsafe contact is classified as `ImpactForecast`; a contact in final descent with both replayed speeds within the configured touchdown and horizontal limits and endpoint spread within targeting tolerance is classified as `LandableForecast`. No handoff is labelled `LANDED` without this terminal continuation. Ordinary immediate-braking results remain barred from the target-aware slot, and failed/incomplete terminal work retains the prior committed result subject to its freshness gate. This is a **test build**, not a completed controller-equivalence proof: the two replay paths do not model V1's finite attitude and actual thrust while turning, and a single measured 5.1 s delay is not a certified upper bound. Terrain samples constrain the predicted paths but cannot prove every interval between samples clear. In particular, a `LandableForecast` from this build is conditional on those documented model assumptions; KSP feedback must determine whether it is accurate. The 64 focused C# tests and 27 Python capture/lifecycle/sequence tests pass. The full C# run has 8,453 passes and the same three unrelated static/ascent failures previously documented. The previous DLL's whole-flight audit still fails with 31 issues and four unknowns, as expected; it is a negative fixture and cannot validate this build. At Dave's explicit request to build and install for KSP testing, the Release build completed with zero warnings and errors and only `MechJeb2.dll` was installed after a closed-game and exact-path check. Source and installed SHA-256 both equal `B6A4E9B387CCE6D9872CC54C32A953BAED5BD0917EF9D35F124A5301575A86E9`; the timestamped backup manifest is `C:\Users\Dave\Documents\KSP Backups\MechJeb2 Explicit Install\20260929-233542-0408192\manifest.json`. No companion DLL was changed.
+
+### 30 September correction: safe brake timing precedes target correction
+
+This amendment supersedes the **one-way physical-trigger timing** and **no brake-time search** clauses above. They caused an immediate V1 brake reference in the 29 September no-reticle flight: 18 complete refreshes, all classified `ImpactForecast`, with an endpoint about 126 km short of target. A throttle-capable vessel can still crash when braking is scheduled at the wrong point. V1's `DecelerationBurn` reads the published brake reference and will coast until that time; therefore timing is part of the predictor/guidance contract. The target-reaching root used in an older experiment made the opposite mistake by choosing a brake time to erase target error. The active predictor must choose a **safe, later brake time independent of target error** and report the resulting touchdown location. V1's existing `CourseCorrection` uses that location to move the real trajectory toward the selected target. `DeorbitBurn` is geometric and does not read the prediction; this repair does not claim otherwise. A refresh after each settled real correction uses the changed physical state and repeats the same safety timing selection.
+
+For a settled targeted airless snapshot, resolve the unpowered first terrain contact against KSP terrain. On a worker, sample later V1 brake references before that contact using V1's actual coast guard, speed envelope, throttle law, engine inputs and handoff height. Resolve candidate handoffs against bounded KSP/PQS queries on the flight thread. A candidate is ineligible if it intersects terrain before handoff, lacks vertical stopping distance or a 20% ideal thrust-acceleration reserve, or reaches handoff above V1's allowed surface speed by more than 10%. The surface-speed check is essential: a captured Mun fixture produced a late handoff with about 538 m/s horizontal motion despite adequate vertical clearance. Refine between the latest eligible coarse candidate and the next later ineligible candidate; choose the latest eligible refined candidate, then recheck its full coast and powered trajectory against terrain. The target coordinates are used only to measure and publish signed downrange and crossrange miss, never to rank candidates. A candidate is labelled `LandableForecast` only after the existing terminal continuation and dynamic terrain checks produce a valid touchdown; the handoff is never the published landing location. This test-build classification remains conditional on the recorded terminal attitude-response model, so the KSP flight is the performance test.
+
+If no candidate meets that safety screen, the already resolved **ballistic first contact** may be published as an `ImpactForecast` for Course Correction. It has no brake reference, cannot authorize coast or braking, and must not appear as a safe blue landing reticle. A terrain change that invalidates the stored contact instead fails the transaction. Failed, stale, unresolved, or out-of-order work never replaces a committed result. Once V1 enters `DecelerationBurn`, only a live direct continuation is refreshed; `KillHorizontalVelocity` and `FinalDescent` do no candidate search. Target-aware ownership continues across DeorbitBurn to CourseCorrection and ordinary immediate-braking workers cannot replace it.
+
+The flat-terrain Mun fixture needs 1,033 terrain-oracle queries for the selected full path and two terminal continuations. The transaction cap is 1,536 queries, spread across updates with at most 32 queries and 1 ms of query work per flight-thread tick. Terminal terrain interpolation remains capped at 25 m of path travel and now at 1 s elapsed, avoiding fourfold redundant hover samples. The in-game test must record the chosen brake reference, full first-contact/terminal endpoint, actual V1 burn start, throttle and attitude, terrain clearance, correction pulses, result lineage, and touchdown or impact. A safe classification is not a promise of landing accuracy until that flight validates the unmodelled actuator and terrain intervals.
+
+**Test-build evidence.** The 64 focused C# landing tests and 22 Python capture/lifecycle/sequence tests pass. The flat Mun replay selects a later brake reference, validates terminal contact, and produces the same reference and contact state with a different target longitude; its large target miss is retained for guidance to correct. The raised-terrain captured fixtures yield a ballistic `ImpactForecast` without changing V1's live speed policy. The Release build completed with zero warnings and errors. With KSP closed and the exact `KSPDIR` verified, only `MechJeb2.dll` was installed; source and installed SHA-256 are both `89FEF92486E6194A55F9ECD5DB8C9AC92283DFB7AA969CE2C0CF716C29798940`. The prior DLL and timestamped manifest are at `C:\Users\Dave\Documents\KSP Backups\MechJeb2 Explicit Install\20260930-010501-6364319\`. No companion DLL was changed. This is ready for Dave's controlled Mun test, not an assertion that the landing will succeed in KSP.

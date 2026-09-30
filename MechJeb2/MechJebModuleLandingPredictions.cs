@@ -58,7 +58,10 @@ namespace MuMech
             //        }
             //    }
             //}
-            result;
+            predictorDestroyed ? null : TargetAwareAirlessActive &&
+            Core.Landing.CurrentStep is CourseCorrection correction &&
+            result != null && !correction.PublishedPredictionUsable(result.InputUT)
+                ? null : result;
 
         public ReentrySimulation.Result GetErrorResult()
         {
@@ -164,13 +167,18 @@ namespace MuMech
         private long activeTargetAwareCaptureId;
         private TargetAwareResultLineage? committedTargetAware;
         private bool wasTargetAwareActive;
+        private volatile bool predictorDestroyed;
         private long targetAwareSequence;
         private double lastTargetAwareStartUT = double.NegativeInfinity;
+        internal double RecentTargetAwareLatencySeconds { get; private set; }
         private double targetAwareWorkerMilliseconds;
+        private readonly TargetAwareTerrainCache targetAwareTerrainCache = new TargetAwareTerrainCache();
+        private long lastMapCaptureVersion = -1;
+        private int lastMapCaptureFlags = -1;
         private const int TargetAwareTerrainQueriesPerTick = 32;
         // Provisional safety cap. Mun replay measures the actual queries before
         // this becomes an acceptance budget; exceeding it fails the candidate.
-        private const int TargetAwareMaximumTerrainQueries = 1024;
+        private const int TargetAwareMaximumTerrainQueries = 1536;
         private int brakingPlanRunning;
         private double lastBrakingPlanInputUT = double.NegativeInfinity;
         private const int BrakingPlanCandidateCount = 9;
@@ -217,6 +225,7 @@ namespace MuMech
 
         protected override void OnModuleDisabled()
         {
+            targetAwareTerrainCache.Clear();
             wasTargetAwareActive = false;
             Interlocked.Increment(ref predictionGeneration);
             if (Core.Landing.LandingTraceEnabled && Core.Landing.LandAtTarget &&
@@ -241,12 +250,39 @@ namespace MuMech
             LandingPredictorCapture.Close();
         }
 
+        public override void OnDestroy()
+        {
+            if (predictorDestroyed) return;
+            predictorDestroyed = true;
+            Interlocked.Increment(ref predictionGeneration);
+            bool ownedCapture = activeTargetAwareCaptureId != 0 || wasTargetAwareActive;
+            CancelTargetAwareWork(false);
+            targetAwareTerrainCache.Clear();
+            lock (readyResults)
+                while (readyResults.Count > 0)
+                    ((ReentrySimulation.Result)readyResults.Dequeue()).Release();
+            lock (readyBrakingPlanResults)
+                while (readyBrakingPlanResults.Count > 0)
+                    foreach (ReentrySimulation.Result queued in
+                        ((BrakingPlanResultSet)readyBrakingPlanResults.Dequeue()).Results)
+                        queued.Release();
+            candidateResult?.Release(); candidateResult = null;
+            result?.Release(); result = null;
+            errorResult?.Release(); errorResult = null;
+            committedTargetAware = null;
+            stopwatch.Stop(); errorStopwatch.Stop();
+            if (ownedCapture) LandingPredictorCapture.Close();
+            // Workers finish copied mathematics only; never join them on the
+            // flight thread or access Core/PQS during scene teardown.
+        }
+
         // A targeted V1 landing is a new predictor transaction. A result or
         // terrain radius from a prior target must never command its first
         // course correction. The landing autopilot calls this before it starts
         // its first phase; no actuator state is changed here.
         public void ResetTargetedLandingPrediction()
         {
+            targetAwareTerrainCache.Clear();
             Interlocked.Increment(ref predictionGeneration);
             if (Core.Landing.LandingTraceEnabled && Core.Landing.LandAtTarget &&
                 VesselState != null && VesselState.MainBody != null && !VesselState.MainBody.atmosphere)
@@ -281,6 +317,7 @@ namespace MuMech
 
         public override void OnFixedUpdate()
         {
+            if (predictorDestroyed) return;
             bool targetAware = TargetAwareAirlessActive;
             if (targetAware && !wasTargetAwareActive)
             {
@@ -308,7 +345,9 @@ namespace MuMech
             AdvanceTargetAwareTransaction();
             if (TargetAwareAirlessActive)
             {
-                if (Core.Landing.CurrentStep is CourseCorrection ||
+                if (Core.Landing.CurrentStep is DeorbitBurn ||
+                    Core.Landing.CurrentStep is LowDeorbitBurn ||
+                    Core.Landing.CurrentStep is CourseCorrection ||
                     Core.Landing.CurrentStep is CoastToDeceleration ||
                     Core.Landing.CurrentStep is DecelerationBurn)
                     TryStartTargetAwareTransaction();
@@ -335,7 +374,15 @@ namespace MuMech
                 result = null;
             }
             committedTargetAware = null;
+            ResultVersion++;
             lastTargetAwareStartUT = double.NegativeInfinity;
+        }
+
+        internal void InvalidateAfterCourseCorrectionPulse()
+        {
+            if (!TargetAwareAirlessActive) return;
+            CancelTargetAwareWork();
+            InvalidateCommittedTargetAware("real_course_correction_pulse_completed");
         }
 
         private void InvalidateChangedTargetAwareContext()
@@ -479,6 +526,11 @@ namespace MuMech
             {
                 Stopwatch captureWorkerTimer = job.CaptureId != 0 ? Stopwatch.StartNew() : null;
                 ReentrySimulation.Result newResult = sim.RunSimulation();
+                if (predictorDestroyed)
+                {
+                    newResult.Release();
+                    return;
+                }
                 captureWorkerTimer?.Stop();
                 newResult.CaptureSubmissionId = job.CaptureId;
                 LandingPredictorCapture.WorkerResult(job.CaptureId, newResult,
@@ -510,6 +562,11 @@ namespace MuMech
 
                 lock (readyResults)
                 {
+                    if (predictorDestroyed || job.Generation != Interlocked.Read(ref predictionGeneration))
+                    {
+                        newResult.Release();
+                        return;
+                    }
                     readyResults.Enqueue(newResult);
                 }
 
@@ -601,7 +658,7 @@ namespace MuMech
             }
         }
 
-        private enum TargetAwareWorkKind { Ballistic, Coarse, Refinement, PolicyEscalation, DirectForecast }
+        private enum TargetAwareWorkKind { Ballistic, Coarse, Refinement, PolicyEscalation, DirectForecast, Terminal }
 
         private sealed class TargetAwareWorkItem
         {
@@ -627,13 +684,14 @@ namespace MuMech
             public List<AirlessTargetAwareOutput> Coarse;
             public TargetAwareRefinementBatch Refinement;
             public AirlessTargetAwareOutput Revalidated;
+            public TargetAwareTerminalEnvelope Terminal;
             public Exception Exception;
             public double ElapsedMilliseconds;
         }
 
-        private void CancelTargetAwareWork()
+        private void CancelTargetAwareWork(bool recordCapture = true)
         {
-            if (activeTargetAwareCaptureId != 0)
+            if (recordCapture && activeTargetAwareCaptureId != 0)
             {
                 LandingPredictorCapture.TargetAwareValidation(activeTargetAwareCaptureId,
                     activeTargetAware, targetAwareWorkerMilliseconds);
@@ -676,9 +734,14 @@ namespace MuMech
                 double targetTerrainASL = body.TerrainAltitude(Core.Target.targetLatitude,
                     Core.Target.targetLongitude);
                 targetTerrainTimer.Stop();
-                // V1 consumes the committed forecast's terrain-clear policy
-                // height. Start at target terrain before the first commit.
-                double activeDecelEndASL = Core.Landing.DecelerationEndAltitude();
+                // V1 Beta derives its airless handoff height from the published
+                // endpoint. Before the first valid result that live value is
+                // sea level; a prospective forecast must seed the eventual
+                // post-publication policy from resolved terrain, then verify
+                // it again against the forecast endpoint before publication.
+                double activeDecelEndASL = directForecast ?
+                    Core.Landing.DecelerationEndAltitude() :
+                    targetTerrainASL + 200;
                 double maximumThrustAcceleration = VesselState.LimitedMaxThrustAcceleration;
                 var activePolicy = new SafeDescentSpeedPolicy(body.Radius + activeDecelEndASL,
                     body.GeeASL * 9.81, maximumThrustAcceleration);
@@ -710,14 +773,19 @@ namespace MuMech
                         directForecast ? Core.Thrust.ThrottleLimit :
                             Core.Thrust.ThrottleFixedLimit),
                     Core.Thrust.SmoothThrottle ? Core.Thrust.ThrottleSmoothingTime : 0,
-                    directForecast ? Core.Thrust.LastThrottle : 0);
+                    directForecast ? Core.Thrust.LastThrottle : 0,
+                    Core.Landing.TouchdownSpeed,
+                    Math.Max(0, VesselState.AltitudeTrue - VesselState.AltitudeBottom),
+                    Core.Thrust.PreviousTransThrottle);
                 var orbitCopy = new Orbit();
                 orbitCopy.UpdateFromOrbitAtUT(patch, inputUT, body);
+                targetAwareTerrainCache.Configure(body, body.pqsController,
+                    body.pqsController.radiusMin, body.pqsController.radiusMax, targetTerrainASL);
                 var planner = new TargetAwareAirlessPlanner(snapshot,
                     Interlocked.Read(ref predictionGeneration), ++targetAwareSequence, body,
                     (latitude, longitude) => body.TerrainAltitude(latitude, longitude),
                     Math.Max(200, body.Radius * 0.0005), TargetAwareTerrainQueriesPerTick,
-                    TargetAwareMaximumTerrainQueries, 1, directForecast);
+                    TargetAwareMaximumTerrainQueries, 1, directForecast, targetAwareTerrainCache);
                 activeTargetAware = planner;
                 activeTargetAwareOrbit = orbitCopy;
                 targetAwareWorkerMilliseconds = 0;
@@ -728,8 +796,7 @@ namespace MuMech
                     targetTerrainASL, maximumThrustAcceleration,
                     parachuteSemiDeployMultiplier, dt, Time.fixedDeltaTime, maxOrbits,
                     noSkipToFreefall, double.NaN,
-                    directForecast ? "v1_live_braking_forecast" :
-                    "v1_controller_policy_forecast");
+                    "v1_safe_brake_timing_no_further_correction");
                 LandingPredictorCapture.Decision(activeTargetAwareCaptureId,
                     "target_aware_refresh_started", result?.CaptureSubmissionId ?? 0);
                 lastTargetAwareStartUT = now;
@@ -747,6 +814,7 @@ namespace MuMech
 
         private void QueueTargetAwareWork(TargetAwareAirlessPlanner planner, TargetAwareWorkKind kind)
         {
+            if (predictorDestroyed) return;
             if (!ThreadPool.QueueUserWorkItem(RunTargetAwareWork,
                     new TargetAwareWorkItem(planner, kind, activeTargetAwareCaptureId)))
                 planner.WorkerFailed("WorkerQueueRejected:" + kind);
@@ -755,6 +823,8 @@ namespace MuMech
         private void RunTargetAwareWork(object state)
         {
             var item = (TargetAwareWorkItem)state;
+            if (predictorDestroyed || item.Planner.Generation != Interlocked.Read(ref predictionGeneration))
+                return;
             var completion = new TargetAwareWorkCompletion
                 { Planner = item.Planner, Kind = item.Kind, CaptureId = item.CaptureId };
             Stopwatch timer = Stopwatch.StartNew();
@@ -776,8 +846,11 @@ namespace MuMech
                         completion.Revalidated = item.Planner.RunPolicyEscalation();
                         break;
                     case TargetAwareWorkKind.DirectForecast:
-                        completion.Revalidated = AirlessTargetAwareSimulation.Run(
-                            item.Planner.Snapshot, item.Planner.Snapshot.InputUT, true);
+                        completion.Revalidated = AirlessTargetAwareSimulation.RunNominalV1(
+                            item.Planner.Snapshot);
+                        break;
+                    case TargetAwareWorkKind.Terminal:
+                        completion.Terminal = item.Planner.RunTerminalEnvelope();
                         break;
                 }
             }
@@ -790,7 +863,9 @@ namespace MuMech
                 timer.Stop();
                 completion.ElapsedMilliseconds = timer.Elapsed.TotalMilliseconds;
                 lock (readyTargetAwareWork)
-                    readyTargetAwareWork.Enqueue(completion);
+                    if (!predictorDestroyed && item.Planner == activeTargetAware &&
+                        item.Planner.Generation == Interlocked.Read(ref predictionGeneration))
+                        readyTargetAwareWork.Enqueue(completion);
             }
         }
 
@@ -804,6 +879,8 @@ namespace MuMech
                     int outputCount = work.Kind == TargetAwareWorkKind.PolicyEscalation ||
                                       work.Kind == TargetAwareWorkKind.DirectForecast ?
                         (work.Revalidated == null ? 0 : 1) :
+                        work.Kind == TargetAwareWorkKind.Terminal ?
+                        (work.Terminal == null ? 0 : 2) :
                         work.Kind == TargetAwareWorkKind.Ballistic ?
                         work.Ballistic?.Count ?? 0 : work.Kind == TargetAwareWorkKind.Coarse ?
                             work.Coarse?.Count ?? 0 : work.Refinement?.Outputs?.Count ?? 0;
@@ -840,6 +917,9 @@ namespace MuMech
                             case TargetAwareWorkKind.DirectForecast:
                                 work.Planner.SetDirectOutput(work.Revalidated);
                                 break;
+                            case TargetAwareWorkKind.Terminal:
+                                work.Planner.SetTerminalEnvelope(work.Terminal);
+                                break;
                         }
                     }
                     catch (Exception ex)
@@ -874,7 +954,9 @@ namespace MuMech
                 planner.Stage == TargetAwarePlannerStage.ResolveRefinement ||
                 planner.Stage == TargetAwarePlannerStage.ResolvePolicyEscalation ||
                 planner.Stage == TargetAwarePlannerStage.ResolveDirectForecast ||
-                planner.Stage == TargetAwarePlannerStage.ResolveSelectedCoast)
+                planner.Stage == TargetAwarePlannerStage.ResolveSelectedCoast ||
+                planner.Stage == TargetAwarePlannerStage.ResolveTerminalNominal ||
+                planner.Stage == TargetAwarePlannerStage.ResolveTerminalDelayed)
                 planner.AdvanceTerrain();
 
             if (planner.Stage == TargetAwarePlannerStage.ReadyCoarse)
@@ -891,6 +973,11 @@ namespace MuMech
             {
                 planner.BeginPolicyEscalation();
                 QueueTargetAwareWork(planner, TargetAwareWorkKind.PolicyEscalation);
+            }
+            else if (planner.Stage == TargetAwarePlannerStage.ReadyTerminal)
+            {
+                planner.BeginTerminalWorker();
+                QueueTargetAwareWork(planner, TargetAwareWorkKind.Terminal);
             }
             else if (planner.Stage == TargetAwarePlannerStage.Complete)
             {
@@ -922,6 +1009,30 @@ namespace MuMech
                 if (!snapshot.HasV1ControlModel || planner.SelectedOutput == null ||
                     !planner.SelectedOutput.UsesV1ControlModel)
                     throw new InvalidOperationException("Non-V1 model cannot publish");
+                bool impactForecast = planner.SelectedTerrain != null &&
+                    (planner.SelectedTerrain.HasFirstContact ||
+                     planner.TerminalImpactForecast);
+                bool landableForecast = planner.TerminalTouchdownValidated;
+                // A braking handoff remains an intermediate state. Only a
+                // terrain-resolved terminal continuation may publish LANDED.
+                if (!impactForecast && !landableForecast)
+                {
+                    LandingPredictorCapture.Decision(activeTargetAwareCaptureId,
+                        "baseline_terminal_continuation_unresolved",
+                        result?.CaptureSubmissionId ?? 0);
+                    LandingPredictorCapture.Abandoned(activeTargetAwareCaptureId,
+                        "baseline_terminal_continuation_unresolved");
+                    return;
+                }
+                if (!landableForecast)
+                {
+                    LandingPredictorCapture.Decision(activeTargetAwareCaptureId,
+                        "beta_impact_diagnostic_not_active",
+                        result?.CaptureSubmissionId ?? 0);
+                    LandingPredictorCapture.Abandoned(activeTargetAwareCaptureId,
+                        "beta_requires_safe_landing_prediction");
+                    return;
+                }
                 if (Core.Landing.CurrentStep is CourseCorrection correction &&
                     !correction.PredictionSnapshotSafe(snapshot.InputUT))
                 {
@@ -941,10 +1052,18 @@ namespace MuMech
                 var lineage = new TargetAwareResultLineage(planner.Generation, planner.Sequence,
                     body, snapshot.TargetLatitude, snapshot.TargetLongitude,
                     snapshot.TargetTerrainASL, snapshot.EpochUT, snapshot.InputUT,
-                    true, planner.SelectedOutput != null && planner.SelectedOutput.ReachedHandoff,
-                    planner.SelectedTerrain != null && planner.SelectedTerrain.Resolved,
-                    planner.SelectedTerrain != null && planner.SelectedTerrain.ClearPath,
-                    planner.TerminalHandoff.NecessaryControlBoundPasses);
+                    true, impactForecast || landableForecast,
+                    planner.SelectedTerrain != null && planner.SelectedTerrain.Resolved &&
+                        (planner.SelectedTerrain.HasFirstContact ||
+                         (planner.NominalTerminalTerrain.Resolved &&
+                          planner.DelayedTerminalTerrain.Resolved)),
+                    planner.SelectedTerrain != null &&
+                        (planner.SelectedTerrain.HasFirstContact ||
+                         planner.SelectedTerrain.ClearPath),
+                    landableForecast && planner.TerminalHandoff.NecessaryControlBoundPasses,
+                    landableForecast ? ReentrySimulation.LandingForecastKind.LandableForecast :
+                        ReentrySimulation.LandingForecastKind.ImpactForecast,
+                    impactForecast, landableForecast);
                 TargetAwarePublicationDecision decision = TargetAwarePublicationGate.Check(lineage,
                     committedTargetAware, Interlocked.Read(ref predictionGeneration),
                     Core.Target.targetBody, Core.Target.targetLatitude, Core.Target.targetLongitude,
@@ -973,6 +1092,8 @@ namespace MuMech
                 result = replacement;
                 replacement = null;
                 committedTargetAware = lineage;
+                RecentTargetAwareLatencySeconds = Math.Max(0,
+                    Planetarium.GetUniversalTime() - snapshot.InputUT);
                 ResultVersion++;
                 LandingPredictorCapture.Published(result.CaptureSubmissionId, ResultVersion,
                     planner.Generation, Core.Landing.CurrentStep?.GetType().Name);
@@ -987,7 +1108,7 @@ namespace MuMech
                         $"inputUT={snapshot.InputUT:F2} brakeUT={planner.SelectedOutput.BrakeUT:F2} " +
                         $"downrange={planner.SignedDownrangeError:F1} crossrange={planner.CrossrangeError:F1} " +
                         $"clearance={planner.SelectedTerrain.HandoffClearance:F1} " +
-                        $"vertical={planner.TerminalHandoff.EndVerticalSpeed:F1} " +
+                        $"vertical={result.EndVerticalSpeed:F1} " +
                         $"terrainQueries={planner.TerrainQueryCount} " +
                         $"terrainMs={planner.TerrainQueryMilliseconds:F3} workerMs={targetAwareWorkerMilliseconds:F3}");
             }
@@ -1013,7 +1134,16 @@ namespace MuMech
             published.Trajectory = null;
             try
             {
-                published.Outcome = ReentrySimulation.Outcome.LANDED;
+                bool terminalResult = planner.TerminalEnvelope != null &&
+                    planner.NominalTerminalTerrain.HasContact;
+                bool landableResult = terminalResult && planner.TerminalTouchdownValidated;
+                if (!planner.SelectedTerrain.HasFirstContact && !terminalResult)
+                    throw new InvalidOperationException("Terminal path is unresolved");
+                published.Outcome = landableResult ? ReentrySimulation.Outcome.LANDED :
+                    ReentrySimulation.Outcome.IMPACT;
+                published.ForecastKind = landableResult ?
+                    ReentrySimulation.LandingForecastKind.LandableForecast :
+                    ReentrySimulation.LandingForecastKind.ImpactForecast;
                 published.Exception = null;
                 published.Body = body;
                 published.ReferenceFrame = new ReferenceFrame();
@@ -1024,16 +1154,22 @@ namespace MuMech
                 published.InputDescentSpeedPolicy = new SafeDescentSpeedPolicy(
                     body.Radius + planner.SelectedPolicyTerrainASL + 200,
                     snapshot.BodyGeeASL * 9.81, snapshot.MaximumThrustAcceleration);
-                published.InputDecelEndAltitudeASL =
-                    planner.SelectedPolicyTerrainASL + 200;
+                published.InputDecelEndAltitudeASL = planner.SelectedPolicyTerrainASL + 200;
                 published.InputMaxThrustAccel = snapshot.MaximumThrustAcceleration;
-                published.InputProbableLandingSiteASL = snapshot.TargetTerrainASL;
+                published.InputProbableLandingSiteASL = planner.SelectedPolicyTerrainASL;
                 published.InputParachuteSemiDeployMultiplier = 0;
                 published.InputMultiplierHasError = false;
                 published.InputDT = snapshot.Dt;
                 published.InputMaxOrbits = snapshot.MaxOrbits;
                 published.InputNoSkipToFreefall = false;
-                published.InputForcedBrakingStartUT = output.BrakeUT;
+                AirlessTargetAwareState endpoint = terminalResult ?
+                    planner.NominalTerminalTerrain.Contact :
+                    planner.SelectedTerrain.FirstContact;
+                bool burnBeginsBeforeContact = !double.IsNaN(output.BrakeUT) &&
+                    output.Trajectory.Count > 0 &&
+                    output.Trajectory[0].UT <= endpoint.UT;
+                published.InputForcedBrakingStartUT = burnBeginsBeforeContact ?
+                    output.BrakeUT : double.NaN;
                 published.InputParachuteList = null;
                 published.MultiplierHasError = false;
                 published.ParachuteMultiplier = 0;
@@ -1042,43 +1178,76 @@ namespace MuMech
                 published.AeroBrakePosition = default(AbsoluteVector);
                 published.AeroBrakeVelocity = default(AbsoluteVector);
                 published.DebugLog = null;
-                published.SimulatedBrakingStartUT = output.Trajectory[0].UT;
-                published.HasControllerBrakeReferenceUT = true;
-                published.ControllerBrakeReferenceUT = output.BrakeUT;
-                AirlessTargetAwareState reference = output.Trajectory[0];
-                foreach (AirlessTargetAwareState state in output.Trajectory)
+                published.SimulatedBrakingStartUT = burnBeginsBeforeContact ?
+                    output.Trajectory[0].UT : double.NaN;
+                published.HasControllerBrakeReferenceUT = burnBeginsBeforeContact;
+                published.ControllerBrakeReferenceUT = burnBeginsBeforeContact ?
+                    output.Trajectory[0].UT : double.NaN;
+                if (burnBeginsBeforeContact)
                 {
-                    if (state.UT > output.BrakeUT) break;
-                    reference = state;
+                    // Beta consumes Trajectory.First().UT. Report that exact
+                    // reference, not the search parameter which can precede
+                    // the speed-policy coast's first braking-path state.
+                    AirlessTargetAwareState reference = output.Trajectory[0];
+                    published.ControllerBrakeReferencePosition =
+                        AirlessTargetAwareSimulation.ToAbsolute(reference.Position,
+                            reference.UT, snapshot);
                 }
-                published.ControllerBrakeReferencePosition =
-                    AirlessTargetAwareSimulation.ToAbsolute(reference.Position,
-                        reference.UT, snapshot);
                 published.StartPosition = AirlessTargetAwareSimulation.ToAbsolute(
                     snapshot.Position, snapshot.InputUT, snapshot);
                 published.EndPosition = AirlessTargetAwareSimulation.ToAbsolute(
-                    output.End.Position, output.End.UT, snapshot);
+                    endpoint.Position, endpoint.UT, snapshot);
                 published.EndVelocity = AirlessTargetAwareSimulation.ToAbsolute(
-                    output.End.Velocity, output.End.UT, snapshot);
-                published.EndUT = output.End.UT;
-                published.EndASL = planner.SelectedTerrain.LocalTerrainASL;
-                published.TimeToComplete = output.End.UT - snapshot.InputUT;
-                published.EndSurfaceSpeed = output.EndSurfaceSpeed;
-                published.DeltaVExpended = output.VirtualDeltaV;
+                    endpoint.Velocity, endpoint.UT, snapshot);
+                published.EndUT = endpoint.UT;
+                published.EndASL = terminalResult ?
+                    planner.NominalTerminalTerrain.ContactTerrainASL :
+                    planner.SelectedTerrain.LocalTerrainASL;
+                published.TimeToComplete = endpoint.UT - snapshot.InputUT;
+                published.EndSurfaceSpeed = (endpoint.Velocity -
+                    Vector3d.Cross(snapshot.AngularVelocity, endpoint.Position)).magnitude;
+                Vector3d endUp = endpoint.Position.normalized;
+                Vector3d endSurface = endpoint.Velocity -
+                    Vector3d.Cross(snapshot.AngularVelocity, endpoint.Position);
+                published.EndVerticalSpeed = Vector3d.Dot(endSurface, endUp);
+                published.EndHorizontalSpeed = Vector3d.Exclude(endUp, endSurface).magnitude;
+                published.EndTerrainClearance = endpoint.Position.magnitude -
+                    body.Radius - published.EndASL - snapshot.BottomOffset;
+                // BrakeThrustDirection caps the excluded target component at
+                // 0.1 of the retrograde vector. This bounds only that direct
+                // component; future attitude response remains unresolved.
+                double poweredDuration = burnBeginsBeforeContact ?
+                    Math.Max(0, Math.Min(endpoint.UT, output.End.UT) -
+                        output.Trajectory[0].UT) : 0;
+                published.ExcludedTargetSteeringDisplacementBound =
+                    Math.Max(0, output.VirtualDeltaV) * poweredDuration *
+                    Math.Sin(Math.Atan(0.1));
+                // The worker may have continued past first physical contact.
+                // Its full-run delta-v is not the impact trajectory's delta-v.
+                published.DeltaVExpended = double.NaN;
                 published.MaxDragGees = 0;
                 published.Maxdt = snapshot.Dt;
                 published.Steps = output.Steps;
                 published.Prediction = default(ReentrySimulation.Prediction);
                 published.CaptureSubmissionId = activeTargetAwareCaptureId;
+                // V1 Beta reads Trajectory.First().UT as the braking start.
+                // The unpowered coast is represented by the current orbit,
+                // never prepended to the powered trajectory.
                 published.Trajectory = new List<AbsoluteVector>(
-                    output.CoastSamples.Count + output.Trajectory.Count + 1);
-                published.Trajectory.Add(published.StartPosition);
-                foreach (AirlessTargetAwareState state in output.CoastSamples)
-                    published.Trajectory.Add(AirlessTargetAwareSimulation.ToAbsolute(
-                        state.Position, state.UT, snapshot));
+                    output.Trajectory.Count + 1);
                 foreach (AirlessTargetAwareState state in output.Trajectory)
+                {
+                    if (state.UT > endpoint.UT) break;
                     published.Trajectory.Add(AirlessTargetAwareSimulation.ToAbsolute(
                         state.Position, state.UT, snapshot));
+                }
+                if (terminalResult)
+                    foreach (AirlessTargetAwareState state in planner.TerminalEnvelope.Nominal.Trajectory)
+                    {
+                        if (state.UT > endpoint.UT) break;
+                        published.Trajectory.Add(AirlessTargetAwareSimulation.ToAbsolute(
+                            state.Position, state.UT, snapshot));
+                    }
                 return published;
             }
             catch
@@ -1273,7 +1442,14 @@ namespace MuMech
                 }
 
                 lock (readyBrakingPlanResults)
-                    readyBrakingPlanResults.Enqueue(new BrakingPlanResultSet(job.Generation, results));
+                {
+                    if (predictorDestroyed || job.Generation != Interlocked.Read(ref predictionGeneration))
+                    {
+                        foreach (ReentrySimulation.Result candidate in results) candidate.Release();
+                    }
+                    else
+                        readyBrakingPlanResults.Enqueue(new BrakingPlanResultSet(job.Generation, results));
+                }
                 results = null;
             }
             catch (Exception ex)
@@ -1796,6 +1972,28 @@ namespace MuMech
 
         private void DoMapView()
         {
+            if (predictorDestroyed) return;
+            if (Core.Landing.LandingTraceEnabled)
+            {
+                int flags = (MapView.MapIsEnabled ? 1 : 0) | (camTrajectory ? 2 : 0) |
+                    (Enabled ? 4 : 0) | (Vessel.LandedOrSplashed ? 8 : 0) |
+                    (Result != null ? 16 : 0) | (result != null ? 32 : 0);
+                if (lastMapCaptureVersion != ResultVersion || lastMapCaptureFlags != flags)
+                {
+                    lastMapCaptureVersion = ResultVersion;
+                    lastMapCaptureFlags = flags;
+                    string reason = (flags & 3) == 0 ? "view_disabled" : !Enabled ? "predictor_disabled" :
+                        Vessel.LandedOrSplashed ? "vessel_landed" : result == null ? "no_committed_result" :
+                        Result == null ? "correction_settling_gate" :
+                        Result.Outcome != ReentrySimulation.Outcome.LANDED ? "not_predicted_touchdown" :
+                        "marker_requested_occlusion_not_observed";
+                    LandingPredictorCapture.MapDraw(ResultVersion, result?.CaptureSubmissionId ?? 0,
+                        MapView.MapIsEnabled, camTrajectory, Enabled, Vessel.LandedOrSplashed,
+                        Result?.Outcome.ToString(), (flags & 3) != 0 && (flags & 12) == 4 &&
+                            Result?.Outcome == ReentrySimulation.Outcome.LANDED,
+                        reason, Core.Landing.CurrentStep?.GetType().Name);
+                }
+            }
             if ((MapView.MapIsEnabled || camTrajectory) && !Vessel.LandedOrSplashed && Enabled)
             {
                 ReentrySimulation.Result drawnResult = Result;

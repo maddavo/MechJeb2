@@ -751,7 +751,11 @@ namespace MuMech
             }
         }
 
-        public enum Outcome { LANDED, AEROBRAKED, TIMED_OUT, NO_REENTRY, ERROR }
+        public enum Outcome { LANDED, AEROBRAKED, TIMED_OUT, NO_REENTRY, ERROR, IMPACT }
+
+        // Targeted airless predictions distinguish a terrain impact from a
+        // completed, controller-validated landing. Legacy results use None.
+        public enum LandingForecastKind { NoForecast, ImpactForecast, LandableForecast }
 
         public struct Prediction
         {
@@ -772,6 +776,7 @@ namespace MuMech
 
             public ulong ID; // give each set of results a new id so we can check to see if the result has changed.
             public Outcome Outcome;
+            public LandingForecastKind ForecastKind;
             public Exception Exception;
 
             public CelestialBody Body;
@@ -782,6 +787,12 @@ namespace MuMech
             public AbsoluteVector EndPosition;
             public AbsoluteVector EndVelocity;
             public double EndSurfaceSpeed;
+            public double EndVerticalSpeed;
+            public double EndHorizontalSpeed;
+            public double EndTerrainClearance;
+            // Upper bound on displacement from the target-steering thrust
+            // component deliberately excluded from the baseline forecast.
+            public double ExcludedTargetSteeringDisplacementBound;
 
             public bool AeroBrake;
             public double AeroBrakeUT;
@@ -831,7 +842,14 @@ namespace MuMech
 
             private static readonly Pool<Result> _pool = new Pool<Result>(Create, Reset);
 
-            private static Result Create() => new Result();
+            private static Result Create() => new Result
+            {
+                ForecastKind = LandingForecastKind.NoForecast,
+                EndVerticalSpeed = double.NaN,
+                EndHorizontalSpeed = double.NaN,
+                EndTerrainClearance = double.NaN,
+                ExcludedTargetSteeringDisplacementBound = double.NaN
+            };
 
             public void Release()
             {
@@ -844,6 +862,11 @@ namespace MuMech
             private static void Reset(Result obj)
             {
                 obj.AeroBrake = false;
+                obj.ForecastKind = LandingForecastKind.NoForecast;
+                obj.EndVerticalSpeed = double.NaN;
+                obj.EndHorizontalSpeed = double.NaN;
+                obj.EndTerrainClearance = double.NaN;
+                obj.ExcludedTargetSteeringDisplacementBound = double.NaN;
                 obj.HasControllerBrakeReferenceUT = false;
                 obj.ControllerBrakeReferenceUT = 0;
                 obj.ControllerBrakeReferencePosition = default(AbsoluteVector);
