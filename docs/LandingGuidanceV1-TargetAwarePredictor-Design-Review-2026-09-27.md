@@ -19,6 +19,31 @@ guidance, controller, UI, or actuator behaviour.
 
 ### 30 September implementation: moving-flight reuse and local terrain feedback
 
+**Post-Gamma cadence amendment (authorised by Dave).** Guidance needs at least
+two fresh complete forecasts per second during active prediction phases.
+The former five-second planning and two-second direct-braking submission delays
+are replaced by a shared 0.25-second submission interval, leaving asynchronous
+delivery headroom. Only one transaction runs at a time. Terrain resolution may
+process up to 512 samples per flight update instead of 32 (cache hits count as
+samples); its existing one-millisecond wall-time limit and 1,536 fresh-query
+transaction cap remain. Forecast model, cache resolution, publication ownership,
+controller, UI and phase transitions are unchanged. Snapshot expiry stays at
+ten seconds independently of the refresh interval, so faster scheduling cannot
+inadvertently reject all work by shortening the existing age gate.
+
+The captured moving-Mun replay models production update ordering: worker
+completion is consumed, terrain advances, and the next worker is queued in
+the same flight update. Measured worker duration delays its completion; no
+simulation runs on the production flight thread. At the captured 0.02-second
+physics timestep, advancing refreshes completed in 0.34, 0.32 and 0.26 seconds,
+within the half-second delivery requirement. Cold-cache first publication took
+1.24 seconds. These are offline measurements, not a claim that KSP frame load,
+warp or failed terrain work can never create a gap. Never republish an old
+forecast or publish incomplete work just to satisfy a nominal update rate.
+The next controlled Mun flight must measure actual publication intervals and
+snapshot ages during deorbit and the target crossing. Gamma remains immutable
+as the successful flight baseline.
+
 **Fault ownership.** Dave reports that the tested landing region has no
 significant mountains. The capture establishes repeated nearby queries and
 failed forecast delivery, not a terrain-complexity explanation. The earlier

@@ -175,7 +175,11 @@ namespace MuMech
         private readonly TargetAwareTerrainCache targetAwareTerrainCache = new TargetAwareTerrainCache();
         private long lastMapCaptureVersion = -1;
         private int lastMapCaptureFlags = -1;
-        private const int TargetAwareTerrainQueriesPerTick = 32;
+        // Cache hits count as samples too. The former 32-sample cap spread
+        // inexpensive cached terrain work over seconds of flight time.
+        internal const int TargetAwareTerrainSamplesPerTick = 512;
+        internal const double TargetAwareRefreshSeconds = 0.25;
+        internal const double TargetAwareMaximumSnapshotAgeSeconds = 10;
         // Provisional safety cap. Mun replay measures the actual queries before
         // this becomes an acceptance budget; exceeding it fails the candidate.
         private const int TargetAwareMaximumTerrainQueries = 1536;
@@ -717,8 +721,9 @@ namespace MuMech
             if (Core.Landing.CurrentStep is CourseCorrection correction &&
                 !correction.PredictionSnapshotSafe(now))
                 return;
-            if (now - lastTargetAwareStartUT <
-                (directForecast ? 2.0 : BrakingPlanRefreshSeconds))
+            // Four submission opportunities per second provide headroom for
+            // asynchronous delivery at the requested two publications/second.
+            if (now - lastTargetAwareStartUT < TargetAwareRefreshSeconds)
                 return;
             lastTargetAwareStartUT = now;
             try
@@ -784,7 +789,7 @@ namespace MuMech
                 var planner = new TargetAwareAirlessPlanner(snapshot,
                     Interlocked.Read(ref predictionGeneration), ++targetAwareSequence, body,
                     (latitude, longitude) => body.TerrainAltitude(latitude, longitude),
-                    Math.Max(200, body.Radius * 0.0005), TargetAwareTerrainQueriesPerTick,
+                    Math.Max(200, body.Radius * 0.0005), TargetAwareTerrainSamplesPerTick,
                     TargetAwareMaximumTerrainQueries, 1, directForecast, targetAwareTerrainCache);
                 activeTargetAware = planner;
                 activeTargetAwareOrbit = orbitCopy;
@@ -947,7 +952,7 @@ namespace MuMech
                 return;
             }
             double age = Planetarium.GetUniversalTime() - planner.Snapshot.EpochUT;
-            if (age < 0 || age > 2 * BrakingPlanRefreshSeconds)
+            if (age < 0 || age > TargetAwareMaximumSnapshotAgeSeconds)
                 planner.WorkerFailed("SnapshotExpiredBeforePublication");
             if (planner.Stage == TargetAwarePlannerStage.ResolveBallistic ||
                 planner.Stage == TargetAwarePlannerStage.ResolveCoarse ||
@@ -1068,7 +1073,7 @@ namespace MuMech
                     committedTargetAware, Interlocked.Read(ref predictionGeneration),
                     Core.Target.targetBody, Core.Target.targetLatitude, Core.Target.targetLongitude,
                     currentTerrain, Planetarium.GetUniversalTime(),
-                    2 * BrakingPlanRefreshSeconds, 0);
+                    TargetAwareMaximumSnapshotAgeSeconds, 0);
                 if (decision != TargetAwarePublicationDecision.Accept)
                 {
                     LandingPredictorCapture.Decision(activeTargetAwareCaptureId,

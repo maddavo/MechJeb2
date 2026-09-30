@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -70,6 +71,101 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
+        public void AdvancingCapturedDeorbitForecastsFitTwoHzDeliveryBudget()
+        {
+            var terrain = new RecordedTerrain();
+            var cache = new TargetAwareTerrainCache();
+            var body = new object();
+            int count = 0;
+            foreach (var row in ReadRows("Mun-d680-deorbit-inputs.csv"))
+            {
+                var snapshot = Snapshot(row);
+                int samplesPerTick = MechJebModuleLandingPredictions.TargetAwareTerrainSamplesPerTick;
+                var planner = new TargetAwareAirlessPlanner(snapshot, 1,
+                    (long)row["submissionId"], body, terrain.Height, 200,
+                    samplesPerTick, 1536, 1, false, cache);
+                double latency = RunAtFlightCadence(planner, snapshot.MinDt, samplesPerTick);
+                double publicationInterval = Math.Max(
+                    MechJebModuleLandingPredictions.TargetAwareRefreshSeconds, latency);
+                _output.WriteLine($"cadence input={snapshot.InputUT:F6} queries={planner.TerrainQueryCount} " +
+                    $"samples={planner.TerrainSampleCount} latency={latency:F3}s " +
+                    $"publicationInterval={publicationInterval:F3}s");
+                Assert.True(planner.TerminalTouchdownValidated, planner.Failure ?? planner.Stage.ToString());
+                Assert.InRange(planner.TerrainQueryCount, 1, 1536);
+                // Startup can fill cold terrain coverage; subsequent moving
+                // snapshots must fit the requested half-second delivery rate.
+                if (count++ > 0) Assert.InRange(publicationInterval, 0, 0.5);
+            }
+            Assert.Equal(4, count);
+        }
+
+        private static double RunAtFlightCadence(TargetAwareAirlessPlanner planner,
+            double flightTickSeconds, int samplesPerTick)
+        {
+            // Mirror production's order: consume completed worker, resolve
+            // terrain, then queue the next worker in the SAME flight update.
+            // Worker calculations run here solely to measure their duration;
+            // their output is withheld until the simulated completion tick.
+            double now = 0, completionTime = 0;
+            Action? completion = null;
+            void Queue(Func<Action> work)
+            {
+                var timer = Stopwatch.StartNew();
+                completion = work();
+                timer.Stop();
+                completionTime = now + timer.Elapsed.TotalSeconds;
+            }
+            Queue(() => {
+                var path = AirlessTargetAwareSimulation.BallisticTerrainPass(planner.Snapshot);
+                return () => planner.SetBallisticSamples(path);
+            });
+            for (int tick = 0; tick < 3000; tick++)
+            {
+                now += flightTickSeconds;
+                if (completion != null && now >= completionTime)
+                {
+                    var apply = completion;
+                    completion = null;
+                    apply();
+                }
+                int samples = planner.TerrainSampleCount;
+                planner.AdvanceTerrain();
+                Assert.InRange(planner.TerrainSampleCount - samples, 0, samplesPerTick);
+                switch (planner.Stage)
+                {
+                    case TargetAwarePlannerStage.ReadyCoarse:
+                        planner.BeginCoarseWorker();
+                        Queue(() => {
+                            var result = planner.RunCoarse();
+                            return () => planner.SetCoarseOutputs(result);
+                        }); break;
+                    case TargetAwarePlannerStage.ReadyRefinement:
+                        planner.BeginRefinementWorker();
+                        Queue(() => {
+                            var result = planner.RunRefinement();
+                            return () => planner.SetRefinement(result);
+                        }); break;
+                    case TargetAwarePlannerStage.ReadyPolicyEscalation:
+                        planner.BeginPolicyEscalation();
+                        Queue(() => {
+                            var result = planner.RunPolicyEscalation();
+                            return () => planner.SetPolicyEscalation(result);
+                        }); break;
+                    case TargetAwarePlannerStage.ReadyTerminal:
+                        planner.BeginTerminalWorker();
+                        Queue(() => {
+                            var result = planner.RunTerminalEnvelope();
+                            return () => planner.SetTerminalEnvelope(result);
+                        }); break;
+                    case TargetAwarePlannerStage.Complete: return now;
+                    case TargetAwarePlannerStage.Failed:
+                        Assert.True(false, planner.Failure); return now;
+                }
+            }
+            throw new InvalidOperationException("Cadence replay did not finish");
+        }
+
+        [Fact]
         public void SpatialReusePreservesFirstPoweredEndpointAgainstUnquantizedReference()
         {
             var snapshot = Snapshot(ReadRows("Mun-d680-deorbit-inputs.csv").First());
@@ -97,7 +193,7 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.True(spatial.TerrainQueryCount < exact.TerrainQueryCount);
         }
 
-        private int Run(TargetAwareAirlessPlanner planner)
+        private int Run(TargetAwareAirlessPlanner planner, int samplesPerTick = 32)
         {
             int updates = 0;
             string? lastFailure = null;
@@ -140,8 +236,8 @@ namespace MechJebLibTest.LandingPredictionTests
                     default:
                         int queries = planner.TerrainQueryCount, samples = planner.TerrainSampleCount;
                         planner.AdvanceTerrain(); updates++;
-                        Assert.InRange(planner.TerrainQueryCount - queries, 0, 32);
-                        Assert.InRange(planner.TerrainSampleCount - samples, 0, 32);
+                        Assert.InRange(planner.TerrainQueryCount - queries, 0, samplesPerTick);
+                        Assert.InRange(planner.TerrainSampleCount - samples, 0, samplesPerTick);
                         break;
                 }
             }
