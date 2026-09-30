@@ -149,11 +149,14 @@ namespace MuMech.Landing
         internal readonly int Steps;
         internal readonly bool UsesV1ControlModel;
         internal readonly double EndMass;
+        internal readonly Vector3d EndForward;
+        internal readonly double EndAppliedThrottle;
 
         internal AirlessTargetAwareOutput(double brakeUT, List<AirlessTargetAwareState> coastSamples,
             List<AirlessTargetAwareState> trajectory, bool reachedHandoff,
             double endSurfaceSpeed, double virtualDeltaV, int steps,
-            bool usesV1ControlModel = false, double endMass = double.NaN)
+            bool usesV1ControlModel = false, double endMass = double.NaN,
+            Vector3d endForward = default(Vector3d), double endAppliedThrottle = 0)
         {
             BrakeUT = brakeUT;
             CoastSamples = coastSamples;
@@ -164,6 +167,8 @@ namespace MuMech.Landing
             Steps = steps;
             UsesV1ControlModel = usesV1ControlModel;
             EndMass = endMass;
+            EndForward = endForward;
+            EndAppliedThrottle = endAppliedThrottle;
         }
 
         internal AirlessTargetAwareState End => Trajectory[Trajectory.Count - 1];
@@ -249,14 +254,16 @@ namespace MuMech.Landing
 
         internal static AirlessNominalTerminalOutput RunNominalTerminal(
             AirlessTargetAwareSnapshot snapshot, AirlessTargetAwareOutput braking,
-            double localTerrainASL, double terrainSearchDepth = 0)
+            double localTerrainASL, double terrainSearchDepth = 0,
+            double terminalTurnRate = NominalTerminalTurnRate)
         {
             if (braking == null || !braking.UsesV1ControlModel ||
                 !braking.ReachedHandoff || !Finite(braking.EndMass) ||
                 braking.EndMass <= 0)
                 throw new ArgumentException("Incomplete V1 braking handoff");
-            var horizontalKill = RunIdealHorizontalKillBound(snapshot,
-                braking.End, braking.EndMass);
+            var horizontalKill = RunHorizontalKillContinuation(snapshot,
+                braking.End, braking.EndMass, braking.EndForward,
+                braking.EndAppliedThrottle, terminalTurnRate);
             var final = horizontalKill.ReachedFinalDescent ?
                 RunIdealFinalDescentBound(snapshot, horizontalKill,
                     localTerrainASL, snapshot.TouchdownSpeed,
@@ -301,17 +308,35 @@ namespace MuMech.Landing
         internal static AirlessHorizontalKillBound RunIdealHorizontalKillBound(
             AirlessTargetAwareSnapshot snapshot, AirlessTargetAwareState handoff,
             double massAtHandoff)
+            => RunHorizontalKillContinuation(snapshot, handoff, massAtHandoff,
+                Vector3d.zero, 0, double.PositiveInfinity);
+
+        // Observed average command-error reduction: Mun (62.25-5)/5.1
+        // degrees/s; Minmus (47.97945766-4.33958439)/3.22 degrees/s.
+        // These are conditional replay rates, not an attitude-controller law
+        // or a certified actuator bound. Both paths receive terrain validation.
+        internal const double SlowTerminalTurnRate = (62.25 - 5) / 5.1 * Math.PI / 180;
+        internal const double FastTerminalTurnRate = (47.97945766 - 4.33958439) / 3.22 * Math.PI / 180;
+        internal const double NominalTerminalTurnRate = (SlowTerminalTurnRate + FastTerminalTurnRate) / 2;
+
+        internal static AirlessHorizontalKillBound RunHorizontalKillContinuation(
+            AirlessTargetAwareSnapshot snapshot, AirlessTargetAwareState handoff,
+            double massAtHandoff, Vector3d initialForward, double initialThrottle,
+            double turnRate)
         {
             ValidateSnapshot(snapshot);
             if (!snapshot.HasV1ControlModel || massAtHandoff <= 0 ||
-                snapshot.MaximumThrust <= 0 || snapshot.MaximumMassFlow < 0)
+                snapshot.MaximumThrust <= 0 || snapshot.MaximumMassFlow < 0 ||
+                !Finite(initialThrottle) || initialThrottle < 0 || initialThrottle > 1 ||
+                double.IsNaN(turnRate) || turnRate <= 0)
                 throw new ArgumentException("Incomplete V1 terminal snapshot");
 
             const double finalDescentHorizontalSpeed = 1.0;
             const int maximumSteps = 60000;
             double step = snapshot.MinDt;
             double mass = massAtHandoff;
-            double appliedThrottle = 0;
+            double appliedThrottle = initialThrottle;
+            Vector3d forward = initialForward.normalized;
             double deltaV = 0;
             double lastSampleUT = handoff.UT;
             AirlessTargetAwareState state = handoff;
@@ -335,8 +360,10 @@ namespace MuMech.Landing
                     break;
 
                 double gravity = snapshot.BodyMu / state.Position.sqrMagnitude;
-                Vector3d direction = V1LandingControlPolicy.HorizontalKillThrustDirection(
+                Vector3d commanded = V1LandingControlPolicy.HorizontalKillThrustDirection(
                     surface, up);
+                if (forward.sqrMagnitude == 0) forward = commanded;
+                Vector3d direction = forward;
                 double throttle = V1LandingControlPolicy.HoverThrottle(vertical, gravity,
                     Vector3d.Dot(direction, up), snapshot.MaximumThrust / mass);
                 throttle = Math.Min(snapshot.MaximumCommandThrottle,
@@ -350,6 +377,17 @@ namespace MuMech.Landing
                     (snapshot.MaximumThrust - snapshot.MinimumThrust);
                 state = RK4WithThrust(state, step, snapshot.BodyMu,
                     direction * (thrust / mass));
+                // Hover throttle uses the attained direction, as live V1 does;
+                // thrust is retained while the craft turns toward its command.
+                double angle = Math.Acos(Math.Max(-1, Math.Min(1,
+                    Vector3d.Dot(forward, commanded))));
+                if (angle <= turnRate * step || angle < 1e-9) forward = commanded;
+                else
+                {
+                    double fraction = turnRate * step / angle;
+                    forward = (Math.Sin((1 - fraction) * angle) * forward +
+                        Math.Sin(fraction * angle) * commanded).normalized;
+                }
                 double massFlow = snapshot.MinimumMassFlow + appliedThrottle *
                     (snapshot.MaximumMassFlow - snapshot.MinimumMassFlow);
                 mass = Math.Max(0.01 * massAtHandoff, mass - massFlow * step);
@@ -678,6 +716,7 @@ namespace MuMech.Landing
             double mass = snapshot.InitialMass;
             double appliedThrottle = snapshot.DecelerationAlreadyTriggered ?
                 snapshot.InitialAppliedThrottle : 0;
+            Vector3d endForward = Vector3d.zero;
             double deltaV = 0;
             double maxTime = snapshot.MaxOrbits * 2 * Math.PI *
                 Math.Sqrt(Math.Pow(state.Position.magnitude, 3) / snapshot.BodyMu);
@@ -710,6 +749,7 @@ namespace MuMech.Landing
                 // first tick may use the copied physical forward vector.
                 Vector3d thrustDirection = snapshot.DecelerationAlreadyTriggered &&
                     steps == 1 ? snapshot.InitialForward.normalized : -surface.normalized;
+                endForward = thrustDirection;
                 double alignment = Vector3d.Dot(thrustDirection, -surface.normalized);
                 double maxAccel = snapshot.MaximumThrust / mass * alignment -
                     gravity.magnitude * radialFraction;
@@ -752,7 +792,7 @@ namespace MuMech.Landing
             double endSpeed = (state.Velocity - Vector3d.Cross(snapshot.AngularVelocity,
                 state.Position)).magnitude;
             return new AirlessTargetAwareOutput(brakeReferenceUT, coast, trajectory,
-                reached, endSpeed, deltaV, steps, true, mass);
+                reached, endSpeed, deltaV, steps, true, mass, endForward, appliedThrottle);
         }
 
         private static double V1AllowedSpeed(AirlessTargetAwareSnapshot snapshot,

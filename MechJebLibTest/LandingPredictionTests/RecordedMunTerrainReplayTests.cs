@@ -139,7 +139,11 @@ namespace MechJebLibTest.LandingPredictionTests
                 $"oracleMaxDistance={terrain.MaximumDistance:F2}m");
             Assert.True(localSearches > 0);
             Assert.True(localValid >= broadValid);
-            Assert.True(localReversals < broadReversals);
+            // Both searches can now have zero reversals. Preserve the previous
+            // accepted continuity baseline (137 valid inputs, three reversals).
+            Assert.True(localReversals <= broadReversals);
+            Assert.InRange(localReversals, 0, 3);
+            Assert.True(localValid >= 137);
             Assert.InRange(lastLocalMissToTarget, 0, 200);
         }
 
@@ -389,7 +393,7 @@ namespace MechJebLibTest.LandingPredictionTests
             return updates;
         }
 
-        private static AirlessTargetAwareSnapshot Snapshot(Dictionary<string, double> r)
+        internal static AirlessTargetAwareSnapshot Snapshot(Dictionary<string, double> r)
         {
             Vector3d V(string name) => new Vector3d(r[name + "0"], r[name + "1"], r[name + "2"]);
             var source = new AirlessTargetAwareSnapshot(r["inputUT"], r["captureEpochUT"],
@@ -407,7 +411,7 @@ namespace MechJebLibTest.LandingPredictionTests
                 r["controllerTouchdownSpeed"], r["controllerBottomOffset"], r["controllerPreviousTransThrottle"]);
         }
 
-        private static IEnumerable<Dictionary<string, double>> ReadRows(string file)
+        internal static IEnumerable<Dictionary<string, double>> ReadRows(string file)
         {
             string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
                 "LandingPredictionTests", "Fixtures", file);
@@ -422,7 +426,7 @@ namespace MechJebLibTest.LandingPredictionTests
             }
         }
 
-        private sealed class RecordedTerrain
+        internal sealed class RecordedTerrain
         {
             private readonly (double Lat, double Lon, double Height)[] _points;
             internal double MaximumDistance { get; private set; }

@@ -1,5 +1,96 @@
 # V1 targeted airless predictor: verified design review
 
+### 1 October approved Minmus repair
+
+Dave approved terrain convergence/reuse, braking-window coverage, and terminal
+continuation repairs after reviewing session `8ce76a3dbdb9494ab9897cde544f85ad`.
+This amendment supersedes the instantaneous horizontal-kill and fixed unpowered
+5.1-second terminal-path assumptions below. The successful Gamma versions remain
+reference baselines. No live V1 guidance, controller, UI, actuator or phase law
+changes are authorised by this repair.
+
+**Evidence.** Five Minmus attempts contain 1,057 submissions and 570 active
+publications: respectively 23/405, 0/24, 67/83, 0/62 and 480/483. Thirty-five
+transactions exhausted terrain budgets; one performed 86 policy propagations.
+The final approach landed. Its horizontal-kill phase lasted 3.22 seconds, but
+the final active forecast's touchdown time was approximately 63.4 seconds late.
+
+**Terrain and search.** Keep the same snapshot, model, dynamic PQS cache, query
+caps and atomic publication gates. Reuse exact `(brake reference, policy height)`
+worker outputs only within their originating transaction. Use a measured coarse
+endpoint height as a numerical seed before fully validating the selected path.
+Where the initial sea-level policy cannot reach any handoff above an elevated
+ballistic contact, repeat the coarse search with that measured terrain height
+as a seed. Neither seed is a landing prediction or an accepted terrain path.
+If endpoint-height feedback has opposite signed residuals, bisect the policy
+height bracket rather than repeatedly jumping between plateau and flat. Preserve
+the eight-iteration per-candidate bound. Terrain first encountered in terminal
+continuation may request a higher braking-policy replay; the intersecting path
+itself is never accepted. A coarse margin failure is provisional until its
+resolved terrain is applied and the full powered path is tested. Before declaring
+search exhaustion, test intervening brake times with one additional bounded
+17-point worker batch. Do not retest rejected identical brake references or
+reset the shared terrain budget. Target error never ranks the candidates.
+
+**Terminal continuation.** Carry attained forward direction and applied throttle
+from the braking integration into horizontal kill. Evaluate the unchanged V1
+hover throttle using the attained direction and retain thrust while rotating
+toward V1's unchanged horizontal-kill attitude command. Captured average
+command-error reductions are 11.225 degrees/s in the earlier Mun turn and
+13.553 degrees/s in this Minmus turn. The nominal replay uses their mean; the
+second terrain-validated continuation uses the slower observed rate. These are
+explicit empirical attitude-response assumptions, not a replacement controller
+or certified limits for arbitrary vessels. The final-descent equations remain
+unchanged. A handoff remains intermediate; only a complete terminal continuation
+with valid terrain contact, speeds, stopping bounds and endpoint spread can
+be classified as a conditional predicted touchdown.
+
+**Acceptance and scope.** Run the complete focused landing tests, capture reader,
+lifecycle/sequence regressions, four advancing failed-Mun inputs and the 139-input
+Gamma continuity replay. Minmus replay must recover complete forecasts on the
+captured previously failing approaches, preserve the successful approach, report
+unknown terrain coverage explicitly, and retain original query/expiry/publication
+gates. Compare the captured final Minmus braking input's terminal phase and contact
+timing with flight, rather than merely asserting simulated touchdown. Exercise
+intervening-time search, terrain-policy reuse, higher terminal terrain, unsafe
+terrain rejection and direct-phase search exclusion. V1 controller/UI diffs must
+be zero against `f5664b2d`. The recorded terrain fixture keeps actual samples in
+ten-metre cells; offline interpolation is bounded to 500 m of recorded coverage
+and is not the production one-metre terrain resolver or a complete Minmus map.
+Release build stays inside repository outputs; deployment is a separate exact-path,
+closed-KSP, single-DLL operation with timestamped backup and SHA-256 verification.
+The next Minmus flight measures remaining attitude/actuator and terrain uncertainty.
+
+**Completed evidence (1 October).** All 90 focused C# landing-prediction tests
+and all 32 Python capture-reader/lifecycle/sequence tests pass. Nine recorded
+Minmus approach snapshots now complete terrain-validated terminal forecasts;
+they use 380-1,364 fresh terrain queries against the unchanged 1,536-query cap.
+Their nearest recorded-terrain coverage distance is at most 87.67 m. The captured
+last braking input predicts horizontal-kill duration 3.080 s against the observed
+3.22 s, with transition UT error -0.171 s and terrain-contact UT error +3.774 s
+(previously approximately +63.4 s). This is replay evidence under the documented
+interpolated terrain and empirical attitude assumptions, not a new KSP flight.
+The Gamma continuity regression completes 139/139 inputs with zero endpoint
+reversals and a final offline miss of 44.79 m; the broad search completes 136/139.
+Cold cadence replay takes 1.080 s, then continuity refresh publication intervals
+are 0.280, 0.320 and 0.250 s. Bounded intervening-time recovery, transaction-local
+worker reuse, terrain failure rejection and terminal search exclusion pass.
+Live V1 controller/guidance/UI/phase/actuator diffs are zero against `f5664b2d`.
+
+**Build and deployment.** Release build succeeds with zero warnings and errors,
+writing repository outputs only. KSP was closed and the exact authorised path
+was verified before the separate single-DLL installation at 2026-10-01
+02:03:47 AEST. Source and installed `MechJeb2.dll` SHA-256 both equal
+`686DD6F3E8D630E5FAD08099BF8BF3A6D51FC901CE0E365104279DD4BF1AB684`.
+Backup manifest:
+`C:\Users\Dave\Documents\KSP Backups\MechJeb2 Explicit Install\20261001-020347-7698946\manifest.json`.
+All four companion DLL hashes remain unchanged. Test the same Minmus approach
+with normal V1 auto-warp and capture enabled; compare forecast availability at
+deorbit completion/course correction, braking entry, horizontal-kill entry and
+touchdown, including terrain-query counts, policy iterations, retained attitude,
+throttle, terminal timing and lineage. Flight discrepancies are measurements for
+the next narrow repair; complete landing performance is not claimed by this replay.
+
 **Reviewed:** 2026-09-27; `design/landing-guidance-v2` at `8db84cf3`
 **Reference only:** V1 Beta `d8ac3dd5` still has the Mun early-braking fault.
 **Status:** **V1 Gamma**, designated after Dave's successful 30 September Mun

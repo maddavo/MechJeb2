@@ -662,7 +662,9 @@ namespace MechJebLibTest.LandingPredictionTests
         private static void DriveUntilSettled(TargetAwareAirlessPlanner planner,
             bool includeTerminal = true)
         {
-            for (int i = 0; i < 200 && (planner.Stage == TargetAwarePlannerStage.ResolveBallistic ||
+            // Exercise bounded terrain work through the existing ten-second
+            // snapshot lifetime (500 captured 0.02-second flight ticks).
+            for (int i = 0; i < 500 && (planner.Stage == TargetAwarePlannerStage.ResolveBallistic ||
                                           planner.Stage == TargetAwarePlannerStage.ResolveCoarse ||
                                           planner.Stage == TargetAwarePlannerStage.ResolveRefinement ||
                                           planner.Stage == TargetAwarePlannerStage.ReadyPolicyEscalation ||
