@@ -148,14 +148,16 @@ namespace MechJebLibTest.LandingPredictionTests
                 }
         }
 
-        private sealed class MinmusTerrain
+        internal sealed class MinmusTerrain
         {
+            private readonly double _bodyRadius;
             private readonly Dictionary<(int, int), List<(double Lat, double Lon, double Height)>> _cells =
                 new Dictionary<(int, int), List<(double, double, double)>>();
             internal double MaximumDistance { get; private set; }
-            internal MinmusTerrain()
+            internal MinmusTerrain(string file = "Minmus-8ce76-demand-terrain.csv", double bodyRadius = 60000)
             {
-                foreach (var r in RecordedMunTerrainReplayTests.ReadRows("Minmus-8ce76-demand-terrain.csv"))
+                _bodyRadius = bodyRadius;
+                foreach (var r in RecordedMunTerrainReplayTests.ReadRows(file))
                 {
                     double lat = r["latitude"], lon = r["longitude"];
                     var key = ((int)Math.Floor(lat * 4), (int)Math.Floor(lon * 4));
@@ -176,7 +178,7 @@ namespace MechJebLibTest.LandingPredictionTests
                             {
                                 double dx = ((point.Lon - lon + 540) % 360 - 180) * cos;
                                 double dy = point.Lat - lat;
-                                double distance = Math.Sqrt(dx * dx + dy * dy) * 60000 * Math.PI / 180;
+                                double distance = Math.Sqrt(dx * dx + dy * dy) * _bodyRadius * Math.PI / 180;
                                 if (nearest.Count < 4 || distance < nearest[nearest.Count - 1].Distance)
                                 {
                                     nearest.Add((distance, point.Height));

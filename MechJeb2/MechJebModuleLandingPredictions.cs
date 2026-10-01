@@ -965,6 +965,12 @@ namespace MuMech
             double age = Planetarium.GetUniversalTime() - planner.Snapshot.EpochUT;
             if (age < 0 || age > TargetAwareMaximumSnapshotAgeSeconds)
                 planner.WorkerFailed("SnapshotExpiredBeforePublication");
+            else
+                planner.RefreshRejectedMovingSnapshot(age,
+                    (Core.Landing.CurrentStep is DeorbitBurn ||
+                     Core.Landing.CurrentStep is LowDeorbitBurn) &&
+                    Vessel.ctrlState.mainThrottle > 0 && committedTargetAware.HasValue,
+                    TargetAwareRefreshSeconds);
             if (planner.Stage == TargetAwarePlannerStage.ResolveBallistic ||
                 planner.Stage == TargetAwarePlannerStage.ResolveCoarse ||
                 planner.Stage == TargetAwarePlannerStage.ResolveRefinement ||

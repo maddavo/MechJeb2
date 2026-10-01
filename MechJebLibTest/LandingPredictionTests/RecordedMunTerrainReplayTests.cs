@@ -232,7 +232,8 @@ namespace MechJebLibTest.LandingPredictionTests
                     (long)row["submissionId"], body, terrain.Height, 200,
                     samplesPerTick, 1536, 1, false, cache,
                     continuity && prior != null ? prior.SelectedOutput.BrakeUT : double.NaN);
-                double latency = RunAtFlightCadence(planner, snapshot.MinDt, samplesPerTick);
+                double latency = RunAtFlightCadence(planner, snapshot.MinDt, samplesPerTick,
+                    poweredDeorbit: continuity && count > 0);
                 double publicationInterval = Math.Max(
                     MechJebModuleLandingPredictions.TargetAwareRefreshSeconds, latency);
                 _output.WriteLine($"cadence input={snapshot.InputUT:F6} queries={planner.TerrainQueryCount} " +
@@ -248,8 +249,8 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.Equal(4, count);
         }
 
-        private static double RunAtFlightCadence(TargetAwareAirlessPlanner planner,
-            double flightTickSeconds, int samplesPerTick)
+        internal static double RunAtFlightCadence(TargetAwareAirlessPlanner planner,
+            double flightTickSeconds, int samplesPerTick, bool poweredDeorbit = false)
         {
             // Mirror production's order: consume completed worker, resolve
             // terrain, then queue the next worker in the SAME flight update.
@@ -278,6 +279,17 @@ namespace MechJebLibTest.LandingPredictionTests
                     apply();
                 }
                 int samples = planner.TerrainSampleCount;
+                if (poweredDeorbit)
+                {
+                    // The same rejected captured path must remain intact while
+                    // coasting, and before the moving-input refresh deadline.
+                    Assert.False(planner.RefreshRejectedMovingSnapshot(now, false,
+                        MechJebModuleLandingPredictions.TargetAwareRefreshSeconds));
+                    Assert.False(planner.RefreshRejectedMovingSnapshot(Math.Min(now, 0.5), true,
+                        MechJebModuleLandingPredictions.TargetAwareRefreshSeconds));
+                }
+                planner.RefreshRejectedMovingSnapshot(now, poweredDeorbit,
+                    MechJebModuleLandingPredictions.TargetAwareRefreshSeconds);
                 planner.AdvanceTerrain();
                 Assert.InRange(planner.TerrainSampleCount - samples, 0, samplesPerTick);
                 switch (planner.Stage)
@@ -308,6 +320,7 @@ namespace MechJebLibTest.LandingPredictionTests
                         }); break;
                     case TargetAwarePlannerStage.Complete: return now;
                     case TargetAwarePlannerStage.Failed:
+                        if (poweredDeorbit) return now;
                         Assert.True(false, planner.Failure); return now;
                 }
             }

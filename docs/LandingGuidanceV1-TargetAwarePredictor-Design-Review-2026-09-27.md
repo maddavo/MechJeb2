@@ -1,5 +1,82 @@
 # V1 targeted airless predictor: verified design review
 
+### 1 October approved late-Mun deorbit refresh repair
+
+Session `28a5b86fc35b4664865a593450f3365d`, latest Mun generation 2,
+has an 18.62-second publication gap after submission 1973/version 2739.
+Submission 1974 completed an unusable impact diagnostic; 1975 and 1976
+exhausted the 1,536-query budget. They performed 98 and 112 terminal worker
+stages respectively. V1 continued its deorbit burn against version 2739.
+Submission 1977 finally published version 2740. There was no ordinary-result
+overwrite: the fault was expensive unsuccessful refresh work on a moving orbit.
+
+The approved repair changes predictor search and scheduling only:
+
+- Recheck the prior brake reference at integration-scale offsets as well as
+  the existing broader neighbourhood. Recompute every candidate from the new
+  snapshot; retain clearance, terminal-speed, stopping-distance, thrust-margin
+  and atomic publication checks unchanged. Never rank by target error.
+- During an actual powered DeorbitBurn/LowDeorbitBurn with a committed owned
+  forecast, once terminal validation
+  has rejected a candidate and the snapshot is older than two submission
+  intervals (0.50 s at the existing 0.25-second submission interval), abandon
+  that unfinished search and start the next eligible fresh transaction.
+  Initial forecast acquisition (no committed owned result), successful first
+  candidates and cold terrain resolution retain their existing expiry limit.
+  Wait for any running worker to finish before cancelling at a stage boundary;
+  do not null fields that a worker is reading. Coast, course-correction settling, direct braking and terminal
+  phases are unaffected. This is predictor work cancellation, not a burn
+  interlock, actuator command or change to V1's response to unavailable data.
+- Preserve cached measured terrain and the committed valid result. Failed work
+  cannot publish, reset ownership, or exhaust budgets repeatedly on the same
+  snapshot. Outstanding worker completions remain subject to planner identity
+  and generation checks. Record refresh abandonment in the existing capture.
+
+Acceptance uses the actual 1973-1977 snapshots and recorded terrain. Prove
+recovery of 1974, bounded abandonment of unsuccessful moving-burn searches,
+later valid replacement, unchanged successful Gamma/Minmus replays, publication
+ownership, terminal validity, and zero live controller/UI/phase/actuator diffs.
+An individual unsafe candidate need not become a landing: do not loosen its
+validity checks to satisfy the replay. Recorded terrain interpolation and
+empirical terminal attitude bounds remain conditional; the next KSP flight
+measures forecast availability and cadence through the same late-deorbit arc.
+
+**Completed evidence.** The capture reader finds 2,057 cases and zero gaps in
+the selected session. All 91 focused C# tests and 32 Python reader, replay,
+lifecycle and whole-sequence regression tests pass. The new fixture contains
+the five actual 1973-1977 snapshots and 13,186 actual PQS samples retained in
+ten-metre cells. Nearest recorded coverage in this replay is at most 22.23 m;
+the existing 500 m coverage limit remains unchanged. With the live one-ms
+terrain tick budget and asynchronous completion ordering, submissions 1973,
+1974 and 1977 complete validated forecasts in 0.400, 0.180 and 0.220 s,
+using 191, 101 and 73 fresh terrain queries. The captured unsuccessful 1975
+and 1976 states still fail terminal landing checks: they are abandoned for
+fresh input at 0.520 s, using 189 and 170 queries. They cannot publish or
+alter the preceding committed forecast. Do not interpret abandonment as a
+landing solution or the sampled-input sequence as a new flown trajectory.
+
+The nine Minmus approach forecasts still complete. Gamma continuity completes
+139/139 inputs with zero reversals and the unchanged 44.79 m final offline
+miss; broad search completes 136/139. Cold cadence remains 1.080 s, followed
+by continuity publication intervals 0.280, 0.320 and 0.250 s, including the
+new refresh scheduling. Non-powered and pre-deadline guard checks preserve
+the pending path. Terminal simulation equations and all live V1 controller,
+guidance, UI, phase and actuator files are unchanged against `f5664b2d`.
+
+**Build and deployment.** Release build has zero warnings/errors and writes
+repository outputs only. KSP was closed; the separate exact-path single-DLL
+installation completed at 2026-10-01 10:50:51 AEST. Built and installed
+`MechJeb2.dll` SHA-256:
+`82BCC50ABAC10C99C77FE844E1730A9E49D30D8FDA5E1110649A246250FB7F28`.
+Timestamped verified backup manifest:
+`C:\Users\Dave\Documents\KSP Backups\MechJeb2 Explicit Install\20261001-105051-9218933\manifest.json`.
+All four companion DLL hashes are unchanged. Repeat the same latest Mun
+approach with the same vessel, target and V1 auto-warp. Leave capture enabled;
+measure publication age and reticle movement during the late-deorbit arc,
+then record course-correction/braking entry and the final landing coordinates.
+The next flight validates whether these narrow changes remove the measured
+18.62-second refresh gap under actual PQS and changing thrust/attitude state.
+
 ### 1 October approved Minmus repair
 
 Dave approved terrain convergence/reuse, braking-window coverage, and terminal

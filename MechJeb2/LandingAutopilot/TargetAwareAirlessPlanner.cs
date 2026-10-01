@@ -217,6 +217,7 @@ namespace MuMech.Landing
         internal int CoverageRefinements { get; private set; }
         internal int PolicySimulationCount { get; private set; }
         internal int PolicySimulationCacheHits { get; private set; }
+        private bool _terminalCandidateRejected;
 
         internal TargetAwareAirlessPlanner(AirlessTargetAwareSnapshot snapshot, long generation,
             long sequence, object bodyIdentity, Func<double, double, double> terrainAltitude,
@@ -346,6 +347,24 @@ namespace MuMech.Landing
         }
 
         internal void WorkerFailed(string reason) => Fail(reason);
+
+        // An unsuccessful search cannot spend seconds following a snapshot
+        // whose orbit is being changed by a live deorbit burn. Cold coverage
+        // and a still-validating first terminal candidate keep the normal age
+        // limit. Cancellation never modifies the committed prediction.
+        internal bool RefreshRejectedMovingSnapshot(double age, bool poweredDeorbit,
+            double submissionInterval)
+        {
+            if (!poweredDeorbit || IsDirectForecast || !_terminalCandidateRejected ||
+                Stage == TargetAwarePlannerStage.Complete || Stage == TargetAwarePlannerStage.Failed ||
+                Stage == TargetAwarePlannerStage.AwaitBallistic || Stage == TargetAwarePlannerStage.AwaitCoarse ||
+                Stage == TargetAwarePlannerStage.AwaitRefinement || Stage == TargetAwarePlannerStage.AwaitPolicyEscalation ||
+                Stage == TargetAwarePlannerStage.AwaitTerminal ||
+                age <= 2 * submissionInterval)
+                return false;
+            Fail("MovingDeorbitSnapshotRefresh");
+            return true;
+        }
 
         internal void BeginTerminalWorker()
         {
@@ -708,13 +727,14 @@ namespace MuMech.Landing
             if (_localSearchActive)
             {
                 // Resolve the prior absolute search time against this NEW
-                // physical snapshot. Use the existing broad/refinement grid
-                // spacing for the neighbourhood, not a targeting tolerance.
+                // physical snapshot. Check integration-scale neighbours as
+                // well as the existing broader search neighbourhood.
                 double anchor = Math.Max(earliest, Math.Min(latest, ContinuitySeedUT));
                 double step = Math.Max(Snapshot.Dt, (latest - earliest) / (8 * 18));
-                for (int i = -4; i <= 4; i++)
+                foreach (double offset in new[] { -4 * step, -step, -step / 4,
+                    -Snapshot.Dt, 0, Snapshot.Dt, step / 4, step, 4 * step })
                     outputs.Add(AirlessTargetAwareSimulation.Run(searchSnapshot,
-                        Math.Max(earliest, Math.Min(latest, anchor + i * step)), true));
+                        Math.Max(earliest, Math.Min(latest, anchor + offset)), true));
                 return outputs;
             }
             for (int i = 0; i < 9; ++i)
@@ -1315,6 +1335,8 @@ namespace MuMech.Landing
         private void TryNextCandidate(string reason)
         {
             LastCandidateFailure = reason;
+            if (reason.StartsWith("Terminal", StringComparison.Ordinal))
+                _terminalCandidateRejected = true;
             if (_fallbackSelection && !IsDirectForecast)
             {
                 _rejectedBrakeReferences.Add(_fallbackOptions[_fallbackIndex].Output.BrakeUT);
