@@ -99,9 +99,9 @@ namespace MuMech.Landing
             {
                 if(_allocatedForce!=null)
                 {
-                    double f=_allocatedForce.At(pressurePa);
-                    return Finite(f)&&f>=0&&Finite(_allocatedFlow)&&_allocatedFlow>=0
-                        ?new Authority(true,f,_allocatedFlow,double.NaN):default;
+                    double allocated=_allocatedForce.At(pressurePa);
+                    return Finite(allocated)&&allocated>=0&&Finite(_allocatedFlow)&&_allocatedFlow>=0
+                        ?new Authority(true,allocated,_allocatedFlow,double.NaN):default;
                 }
                 if(!_geometryVerified||_engines.Length<1||_engines.Length>2||
                     !Finite(pressurePa)||pressurePa<0) return default;
