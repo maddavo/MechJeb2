@@ -25,3 +25,8 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Explicit correction preparation fit for both deadlines, fail-closed capture, optional passive lift adapter.
 - Three further synthetic tests; no runtime activation.
+
+## 2.16.0-landing.20261126.duna-live-screen
+
+- Integrate dynamic pressure/mass/capability screen in Duna approach, distinguish terminal assumptions and ignition deadline, retry correction candidates and prevent altitude-only premature terminal transfer.
+- Add trace-derived synthetic decision regression, live snapshot diagnostics and experimental test workflow. Airless unchanged.
