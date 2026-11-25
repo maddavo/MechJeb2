@@ -311,6 +311,7 @@ namespace MuMech
         // Thrust is a vector.  These are in the same frame of reference as forward and other vectors.
         public Vector3d ThrustVectorLastFrame;
         public Vector3d ThrustVectorMaxThrottle;
+        internal Vector3d NodeSteeringForce;
         public Vector3d ThrustVectorMinThrottle;
 
         [ValueInfoItem("#MechJeb_UniversalTime", InfoItem.Category.Recorder, format = ValueInfoItem.TIME)] //Universal Time
@@ -318,6 +319,13 @@ namespace MuMech
 
         // Total torque
         public Vector3d TorqueAvailable;
+
+        internal double OrdinaryTorque(int axis, bool positive) =>
+            (positive ? TorqueReactionWheel.Positive[axis] : TorqueReactionWheel.Negative[axis]) +
+            (positive ? RCSTorqueAvailable.Positive[axis] : RCSTorqueAvailable.Negative[axis]) +
+            (positive ? TorqueControlSurface.Positive[axis] : TorqueControlSurface.Negative[axis]) +
+            (positive ? TorqueGimbal.Positive[axis] : TorqueGimbal.Negative[axis]) +
+            (positive ? TorqueOthers.Positive[axis] : TorqueOthers.Negative[axis]);
 
         // Variable part of torque related to differential throttle
         public Vector3d TorqueDifferentialThrottle;
@@ -1058,6 +1066,7 @@ namespace MuMech
             }
 
             ThrustVectorMaxThrottle = einfo.ThrustMax;
+            NodeSteeringForce = einfo.NodeSteeringForce;
             ThrustVectorMinThrottle = einfo.ThrustMin;
             ThrustVectorLastFrame = einfo.ThrustCurrent;
 
@@ -1228,6 +1237,40 @@ namespace MuMech
         public double HeadingFromDirection(Vector3d dir) =>
             MuUtils.ClampDegrees360(UtilMath.Rad2Deg * Math.Atan2(Vector3d.Dot(dir, East), Vector3d.Dot(dir, North)));
 
+        // Read-only prospective upright offset. Current AltitudeBottom depends
+        // on orientation and is unsuitable for a sideways deorbit snapshot.
+        // AABB support bounds deployed collider geometry; wheel suspension and
+        // actual PQS contact remain measured uncertainties, not an exact mesh.
+        internal double TerminalBottomOffset()
+        {
+            double offset = Math.Max(0, AltitudeTrue - AltitudeBottom);
+            if (_vessel == null) return offset;
+            foreach (Part part in _vessel.parts)
+            {
+                if (part.collider == null) continue;
+                Bounds bounds = part.collider.bounds;
+                offset = Math.Max(offset, Landing.V1LandingControlPolicy.UprightColliderOffset(
+                    (Vector3d)bounds.center - CoM, bounds.extents, Forward));
+            }
+            return offset;
+        }
+
+        // Read-only prospective V1 controller altitude, separate from contact
+        // support. ComputeVesselBottomAltitude uses a max-extent sphere.
+        internal double TerminalControllerBottomOffset()
+        {
+            double offset = Math.Max(0, AltitudeTrue - AltitudeBottom);
+            if (_vessel == null) return offset;
+            foreach (Part part in _vessel.parts)
+            {
+                if (part.collider == null) continue;
+                Bounds bounds = part.collider.bounds;
+                double radius = Math.Max(bounds.extents.x, Math.Max(bounds.extents.y, bounds.extents.z));
+                offset = Math.Max(offset, -Vector3d.Dot((Vector3d)bounds.center - CoM, Forward.normalized) + radius);
+            }
+            return offset;
+        }
+
         private double ComputeVesselBottomAltitude()
         {
             if (_vessel == null || _vessel.rootPart.rb == null) return 0;
@@ -1270,6 +1313,7 @@ namespace MuMech
             public double LowestUllage = 1.0;
             public double MaxResponseTime;
             public Vector3d ThrustCurrent; // thrust at throttle achieved last frame
+            internal Vector3d NodeSteeringForce;
             public Vector3d ThrustMax; // thrust at full throttle
             public Vector3d ThrustMin; // thrust at zero throttle
             public double MaximumMassFlow;
@@ -1279,6 +1323,7 @@ namespace MuMech
             {
                 ThrustCurrent = Vector3d.zero;
                 ThrustMax = Vector3d.zero;
+                NodeSteeringForce = Vector3d.zero;
                 ThrustMin = Vector3d.zero;
                 MaximumMassFlow = 0;
                 MinimumMassFlow = 0;
@@ -1370,6 +1415,14 @@ namespace MuMech
                 //MechJebCore.print(maxThrust.ToString("F2") + " " + minThrust.ToString("F2") + " " + e.minFuelFlow.ToString("F2") + " " + e.maxFuelFlow.ToString("F2") + " " + e.flowMultiplier.ToString("F2") + " " + Isp.ToString("F2") + " " + thrustLimiter.ToString("F3"));
 
                 double eMaxThrust = minThrust + (maxThrust - minThrust) * thrustLimiter;
+                // Keep user and other-mod limits. Ignore only an active MechJeb limiter override.
+                float steeringLimiter = e.thrustPercentage;
+                if (!e.throttleLocked)
+                {
+                    var recovery = MechJebDifferentialThrottleState.Find(e.part);
+                    if (recovery != null) steeringLimiter = recovery.BaselineLimiter(e);
+                }
+                double steeringThrust = minThrust + (maxThrust - minThrust) * steeringLimiter / 100;
                 double eMinThrust = e.throttleLocked ? eMaxThrust : minThrust;
                 double eCurrentThrust = e.finalThrust;
                 double eMaxFlow = (e.minFuelFlow +
@@ -1419,6 +1472,7 @@ namespace MuMech
 
                     ThrustCurrent += tCurrentThrust  * thrustDirectionVector;
                     ThrustMax += tMaxThrust * thrustDirectionVector;
+                    NodeSteeringForce += steeringThrust * thrustTransformMultiplier * thrustDirectionVector;
                     ThrustMin += eMinThrust * thrustDirectionVector * thrustTransformMultiplier;
 
                     // CoT (and hence ThrustForward, the neutral trim axis) is weighted by max thrust, not
@@ -1445,7 +1499,7 @@ namespace MuMech
                     }
                 }
 
-                enginesWrappers.Add(new EngineWrapper(e, maxVariableForce, constantTorque, maxVariableTorque));
+                enginesWrappers.Add(new EngineWrapper(e, maxVariableForce, constantTorque, maxVariableTorque, constantForce));
 
                 // Restore gimbals rotation
                 if (gimbal != null && !gimbal.gimbalLock)
@@ -1720,10 +1774,11 @@ namespace MuMech
             public readonly ModuleEngines Engine;
 
             public EngineWrapper(ModuleEngines module, Vector3d maxVariableForce, Vector3d constantTorque,
-                Vector3d maxVariableTorque)
+                Vector3d maxVariableTorque, Vector3d constantForce)
             {
                 Engine = module;
                 MaxVariableForce = maxVariableForce;
+                ConstantForce = constantForce;
                 ConstantTorque = constantTorque;
                 MaxVariableTorque = maxVariableTorque;
             }
@@ -1735,6 +1790,7 @@ namespace MuMech
             }
 
             public Vector3d MaxVariableForce { get; }
+            internal Vector3d ConstantForce { get; }
 
             public Vector3d ConstantTorque { get; }
 

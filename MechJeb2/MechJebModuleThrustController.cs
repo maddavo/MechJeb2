@@ -30,6 +30,9 @@ namespace MuMech
         public float TransSpdAct;
         private float _transPrevThrust;
         internal float PreviousTransThrottle => _transPrevThrust;
+        // Read-only predictor inputs; a pending mode change resets the live PID.
+        internal double VerticalPidPreviousError => _tmodeChanged || _pid == null ? 0 : _pid.PreviousError;
+        internal double VerticalPidIntegral => _tmodeChanged || _pid == null ? 0 : _pid.INTAccum;
         public bool TransKillH = false;
 
         [Persistent(pass = (int)Pass.GLOBAL)]
@@ -130,7 +133,7 @@ namespace MuMech
         }
 
         [Persistent(pass = (int)(Pass.LOCAL | Pass.TYPE | Pass.GLOBAL))]
-        public bool LimiterMinThrottle = true;
+        public bool LimiterMinThrottle = false;
 
         [Persistent(pass = (int)(Pass.LOCAL | Pass.TYPE | Pass.GLOBAL))]
         public readonly EditableDoubleMult MinThrottle = new EditableDoubleMult(0.05, 0.01);
@@ -158,17 +161,30 @@ namespace MuMech
 
             if (oldDifferentialThrottle && !Core.Thrust.DifferentialThrottle)
                 Core.Thrust.DisableDifferentialThrottle();
+            if (oldDifferentialThrottle != DifferentialThrottle)
+                MechJebDifferentialThrottleState.SyncPreference(Core, restoreSaved: false);
         }
 
         public Vector3d DifferentialThrottleDemandedTorque;
 
         public DifferentialThrottleStatus DifferentialThrottleSuccess = DifferentialThrottleStatus.SUCCESS;
 
-        // Differential throttle temporarily writes ModuleEngines.thrustPercentage.  Keep the
-        // user's value so disabling the controller does not leave a vessel with the last
-        // solver output as its permanent thrust limit.
-        private readonly Dictionary<ModuleEngines, float> _thrustLimitsBeforeDifferentialThrottle =
-            new Dictionary<ModuleEngines, float>();
+        // Recovery now lives on each engine part. Keep only ownership references
+        // here so late cleanup from an old master cannot undo a new allocation.
+        private readonly HashSet<MechJebDifferentialThrottleState> _differentialThrottleStates =
+            new HashSet<MechJebDifferentialThrottleState>();
+        private readonly string _limiterOwner = Guid.NewGuid().ToString("N");
+        private bool _modeKnown, _lastDifferentialMode, _missingLimiterStateWarning;
+        private bool _reloadDifferentialPreference;
+
+        public override void OnLoad(ConfigNode local, ConfigNode type, ConfigNode global)
+        {
+            base.OnLoad(local, type, global);
+            // The core reloads TYPE settings on focus/master changes. Defer the
+            // part-local preference check until all parts have finished loading;
+            // a legacy TYPE file must not undo undocking/save-load recovery.
+            _reloadDifferentialPreference = true;
+        }
 
         [Persistent(pass = (int)Pass.LOCAL)]
         public bool ElectricThrottle;
@@ -300,6 +316,16 @@ namespace MuMech
             double desiredAcceleration = (dV - spooldownDv) / timeConstant;
 
             TargetThrottle = Mathf.Clamp((float)(desiredAcceleration / VesselState.MaxThrustAcceleration), 0.01f, 1.00f);
+        }
+
+        // Node-specific force-axis acceleration. The existing two-argument
+        // controller law and all its landing/ascent callers remain unchanged.
+        public void ThrustForDv(double dV, double timeConstant, double maximumAcceleration, double currentAcceleration)
+        {
+            timeConstant += VesselState.MaxEngineResponseTime;
+            double spooldownDv = currentAcceleration * VesselState.MaxEngineResponseTime;
+            double desiredAcceleration = (dV - spooldownDv) / timeConstant;
+            TargetThrottle = Mathf.Clamp((float)(desiredAcceleration / maximumAcceleration), 0.01f, 1.00f);
         }
 
         /* the current throttle limit, this may include transient condition such as limiting to zero due to unstable propellants in RF */
@@ -567,15 +593,21 @@ namespace MuMech
 
             LastThrottle = s.mainThrottle;
 
-            if (!Core.Attitude.Enabled)
-            {
-                var act = new Vector3d(s.pitch, s.yaw, s.roll);
-                DifferentialThrottleDemandedTorque = -Vector3d.Scale(act.xzy, VesselState.TorqueDifferentialThrottle * s.mainThrottle * 0.5f);
-            }
+            // The stock pilot/SAS path has no physical torque request to arbitrate.
+            if (!Core.Attitude.Enabled) DifferentialThrottleDemandedTorque = Vector3d.zero;
         }
 
         public override void OnFixedUpdate()
         {
+            if (_reloadDifferentialPreference)
+                MechJebDifferentialThrottleState.SyncPreference(Core, forceRestore: true);
+            else if (!_modeKnown || MechJebDifferentialThrottleState.PreferenceDirty(Vessel))
+                MechJebDifferentialThrottleState.SyncPreference(Core);
+            else if (_lastDifferentialMode != DifferentialThrottle)
+                MechJebDifferentialThrottleState.SyncPreference(Core, restoreSaved: false);
+            _modeKnown = true;
+            _reloadDifferentialPreference = false;
+            _lastDifferentialMode = DifferentialThrottle;
             if (DifferentialThrottle)
             {
                 DifferentialThrottleSuccess = ComputeDifferentialThrottle(DifferentialThrottleDemandedTorque);
@@ -590,6 +622,12 @@ namespace MuMech
         // Docking and undocking move engines between vessels.  Restore their original
         // limits before the next differential-throttle solve sees the new topology.
         public override void OnVesselWasModified(Vessel v) => DisableDifferentialThrottle();
+
+        protected override void OnModuleDisabled()
+        {
+            DisableDifferentialThrottle();
+            base.OnModuleDisabled();
+        }
 
         public override void OnDestroy()
         {
@@ -887,6 +925,58 @@ namespace MuMech
             s.Z = -1.0F;
         }
 
+        internal bool NeedsRetrogradeReserve => Core.Landing != null &&
+            Core.Landing.CurrentStep is Landing.DecelerationBurn braking && braking.BrakingTriggered &&
+            Core.Landing.AirlessTargetedForecast &&
+            (Core.Node == null || Core.Node.State == MechJebModuleNodeExecutor.States.IDLE);
+
+        internal static double TrimRatio(VesselState.EngineWrapper wrapper)
+        {
+            var engine = wrapper.Engine;
+            var recovery = MechJebDifferentialThrottleState.Find(engine.part);
+            return (recovery != null ? recovery.BaselineLimiter(engine) : engine.thrustPercentage) / 100.0;
+        }
+
+        internal void DifferentialTorqueHeadroom(out Vector3d positive, out Vector3d negative)
+        {
+            positive = Vector3d.zero;
+            negative = Vector3d.zero;
+            var engines = VesselState.EngineWrappers.Where(wrapper => !wrapper.Engine.throttleLocked).ToArray();
+            if (engines.Length == 0 || Vessel.ctrlState.mainThrottle <= 0) return;
+            double throttle = Vessel.ctrlState.mainThrottle;
+            double[] upper = engines.Select(_ => throttle).ToArray();
+            double[] trim = SolveTrim(engines, upper, out Vector3d axis);
+            var force = engines.Select(engine => engine.MaxVariableForce).ToArray();
+            var torque = engines.Select(engine => engine.MaxVariableTorque).ToArray();
+            DifferentialAxialTrim.TorqueHeadroom(force, torque, upper, trim, axis,
+                BrakingProjection(force), out positive, out negative);
+        }
+
+        private double[] BrakingProjection(Vector3d[] vectors)
+        {
+            if (!NeedsRetrogradeReserve) return null;
+            Vector3d axis = Vessel.ReferenceTransform.rotation.Inverse() * -VesselState.SurfaceVelocity.normalized;
+            return vectors.Select(vector => Vector3d.Dot(vector, axis)).ToArray();
+        }
+
+        private double[] SolveTrim(IReadOnlyList<VesselState.EngineWrapper> engines, double[] upper, out Vector3d axis)
+        {
+            var vectors = engines.Select(wrapper => wrapper.MaxVariableForce).ToArray();
+            Vector3d constant = Vector3d.zero;
+            Vector3d constantTorque = Vector3d.zero;
+            foreach (var wrapper in VesselState.EngineWrappers)
+            {
+                constant += wrapper.ConstantForce;
+                constantTorque += wrapper.ConstantTorque;
+            }
+            bool nodeActive = Core.Node != null && Core.Node.State != MechJebModuleNodeExecutor.States.IDLE && !Core.Node.RCSOnly;
+            axis = NodeBurnForceSource.DifferentialForceAxis(
+                Vessel.ReferenceTransform.rotation.Inverse() * VesselState.NodeSteeringForce,
+                vectors.Aggregate(Vector3d.zero, (sum, vector) => sum + vector), nodeActive);
+            return DifferentialAxialTrim.Solve(vectors, upper, constant, axis,
+                engines.Select(wrapper => wrapper.MaxVariableTorque).ToArray(), constantTorque);
+        }
+
         private DifferentialThrottleStatus ComputeDifferentialThrottle(Vector3d torque)
         {
             //var stopwatch = new  Stopwatch();
@@ -894,6 +984,7 @@ namespace MuMech
 
             float mainThrottle = Vessel.ctrlState.mainThrottle;
 
+            bool powered = mainThrottle > 0;
             if (mainThrottle == 0)
             {
                 torque = Vector3d.zero;
@@ -901,19 +992,6 @@ namespace MuMech
             }
 
             int nbEngines = VesselState.EngineWrappers.Count;
-
-            double torqueScale = 0;
-            double forceScale = 0;
-            var force = new Vector3d();
-
-            for (int i = 0; i < nbEngines; i++)
-            {
-                torque -= VesselState.EngineWrappers[i].ConstantTorque;
-                torqueScale += VesselState.EngineWrappers[i].MaxVariableTorque.magnitude;
-
-                force += Vector3d.Dot(mainThrottle * VesselState.EngineWrappers[i].MaxVariableForce, Vector3d.up) * Vector3d.up;
-                forceScale += VesselState.EngineWrappers[i].MaxVariableForce.magnitude * 10;
-            }
 
             var engines = VesselState.EngineWrappers.Where(eng => !eng.Engine.throttleLocked).ToList();
             int n = engines.Count;
@@ -925,47 +1003,82 @@ namespace MuMech
                 return DifferentialThrottleStatus.MORE_ENGINES_REQUIRED;
 
 
-            double[,] a = new double[n, n];
-            double[] b = new double[n];
-            double[] boundL = new double[n];
-            double[] boundU = new double[n];
-
+            var vectors = new Vector3d[n];
+            var boundU = new double[n];
             for (int i = 0; i < n; i++)
             {
-                for (int j = 0; j < n; j++)
-                {
-                    a[i, j] = Vector3d.Dot(engines[i].MaxVariableTorque, engines[j].MaxVariableTorque) / (torqueScale * torqueScale)
-                        + Vector3d.Dot(engines[i].MaxVariableForce, engines[j].MaxVariableForce) / (forceScale * forceScale);
-                }
-
-                b[i] = -Vector3d.Dot(engines[i].MaxVariableTorque, torque) / (torqueScale * torqueScale)
-                    - Vector3d.Dot(engines[i].MaxVariableForce, force) / (forceScale * forceScale);
-
-                boundL[i] = 0;
+                vectors[i] = engines[i].MaxVariableForce;
                 boundU[i] = mainThrottle;
             }
+            var trim = SolveTrim(engines, boundU, out Vector3d axis);
+            Vector3d force = Vector3d.zero;
+            double torqueScale = 0, forceScale = 0;
+            for (int i = 0; i < n; i++)
+            {
+                force += trim[i] * vectors[i];
+                torque += trim[i] * engines[i].MaxVariableTorque;
+                torqueScale += engines[i].MaxVariableTorque.magnitude;
+                forceScale += vectors[i].magnitude * 10;
+            }
+            torqueScale = Math.Max(torqueScale, 1e-8);
+            forceScale = Math.Max(forceScale, 1e-8);
+            double[,] a = new double[n,n];
+            double[] b = new double[n];
+            var boundL = new double[n];
+            bool noResidual = DifferentialThrottleDemandedTorque.sqrMagnitude < 1e-12;
+            if (!noResidual && powered)
+                for (int i = 0; i < n; i++)
+                {
+                    for (int j = 0; j < n; j++)
+                        a[i,j] = Vector3d.Dot(engines[i].MaxVariableTorque, engines[j].MaxVariableTorque) / (torqueScale * torqueScale)
+                            + Vector3d.Dot(vectors[i], vectors[j]) / (forceScale * forceScale);
+                    b[i] = -Vector3d.Dot(engines[i].MaxVariableTorque, torque) / (torqueScale * torqueScale)
+                        - Vector3d.Dot(vectors[i], force) / (forceScale * forceScale);
+                }
+            var brakingProjection = powered && !noResidual ? BrakingProjection(vectors) : null;
 
-            alglib.minqpcreate(n, out alglib.minqpstate state);
-            alglib.minqpsetquadraticterm(state, a, false);
-            alglib.minqpsetlinearterm(state, b);
-            alglib.minqpsetbc(state, boundL, boundU);
-            alglib.minqpsetalgodensegenipm(state, 0.0);
-            //var t1 = stopwatch.ElapsedMilliseconds;
-            alglib.minqpoptimize(state);
-            //var t2 = stopwatch.ElapsedMilliseconds;
-            alglib.minqpresults(state, out double[] x, out alglib.minqpreport _);
+            double[] x = trim;
+            if (!noResidual && powered)
+            {
+                alglib.minqpcreate(n, out alglib.minqpstate state);
+                alglib.minqpsetquadraticterm(state, a, false);
+                alglib.minqpsetlinearterm(state, b);
+                alglib.minqpsetbc(state, boundL, boundU);
+                DifferentialAxialTrim.Protect(state, vectors, boundU, trim, axis, brakingProjection,
+                    DifferentialAxialTrim.RetainedAxialFraction);
+                alglib.minqpsetalgodensegenipm(state, 0);
+                alglib.minqpoptimize(state);
+                alglib.minqpresults(state, out double[] proposed, out alglib.minqpreport report);
+                if (report.terminationtype > 0 && proposed.All(value => !double.IsNaN(value) && !double.IsInfinity(value)))
+                    x = proposed;
+            }
             //var t3 = stopwatch.ElapsedMilliseconds;
             //UnityEngine.Debug.LogFormat("[DiffThrottle] t1: {0}, t2: {1}, t3: {2}", t1, t2 - t1, t3 - t2);
 
-            if (x.Any(double.IsNaN))
+            if (x.Any(value => double.IsNaN(value) || double.IsInfinity(value)) || !ReferenceEquals(Core.Thrust, this))
                 return DifferentialThrottleStatus.SOLVER_FAILED;
 
+            // Validate the complete allocation before changing any engine.
+            var persistence = new MechJebDifferentialThrottleState[n];
+            var percentages = new float[n];
             for (int i = 0; i < n; i++)
             {
-                if (!_thrustLimitsBeforeDifferentialThrottle.ContainsKey(engines[i].Engine))
-                    _thrustLimitsBeforeDifferentialThrottle.Add(engines[i].Engine, engines[i].Engine.thrustPercentage);
-
-                engines[i].ThrustRatio = (float)(x[i] / mainThrottle);
+                percentages[i] = Mathf.Clamp((float)(100 * x[i] / mainThrottle), 0, 100);
+                persistence[i] = MechJebDifferentialThrottleState.Find(engines[i].Engine.part);
+                if (persistence[i] == null || !persistence[i].CanApply(engines[i].Engine, Core, percentages[i]))
+                {
+                    if (!_missingLimiterStateWarning)
+                        Debug.LogWarning("[MechJeb Differential Throttle] Recovery module missing/invalid; allocation not applied. Install MechJebDifferentialThrottleState.cfg and restart KSP.");
+                    _missingLimiterStateWarning = true;
+                    DisableDifferentialThrottle();
+                    return DifferentialThrottleStatus.SOLVER_FAILED;
+                }
+            }
+            _missingLimiterStateWarning = false;
+            for (int i = 0; i < n; i++)
+            {
+                persistence[i].Apply(engines[i].Engine, Core, _limiterOwner, percentages[i]);
+                _differentialThrottleStates.Add(persistence[i]);
             }
 
             return DifferentialThrottleStatus.SUCCESS;
@@ -973,13 +1086,9 @@ namespace MuMech
 
         private void DisableDifferentialThrottle()
         {
-            foreach (var entry in _thrustLimitsBeforeDifferentialThrottle)
-            {
-                if (entry.Key != null)
-                    entry.Key.thrustPercentage = entry.Value;
-            }
-
-            _thrustLimitsBeforeDifferentialThrottle.Clear();
+            foreach (var state in _differentialThrottleStates)
+                if (state != null) state.Restore(_limiterOwner);
+            _differentialThrottleStates.Clear();
         }
     }
 }

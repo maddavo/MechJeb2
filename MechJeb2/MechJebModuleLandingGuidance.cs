@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using MuMech.Landing;
 using JetBrainsAnnotations::JetBrains.Annotations;
 using KSP.Localization;
 using UnityEngine;
@@ -154,10 +155,10 @@ namespace MuMech
 
                 if (Core.Landing.Enabled)
                 {
-                    GUILayout.Label(Localizer.Format("#MechJeb_LandingGuidance_label6") + Core.Landing.Status); //Status:
-                    GUILayout.Label(Localizer.Format("#MechJeb_LandingGuidance_label7") +
+                    StableInformationRow(Localizer.Format("#MechJeb_LandingGuidance_label6") + Core.Landing.Status); //Status:
+                    StableInformationRow(Localizer.Format("#MechJeb_LandingGuidance_label7") +
                         (Core.Landing.CurrentStep != null ? Core.Landing.CurrentStep.GetType().Name : "N/A")); //Step:
-                    GUILayout.Label(Localizer.Format("#MechJeb_LandingGuidance_label8") +
+                    StableInformationRow(Localizer.Format("#MechJeb_LandingGuidance_label8") +
                         (Core.Landing.DescentSpeedPolicy != null ? Core.Landing.DescentSpeedPolicy.GetType().Name : "N/A") + " (" +
                         Core.Landing.UseAtmosphereToBrake() + ")"); //Mode
                     //GUILayout.Label("DecEndAlt: " + core.landing.DecelerationEndAltitude().ToString("F2"));
@@ -175,7 +176,7 @@ namespace MuMech
             {
                 GUILayout.Space(4);
                 Core.Landing.LandingTraceEnabled = GUILayout.Toggle(Core.Landing.LandingTraceEnabled, "Log trace data");
-                GUILayout.Label(MechJebModuleLandingAutopilot.DiagnosticBuildVersion);
+                GUILayout.Label("Build: " + Core.version);
             }
 
             GUILayout.EndVertical();
@@ -230,6 +231,11 @@ namespace MuMech
 
         private void DrawGUIPrediction()
         {
+            if (Core.Landing.AirlessTargetedForecast)
+            {
+                DrawStableAirlessPrediction();
+                return;
+            }
             ReentrySimulation.Result result = _predictor.Result;
             if (result != null)
             {
@@ -286,6 +292,34 @@ namespace MuMech
                         break;
                 }
             }
+        }
+
+        private void StableInformationRow(string text)
+        {
+            var style = new GUIStyle(GUI.skin.label) { wordWrap = false, clipping = TextClipping.Clip };
+            GUILayout.Label(new GUIContent(LandingForecastInformation.SingleLine(text), text ?? ""), style,
+                GUILayout.Width(Math.Max(160, WindowPos.width - 24)),
+                GUILayout.Height(LandingForecastInformation.RowHeight));
+        }
+
+        private void DrawStableAirlessPrediction()
+        {
+            var r = _predictor.PresentedForecast;
+            double error = r == null ? double.NaN : Vector3d.Distance(
+                MainBody.GetWorldSurfacePosition(r.EndPosition.Latitude, r.EndPosition.Longitude, 0),
+                MainBody.GetWorldSurfacePosition(Core.Target.targetLatitude, Core.Target.targetLongitude, 0));
+            string state = _predictor.PresentedForecastState + (r != null ? " #" + r.CaptureSubmissionId : "");
+            string[] rows = LandingForecastInformation.PredictionLines(state, r != null,
+                r?.Outcome == ReentrySimulation.Outcome.IMPACT,
+                r != null ? Coordinates.ToStringDMS(r.EndPosition.Latitude, r.EndPosition.Longitude) : "",
+                r?.EndASL.ToSI() + "m", r != null ? error.ToSI() + "m" : "",
+                r?.DeltaVExpended ?? double.NaN,
+                r != null ? Math.Max(0, Planetarium.GetUniversalTime() - r.InputUT) : 0,
+                r != null ? GuiUtils.TimeToDHMS(Math.Max(0, r.EndUT - Planetarium.GetUniversalTime()), 1) : "",
+                r?.Body.GetExperimentBiomeSafe(r.EndPosition.Latitude, r.EndPosition.Longitude) ?? "—", r?.MaxDragGees ?? 0, r?.EndSurfaceSpeed ?? double.NaN);
+            for (int i = 0; i < rows.Length; i++) StableInformationRow(rows[i] ?? "—");
+            if (Core.Landing.CurrentStep is CourseCorrection correction)
+                foreach (string row in correction.CorrectionInformation) StableInformationRow(row);
         }
 
         private void InitLandingSitesList()

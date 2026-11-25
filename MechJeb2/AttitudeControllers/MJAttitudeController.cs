@@ -184,6 +184,11 @@ namespace MuMech.AttitudeControllers
                 Math.Max(-Math.PI, Math.Min(Math.PI, err.y)),
                 Math.Max(-Math.PI, Math.Min(Math.PI, err.z)));
 
+            // Retain the existing inertia/rate damping law, but remove roll
+            // position error for an explicit zero-rate request.
+            _error.y = AttitudeRollPolicy.PositionError(_error.y, Ac.OmegaTarget.y);
+            err.y = AttitudeRollPolicy.KillRateOnly(Ac.OmegaTarget.y) ? Ac.inertia.y : err.y;
+
             // ( MoI / available torque ) factor:
             var normFactor = Vector3d.Scale(Ac.VesselState.MoI, Ac.torque.InvertNoNaN());
 

@@ -793,6 +793,8 @@ namespace MuMech
             // Upper bound on displacement from the target-steering thrust
             // component deliberately excluded from the baseline forecast.
             public double ExcludedTargetSteeringDisplacementBound;
+            internal MuMech.Landing.PublishedBrakingResponse? PoweredBrakingResponse;
+            internal bool HasSeparateTerminalSurface;
 
             public bool AeroBrake;
             public double AeroBrakeUT;
@@ -832,8 +834,13 @@ namespace MuMech
             // the first point drawn on the map. Legacy results keep using the
             // original Trajectory.First().UT rule.
             public bool HasControllerBrakeReferenceUT;
+            public long OwnedBrakingPlanId;
             public double ControllerBrakeReferenceUT;
             public AbsoluteVector ControllerBrakeReferencePosition;
+            public bool HasFirstRequiredThrust;
+            public AbsoluteVector FirstRequiredThrustPosition;
+            public AbsoluteVector FirstRequiredThrustVelocity;
+            public double FirstRequiredThrustUT;
 
             // Passive capture correlation only; never used by simulation or control.
             public long CaptureSubmissionId;
@@ -867,9 +874,16 @@ namespace MuMech
                 obj.EndHorizontalSpeed = double.NaN;
                 obj.EndTerrainClearance = double.NaN;
                 obj.ExcludedTargetSteeringDisplacementBound = double.NaN;
+                obj.PoweredBrakingResponse = null;
+                obj.HasSeparateTerminalSurface = false;
                 obj.HasControllerBrakeReferenceUT = false;
+                obj.OwnedBrakingPlanId = 0;
                 obj.ControllerBrakeReferenceUT = 0;
                 obj.ControllerBrakeReferencePosition = default(AbsoluteVector);
+                obj.HasFirstRequiredThrust = false;
+                obj.FirstRequiredThrustUT = double.NaN;
+                obj.FirstRequiredThrustPosition = default(AbsoluteVector);
+                obj.FirstRequiredThrustVelocity = default(AbsoluteVector);
             }
 
             public double BrakeReferenceUT(double currentUT) =>

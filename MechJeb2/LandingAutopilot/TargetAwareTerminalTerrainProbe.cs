@@ -86,7 +86,7 @@ namespace MuMech.Landing
                             default(AirlessTargetAwareState), double.NaN,
                             minimumClearance, double.NaN, queries);
                     double clearance = state.Position.magnitude - snapshot.BodyRadius -
-                        snapshot.BottomOffset - terrain;
+                        snapshot.TerminalBottomOffset - terrain;
                     minimumClearance = Math.Min(minimumClearance, clearance);
                     if (clearance <= 0)
                     {
@@ -113,7 +113,7 @@ namespace MuMech.Landing
             return new TargetAwareTerminalTerrainProbeResult(true, false,
                 default(AirlessTargetAwareState), double.NaN,
                 minimumClearance, end.Position.magnitude - snapshot.BodyRadius -
-                    snapshot.BottomOffset - previousTerrain, queries);
+                    snapshot.TerminalBottomOffset - previousTerrain, queries);
         }
     }
 
@@ -127,6 +127,9 @@ namespace MuMech.Landing
         private readonly IReadOnlyList<AirlessTargetAwareState> _path;
         private readonly Func<double, double, double> _terrainAltitude;
         private readonly int _maximumQueries;
+        private readonly double _terrainUpperBoundASL;
+        private readonly Func<double, double, double, double> _adaptiveTerrain;
+        private readonly Func<bool> _terrainBudgetAvailable;
         private int _segment, _part, _divisions;
         private double _previousClearance = double.NaN, _previousTerrain = double.NaN;
         private double _minimumClearance = double.PositiveInfinity;
@@ -138,7 +141,10 @@ namespace MuMech.Landing
 
         internal TargetAwareTerminalTerrainResolver(AirlessTargetAwareSnapshot snapshot,
             IReadOnlyList<AirlessTargetAwareState> path,
-            Func<double, double, double> terrainAltitude, int maximumQueries)
+            Func<double, double, double> terrainAltitude, int maximumQueries,
+            double terrainUpperBoundASL = double.NaN,
+            Func<double, double, double, double> adaptiveTerrain = null,
+            Func<bool> terrainBudgetAvailable = null)
         {
             if (path == null || path.Count == 0 || terrainAltitude == null || maximumQueries <= 0)
                 throw new ArgumentException("Incomplete terminal terrain resolver");
@@ -146,6 +152,9 @@ namespace MuMech.Landing
             _path = path;
             _terrainAltitude = terrainAltitude;
             _maximumQueries = maximumQueries;
+            _terrainUpperBoundASL = terrainUpperBoundASL;
+            _adaptiveTerrain = adaptiveTerrain;
+            _terrainBudgetAvailable = terrainBudgetAvailable;
         }
 
         internal void Advance(int queriesPerTick, double millisecondsPerTick)
@@ -157,8 +166,9 @@ namespace MuMech.Landing
                 throw new ArgumentException("Invalid terrain tick budget");
             long tickStart = Stopwatch.GetTimestamp();
             int tickQueries = 0;
+            int operations = 0;
             while (tickQueries < queriesPerTick &&
-                   (tickQueries == 0 ||
+                   (operations++ == 0 ||
                     1000d * (Stopwatch.GetTimestamp() - tickStart) / Stopwatch.Frequency <
                     millisecondsPerTick))
             {
@@ -166,12 +176,25 @@ namespace MuMech.Landing
                 {
                     Finish(true, false, default(AirlessTargetAwareState), double.NaN,
                         _path[_path.Count - 1].Position.magnitude - _snapshot.BodyRadius -
-                        _snapshot.BottomOffset - _previousTerrain);
+                        _snapshot.TerminalBottomOffset - _previousTerrain);
                     return;
                 }
                 AirlessTargetAwareState start = _segment == 0 ?
                     _path[0] : _path[_segment - 1];
                 AirlessTargetAwareState end = _path[_segment];
+                if (_part == 0 && SegmentAboveTerrainBound(start.Position, end.Position,
+                        _snapshot.BodyRadius + _terrainUpperBoundASL + _snapshot.TerminalBottomOffset))
+                {
+                    // The entire chord is outside the maximum terrain sphere.
+                    // No PQS sample can add information here. This is a proof of
+                    // clearance, not interpolation of an unqueried mountain.
+                    _previous = end;
+                    _previousClearance = double.NaN;
+                    _previousTerrain = _terrainUpperBoundASL;
+                    _minimumClearance = Math.Min(_minimumClearance, 0); // conservative bound, not a terrain measurement
+                    _segment++;
+                    continue;
+                }
                 if (_part == 0)
                 {
                     double distance = (end.Position - start.Position).magnitude;
@@ -200,12 +223,14 @@ namespace MuMech.Landing
                     start.UT + fraction * (end.UT - start.UT));
                 AbsoluteVector location = AirlessTargetAwareSimulation.ToAbsolute(
                     state.Position, state.UT, _snapshot);
+                if (_terrainBudgetAvailable != null && !_terrainBudgetAvailable()) return;
                 QueryCount++;
                 tickQueries++;
                 double terrain;
                 try
                 {
-                    terrain = _terrainAltitude(location.Latitude, location.Longitude);
+                    terrain = _adaptiveTerrain == null ? _terrainAltitude(location.Latitude, location.Longitude) :
+                        _adaptiveTerrain(location.Latitude, location.Longitude, state.Position.magnitude);
                 }
                 catch
                 {
@@ -220,7 +245,7 @@ namespace MuMech.Landing
                     return;
                 }
                 double clearance = state.Position.magnitude - _snapshot.BodyRadius -
-                    _snapshot.BottomOffset - terrain;
+                    _snapshot.TerminalBottomOffset - terrain;
                 _minimumClearance = Math.Min(_minimumClearance, clearance);
                 if (clearance <= 0)
                 {
@@ -258,6 +283,15 @@ namespace MuMech.Landing
             Done = true;
             Result = new TargetAwareTerminalTerrainProbeResult(resolved, hasContact,
                 contact, terrain, _minimumClearance, endClearance, QueryCount);
+        }
+
+        internal static bool SegmentAboveTerrainBound(Vector3d start, Vector3d end, double radius)
+        {
+            if (double.IsNaN(radius) || double.IsInfinity(radius) || radius <= 0) return false;
+            Vector3d delta = end - start;
+            double fraction = delta.sqrMagnitude > 0 ?
+                Math.Max(0, Math.Min(1, -Vector3d.Dot(start, delta) / delta.sqrMagnitude)) : 0;
+            return (start + fraction * delta).sqrMagnitude > radius * radius;
         }
     }
 }

@@ -17,11 +17,23 @@ namespace MuMech
 
         public static void DrawGroundMarker(CelestialBody body, double latitude, double longitude, Color c, bool map, double rotation = 0,
             double radius = 0)
+            => DrawGroundMarker(body, latitude, longitude, c, map, rotation, radius, double.NaN);
+
+        // Keep the existing public signature for other callers. Predictions can
+        // supply their resolved support height instead of re-querying PQS here.
+        public static void DrawGroundMarker(CelestialBody body, double latitude, double longitude, Color c, bool map,
+            double rotation, double radius, double altitudeASL)
         {
             Vector3d up = body.GetSurfaceNVector(latitude, longitude);
-            double height = body.pqsController.GetSurfaceHeight(QuaternionD.AngleAxis(longitude, Vector3d.down) *
-                QuaternionD.AngleAxis(latitude, Vector3d.forward) * Vector3d.right);
-            if (height < body.Radius) { height = body.Radius; }
+            double height;
+            if (!double.IsNaN(altitudeASL) && !double.IsInfinity(altitudeASL))
+                height = body.Radius + altitudeASL;
+            else
+            {
+                height = body.pqsController.GetSurfaceHeight(QuaternionD.AngleAxis(longitude, Vector3d.down) *
+                    QuaternionD.AngleAxis(latitude, Vector3d.forward) * Vector3d.right);
+                if (height < body.Radius) { height = body.Radius; }
+            }
 
             Vector3d center = body.position + height * up;
 

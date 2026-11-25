@@ -19,9 +19,9 @@ namespace MuMech
             // TODO I think that this function could be better rewritten to much more agressively kill the horizontal velocity. At present on low gravity bodies such as Bop, the craft will hover and slowly drift sideways, loosing the prescion of the landing. 
             public override AutopilotStep Drive(FlightCtrlState s)
             {
-                if (!Core.Landing.PredictionReady)
-                    return this;
-
+                // Once this phase owns the vessel its velocity feedback is
+                // sufficient. An impact forecast must not leave the preceding
+                // braking throttle/attitude latched instead of executing KHV.
                 if (VesselState.SpeedSurfaceHorizontal <= FinalDescentHorizontalSpeed)
                 {
                     Core.Thrust.RequestActiveThrottle(0.0f);

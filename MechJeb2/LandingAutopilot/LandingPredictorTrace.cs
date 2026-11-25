@@ -143,7 +143,7 @@ namespace MuMech.Landing
                         "\"mass\":{17},\"limitedMaxThrustAcceleration\":{18},\"maxThrustAcceleration\":{19}," +
                         "\"localGravity\":{20},\"forward\":{21},\"up\":{22},\"surfaceVelocity\":{23}," +
                         "\"gravityForce\":{24},\"attitudeErrorDegrees\":{25}," +
-                        "\"thrustMode\":{26},\"thrustSpeedSetpoint\":{27},\"thrustKillHorizontal\":{28}}}",
+                        "\"thrustMode\":{26},\"thrustSpeedSetpoint\":{27},\"thrustKillHorizontal\":{28},\"forecastFirstThrustUT\":{29}}}",
                         Number(ut), JsonString(phase), JsonString(status), Number(warpRate), Vector(position), Vector(velocity),
                         Number(commandedThrottle), Number(thrustAcceleration), predictionVersion,
                         Number(prediction?.InputUT ?? double.NaN), Number(prediction?.EndUT ?? double.NaN),
@@ -154,7 +154,8 @@ namespace MuMech.Landing
                         Number(vesselState.MaxThrustAcceleration), Number(vesselState.LocalGravity),
                         Vector(vesselState.Forward), Vector(vesselState.Up), Vector(vesselState.SurfaceVelocity),
                         Vector(vesselState.GravityForce), Number(attitudeError), JsonString(thrustMode),
-                        Number(thrustSpeedSetpoint), thrustKillHorizontal ? "true" : "false");
+                        Number(thrustSpeedSetpoint), thrustKillHorizontal ? "true" : "false",
+                        Number(prediction != null && prediction.HasFirstRequiredThrust ? prediction.FirstRequiredThrustUT : double.NaN));
                     _writer.WriteLine(line);
                     _recordsSinceFlush++;
                     if (_recordsSinceFlush >= 5)

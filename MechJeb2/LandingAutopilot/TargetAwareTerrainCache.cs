@@ -10,7 +10,9 @@ namespace MuMech.Landing
         private readonly int _capacity;
         private readonly Dictionary<(double, double), double> _samples =
             new Dictionary<(double, double), double>();
-        private readonly Queue<(double, double)> _order = new Queue<(double, double)>();
+        private readonly LinkedList<(double, double)> _order = new LinkedList<(double, double)>();
+        private readonly Dictionary<(double, double), LinkedListNode<(double, double)>> _nodes =
+            new Dictionary<(double, double), LinkedListNode<(double, double)>>();
         private object _body, _terrain;
         private double _minimum, _maximum;
         internal bool SpatialReuseEnabled { get; }
@@ -56,8 +58,15 @@ namespace MuMech.Landing
             // A changed target does not change any body-fixed PQS height.
         }
 
-        internal bool TryGet(double latitude, double longitude, out double height) =>
-            _samples.TryGetValue((latitude, longitude), out height);
+        internal bool TryGet(double latitude, double longitude, out double height)
+        {
+            var key = (latitude, longitude);
+            if (!_samples.TryGetValue(key, out height)) return false;
+            var node = _nodes[key];
+            _order.Remove(node);
+            _order.AddLast(node);
+            return true;
+        }
 
         internal void Store(double latitude, double longitude, double height)
         {
@@ -66,16 +75,23 @@ namespace MuMech.Landing
                 double.IsNaN(height) || double.IsInfinity(height))
                 throw new ArgumentException("Non-finite terrain sample");
             var key = (latitude, longitude);
-            if (_samples.ContainsKey(key)) return;
-            if (_samples.Count == _capacity) _samples.Remove(_order.Dequeue());
+            if (TryGet(latitude, longitude, out _)) return;
+            if (_samples.Count == _capacity)
+            {
+                var oldest = _order.First.Value;
+                _samples.Remove(oldest);
+                _nodes.Remove(oldest);
+                _order.RemoveFirst();
+            }
             _samples.Add(key, height);
-            _order.Enqueue(key);
+            _nodes.Add(key, _order.AddLast(key));
         }
 
         internal void Clear()
         {
             _samples.Clear();
             _order.Clear();
+            _nodes.Clear();
             _body = _terrain = null;
         }
     }
