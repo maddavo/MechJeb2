@@ -129,6 +129,37 @@ namespace MuMech.Landing
             return turn+2*engineResponse+smoothing+warpOverrun+GuardSeconds+RefreshSeconds+tick;
         }
 
+        // Independent entry deadline: no landing forecast is required.
+        internal static double EntryCutoff(double entryUT, double turn, double tail, double margin)
+        {
+            if (!Finite(entryUT) || !Finite(turn) || !Finite(tail) || !Finite(margin) ||
+                turn<0 || tail<0 || margin<0) return double.NaN;
+            return entryUT-turn-tail-margin;
+        }
+
+        internal static bool EntryFits(double now, double duration, double cutoff) =>
+            Finite(now) && Finite(duration) && duration>=0 && Finite(cutoff) && now+duration<cutoff;
+
+        // Search only bounded, independently screened correction commands.
+        internal static double SelectPulse(double requested, double cap, Func<double,bool> feasible)
+        {
+            if (!Finite(requested) || !Finite(cap) || requested<=0 || cap<=0 || feasible==null) return 0;
+            double dv=Math.Min(requested,cap);
+            for (int i=0;i<12 && dv>0.05;i++,dv*=0.5)
+                if (feasible(dv)) return dv;
+            return 0;
+        }
+
+        internal static double UpdatePulseTrust(double prior, double errorBefore, double errorAfter,
+            double expectedMovement, double driftAllowance)
+        {
+            if (!Finite(prior) || !Finite(errorBefore) || !Finite(errorAfter) ||
+                !Finite(expectedMovement) || !Finite(driftAllowance) || expectedMovement<=0 ||
+                driftAllowance<0) return 1;
+            double progress=errorBefore-errorAfter-driftAllowance;
+            return progress>=0.5*expectedMovement ? Math.Min(8,2*prior) : Math.Max(0.25,prior/2);
+        }
+
         internal static bool Finite(double x) => !double.IsNaN(x) && !double.IsInfinity(x);
     }
 

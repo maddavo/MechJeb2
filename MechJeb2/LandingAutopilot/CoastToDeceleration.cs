@@ -72,6 +72,7 @@ namespace MuMech
             {
                 Core.Thrust.TargetThrottle = 0;
                 if (Core.Landing.CheckDunaBrakingHandoff()) return new DecelerationBurn(Core);
+                bool entryCommitted=Core.Landing.CheckDunaEntryHandoff();
 
                 // If the atmospheric drag is has started to act on the vessel then we are in a position to start considering when to deploy the parachutes.
                 if (Core.Landing.DeployChutes)
@@ -94,7 +95,7 @@ namespace MuMech
 
                 Status = Localizer.Format("#MechJeb_LandingGuidance_Status1"); //"Coasting toward deceleration burn"
 
-                if (Core.Landing.LandAtTarget && Core.Landing.PredictionReady)
+                if (Core.Landing.LandAtTarget && Core.Landing.PredictionReady && !entryCommitted)
                 {
                     double currentError = Vector3d.Distance(Core.Target.GetPositionTargetPosition(), Core.Landing.LandingSite);
                     if (currentError > 1000)
@@ -125,6 +126,13 @@ namespace MuMech
                     if (Core.Landing.RCSAdjustment)
                         Core.RCS.Enabled = false;
                     return new DecelerationBurn(Core);
+                }
+
+                if (entryCommitted)
+                {
+                    Core.Landing.HoldDunaEntryAttitude();
+                    Status="Duna committed entry coast";
+                    return this;
                 }
 
                 if (Core.Attitude.attitudeAngleFromTarget() < 1) { _warpReady = true; } // less warp start warp stop jumping

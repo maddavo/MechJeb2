@@ -56,7 +56,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           [xml]$trx = Get-Content TestResults/duna.trx -Raw
           $tests = @($trx.TestRun.Results.UnitTestResult)
-          if ($tests.Count -lt 11 -or @($tests | Where-Object { $_.outcome -ne 'Passed' }).Count -gt 0) { throw 'Expected eleven passing Duna tests' }
+          if ($tests.Count -lt 14 -or @($tests | Where-Object { $_.outcome -ne 'Passed' }).Count -gt 0) { throw 'Expected fourteen passing Duna tests' }
 
       - name: Run broader landing regression suite
         id: landing

@@ -16,6 +16,9 @@ namespace MuMech
             private const double CandidateDirectionAgreementAngle = 20;
             private const int RequiredCandidatePredictions = 2;
 
+            private double _dunaTrust=4, _dunaBeforeError=double.NaN, _dunaExpectedMovement, _dunaStartInputUT;
+            private double _dunaPreviousError=double.NaN, _dunaPreviousInputUT=double.NaN, _dunaDriftRate=double.NaN;
+            private bool _dunaResponsePending;
             private bool _courseCorrectionBurning;
             private bool _waitingForPostBurnPrediction;
             private double _remainingPulseDv;
@@ -108,6 +111,7 @@ namespace MuMech
                         _correctionCycleSeconds, _executableBrakeDeadlineUT, _deadlineSource, _handoffReason,
                         _interruptionReason, Core.Landing.LastCourseCorrectionCrossrangeError, _measuringPreparation,
                         Core.Landing.WarpPreparation.IsObserving, Core.Landing.WarpPreparation.ResidualAngularSpeed) +
+                        (Core.Landing.DunaBrakingHandoffEnabled ? $" dunaPulseTrust={_dunaTrust:R} dunaExpectedMovement={_dunaExpectedMovement:R} dunaBeforeError={_dunaBeforeError:R} dunaDriftRate={_dunaDriftRate:R}" : "") +
                         " coarseReason=" + _coarseReason + string.Format(CultureInfo.InvariantCulture,
                             " coarseStartUT={0:R} coarseSourceUT={1:R} coarseBaselineError={2:R} coarseExpectedError={3:R}",
                             _coarseBurn?.BurnStartUT ?? double.NaN, _coarseBurn?.Initial.InputUT ?? double.NaN,
@@ -119,8 +123,45 @@ namespace MuMech
             {
                 if (UseAirlessPolicy()) return DriveAirless();
                 if (Core.Landing.CheckDunaBrakingHandoff()) return DunaBrakeHandoff();
-                if (!Core.Landing.PredictionReady)
+                if (Core.Landing.CheckDunaEntryHandoff()) return DunaBrakeHandoff();
+                bool duna=Core.Landing.DunaBrakingHandoffEnabled;
+                // Tail impulse belongs to the preceding pulse; never use an
+                // input snapshot taken before the measured tail has ended.
+                if (duna && _waitingForPostBurnPrediction &&
+                    (VesselState.CurrentThrustAcceleration>0 || Vessel.ctrlState.mainThrottle>0))
+                {
+                    Core.Thrust.TargetThrottle=0;
+                    _postBurnCompletionUT=VesselState.Time;
+                    _tailDv+=VesselState.CurrentThrustAcceleration*TimeWarp.fixedDeltaTime;
+                    _achievedPulseDv+=VesselState.CurrentThrustAcceleration*TimeWarp.fixedDeltaTime;
                     return this;
+                }
+                if (!Core.Landing.PredictionReady)
+                {
+                    if (duna)
+                    {
+                        Core.Thrust.TargetThrottle=0;
+                        if (_remainingPulseDv>0)
+                        {
+                            _remainingPulseDv=0; _courseCorrectionBurning=false;
+                            _waitingForPostBurnPrediction=true; _postBurnCompletionUT=VesselState.Time;
+                            _predictionVersionAtPulseCompletion=Core.Landing.PredictionVersion;
+                            _hasPendingCorrection=false; _pendingPredictionCount=0;
+                            _pulseCutoffUT=VesselState.Time; _dunaResponsePending=true;
+                        }
+                    }
+                    return this;
+                }
+                // A new pulse must not start on an old endpoint. A running
+                // pulse remains subject to the live deadlines above.
+                if (duna && _remainingPulseDv<=0 &&
+                    (!Finite(Core.Landing.Prediction.InputUT) ||
+                     Core.Landing.Prediction.InputUT>VesselState.Time ||
+                     VesselState.Time-Core.Landing.Prediction.InputUT>5))
+                {
+                    Core.Thrust.TargetThrottle=0;
+                    return this;
+                }
 
                 // If the atomospheric drag is at least 100mm/s2 then start trying to target the overshoot using the parachutes
                 if (Core.Landing.DeployChutes)
@@ -135,6 +176,7 @@ namespace MuMech
 
                 if (currentError < CompletionError)
                 {
+                    if (duna) Core.Landing.CommitDunaEntry("target_converged");
                     Core.Thrust.TargetThrottle = 0;
                     if (Core.Landing.RCSAdjustment)
                         Core.RCS.Enabled = true;
@@ -159,6 +201,7 @@ namespace MuMech
                 // We are not in .90 anymore. Turning while under drag is a bad idea
                 if (VesselState.DragAcceleration > 0.1)
                 {
+                    if (duna) Core.Landing.CommitDunaEntry("drag_boundary");
                     return new CoastToDeceleration(Core);
                 }
 
@@ -176,8 +219,20 @@ namespace MuMech
                     Vector3d candidateCorrection = Core.Landing.ComputeCourseCorrection(true, DownrangeCaptureDistance,
                         MaximumDownrangeHandoffDistance);
                     if (candidateCorrection.magnitude <= MinimumUsefulCorrectionDv)
+                    {
+                        if (duna) Core.Landing.CommitDunaEntry("no_useful_correction");
                         return new CoastToDeceleration(Core);
+                    }
 
+                    if (duna)
+                    {
+                        double input=Core.Landing.Prediction.InputUT;
+                        // Two independent post-tail coast publications also
+                        // estimate endpoint drift. Unknown drift cannot grow trust.
+                        if (Finite(_dunaPreviousInputUT) && input>_dunaPreviousInputUT)
+                            _dunaDriftRate=Math.Abs(currentError-_dunaPreviousError)/(input-_dunaPreviousInputUT);
+                        _dunaPreviousError=currentError; _dunaPreviousInputUT=input;
+                    }
                     _predictionVersionAtPulseCompletion = Core.Landing.PredictionVersion;
                     if (_hasPendingCorrection &&
                         Vector3d.Angle(_pendingCorrection, candidateCorrection) <= CandidateDirectionAgreementAngle)
@@ -198,21 +253,32 @@ namespace MuMech
                     if (_pendingPredictionCount < RequiredCandidatePredictions)
                         return this;
 
+                    if (duna && _dunaResponsePending)
+                    {
+                        double age=Core.Landing.Prediction.InputUT-_dunaStartInputUT;
+                        double expected=_dunaExpectedMovement*Math.Min(1,_achievedPulseDv/Math.Max(1e-9,_selectedPulseDv));
+                        double drift=Finite(_dunaDriftRate) && age>0 ? _dunaDriftRate*age : expected;
+                        _dunaTrust=DunaBrakingHandoff.UpdatePulseTrust(_dunaTrust,_dunaBeforeError,currentError,expected,drift);
+                        _dunaResponsePending=false;
+                    }
                     _waitingForPostBurnPrediction = false;
                     _courseCorrectionBurning = false;
                     _hasPendingCorrection = false;
                     BeginPulse(_pendingCorrection, currentError);
-                    if (!Core.Landing.AllowDunaCorrectionPulse(_pulseDirection,_remainingPulseDv)) return DunaBrakeHandoff();
+                    if (duna && _remainingPulseDv<=0) return DunaBrakeHandoff();
                 }
                 else if (_remainingPulseDv <= 0)
                 {
                     Vector3d deltaV = Core.Landing.ComputeCourseCorrection(true, DownrangeCaptureDistance,
                         MaximumDownrangeHandoffDistance);
                     if (deltaV.magnitude <= MinimumUsefulCorrectionDv)
+                    {
+                        if (duna) Core.Landing.CommitDunaEntry("no_useful_correction");
                         return new CoastToDeceleration(Core);
+                    }
 
                     BeginPulse(deltaV, currentError);
-                    if (!Core.Landing.AllowDunaCorrectionPulse(_pulseDirection,_remainingPulseDv)) return DunaBrakeHandoff();
+                    if (duna && _remainingPulseDv<=0) return DunaBrakeHandoff();
                 }
 
                 Core.Attitude.attitudeTo(_pulseDirection, AttitudeReference.INERTIAL, Core.Landing);
@@ -230,6 +296,11 @@ namespace MuMech
                     const double TIME_CONSTANT = 0.5;
                     Core.Thrust.ThrustForDv(_remainingPulseDv, TIME_CONSTANT);
                     _remainingPulseDv -= VesselState.CurrentThrustAcceleration * TimeWarp.fixedDeltaTime;
+                    if (duna)
+                    {
+                        if (!Finite(_pulseStartUT)) _pulseStartUT=VesselState.Time;
+                        _achievedPulseDv+=VesselState.CurrentThrustAcceleration*TimeWarp.fixedDeltaTime;
+                    }
 
                     if (_remainingPulseDv <= PulseCompletionDv)
                     {
@@ -239,6 +310,10 @@ namespace MuMech
                         _waitingForPostBurnPrediction = true;
                         _predictionVersionAtPulseCompletion = Core.Landing.PredictionVersion;
                         _postBurnCompletionUT = VesselState.Time;
+                        if (duna)
+                        {
+                            _pulseCutoffUT=VesselState.Time; _dunaResponsePending=true;
+                        }
                         _hasPendingCorrection = false;
                         _pendingPredictionCount = 0;
                     }
@@ -256,9 +331,15 @@ namespace MuMech
                 Core.Thrust.TargetThrottle=0;
                 _remainingPulseDv=0; _courseCorrectionBurning=false;
                 _waitingForPostBurnPrediction=false;
-                Core.Landing.TraceCourseCorrectionHandoff(Core.Landing.DunaBrakingDetail,
-                    nameof(DecelerationBurn));
-                return new DecelerationBurn(Core);
+                if (Core.Landing.DunaBrakingCommitted)
+                {
+                    Core.Landing.TraceCourseCorrectionHandoff(TraceDetails+Core.Landing.DunaBrakingDetail,
+                        nameof(DecelerationBurn));
+                    return new DecelerationBurn(Core);
+                }
+                Core.Landing.TraceCourseCorrectionHandoff(TraceDetails+Core.Landing.DunaBrakingDetail,
+                    nameof(CoastToDeceleration));
+                return new CoastToDeceleration(Core);
             }
 
             private double CompletionError => Math.Max(200, MainBody.Radius * 0.0005);
@@ -289,7 +370,20 @@ namespace MuMech
                 if (_hasLastPulseDirection && Vector3d.Angle(_lastPulseDirection, direction) > 90)
                     maximumPulseDv = Math.Min(maximumPulseDv, 0.1);
 
-                _remainingPulseDv = Math.Min(deltaV.magnitude, maximumPulseDv);
+                if (Core.Landing.DunaBrakingHandoffEnabled)
+                {
+                    double cap=targetError>=4*nearTargetDistance ? _dunaTrust : Math.Min(_dunaTrust,maximumPulseDv);
+                    if (_hasLastPulseDirection && Vector3d.Angle(_lastPulseDirection,direction)>90)
+                        cap=Math.Min(cap,0.25);
+                    _requestedCorrectionDv=deltaV.magnitude;
+                    _remainingPulseDv=Core.Landing.SelectDunaCorrectionPulse(direction,deltaV.magnitude,cap,targetError);
+                    _selectedPulseDv=Math.Max(0,_remainingPulseDv-PulseCompletionDv);
+                    _dunaBeforeError=targetError; _dunaStartInputUT=Core.Landing.Prediction.InputUT;
+                    _dunaExpectedMovement=Core.Landing.LastCourseCorrectionLocalResponse.magnitude*_selectedPulseDv;
+                    _achievedPulseDv=_tailDv=0; _pulseStartUT=_pulseCutoffUT=double.NaN;
+                    _dunaPreviousInputUT=_dunaPreviousError=_dunaDriftRate=double.NaN;
+                }
+                else _remainingPulseDv = Math.Min(deltaV.magnitude, maximumPulseDv);
                 _pulseDirection = direction;
                 _lastPulseDirection = direction;
                 _hasLastPulseDirection = true;

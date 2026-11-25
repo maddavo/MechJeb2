@@ -16,6 +16,31 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
+        public void EntryCutoffIncludesTailTurnAndMargin()
+        {
+            Assert.Equal(83,DunaBrakingHandoff.EntryCutoff(100,10,4,3));
+            Assert.True(DunaBrakingHandoff.EntryFits(70,12,83));
+            Assert.False(DunaBrakingHandoff.EntryFits(70,13,83));
+            Assert.False(DunaBrakingHandoff.EntryFits(70,0,double.NaN));
+        }
+
+        [Fact]
+        public void LargerPulseFitsOnlyWhenBothScreensAccept()
+        {
+            Assert.Equal(4,DunaBrakingHandoff.SelectPulse(12,4,x=>x<=4));
+            Assert.Equal(2,DunaBrakingHandoff.SelectPulse(12,4,x=>x<=2));
+            Assert.Equal(0,DunaBrakingHandoff.SelectPulse(12,4,x=>false));
+        }
+
+        [Fact]
+        public void TrustNeedsProgressBeyondDrift()
+        {
+            Assert.Equal(8,DunaBrakingHandoff.UpdatePulseTrust(4,1000,700,200,50));
+            Assert.Equal(2,DunaBrakingHandoff.UpdatePulseTrust(4,1000,900,200,100));
+            Assert.Equal(2,DunaBrakingHandoff.UpdatePulseTrust(4,1000,1100,200,0));
+        }
+
+        [Fact]
         public void EarlierEffectiveThrustCanPreserveClearance()
         {
             var immediate=Probe(8000,-200,0,0);
