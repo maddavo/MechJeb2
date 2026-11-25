@@ -207,4 +207,4 @@ See the [integrated landing guidance implementation plan](docs/Integrated-Landin
 
 ### Independent Duna dynamics M1 test build
 
-`2.16.0-landing.20261126.duna-dynamics-m1` adds a non-actuating atmospheric reference model and synthetic tests. See [M1 scope and limits](docs/Integrated-Landing-Dynamics-M1.md). Not a replacement live landing controller or flight-validated release.
+`2.16.0-landing.20261126.duna-dynamics-m1.1` adds a non-actuating atmospheric reference model and synthetic tests. See [M1 scope and limits](docs/Integrated-Landing-Dynamics-M1.md). Not a replacement live landing controller or flight-validated release.

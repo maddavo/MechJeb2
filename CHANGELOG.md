@@ -20,3 +20,8 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Independent atmospheric dynamics model, bounded candidate screen and readiness classification; synthetic tests and CI.
 - Preserve existing airless and atmospheric command paths. Test-only build; no flight-validation claim.
+
+## 2.16.0-landing.20261126.duna-dynamics-m1.1
+
+- Explicit correction preparation fit for both deadlines, fail-closed capture, optional passive lift adapter.
+- Three further synthetic tests; no runtime activation.

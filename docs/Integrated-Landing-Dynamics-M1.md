@@ -1,6 +1,6 @@
 # Independent atmospheric landing dynamics M1
 
-Version `2.16.0-landing.20261126.duna-dynamics-m1`. Authorized independent development; **non-actuating test build, not an installed Duna fix**. Parent includes all M0 evidence through 9aff3c2. Existing airless and dual-window guidance remain byte-identical except assembly informational version. No controller calls this model, no setting or installation changes. M0 local exact-source replay succeeded with inferred body parameters, not independent body capture; 97/105 local pass with eight inherited assertions, cloud broader reference-stub failures separate. Do not claim flight validation.
+Version `2.16.0-landing.20261126.duna-dynamics-m1.1`. Authorized independent development; **non-actuating test build, not an installed Duna fix**. Parent includes all M0 evidence through 9aff3c2. Existing airless and dual-window guidance remain byte-identical except assembly informational version. No controller calls this model, no setting or installation changes. M0 local exact-source replay succeeded with inferred body parameters, not independent body capture; 97/105 local pass with eight inherited assertions, cloud broader reference-stub failures separate. Do not claim flight validation.
 
 ## Scope and contracts
 
@@ -12,3 +12,7 @@ Version `2.16.0-landing.20261126.duna-dynamics-m1`. Authorized independent devel
 
 ## Tests
 Synthetic tests cover pressure/Isp, balanced forces, physical bounds, curve interpolation/domain, finite burn rocket equation and convergence, mass/pressure coupling, attitude slew and tail, co-rotating air, contact/reserve events, sub-hover initial acceleration with successful propagation, timing vs two failures/unknown, finite correction and independent entry cutoff. Synthetic case only. CI uses same existing reference archive workflow with focused test count increased, broader comparison unchanged; standalone net8 test links same sources to remove game assembly dependence. Preserve real-reference regression gate. DLL compiled for review, not deployment/flight validation.
+
+## M1.1 review hardening
+
+Optional explicit deterministic passive lift force adapter; no inferred real-vessel lift. Unknown/zero sustainable force and exhausted reserve cannot become a capture merely because initial speed is low. Capture clearance includes sampled path minimum. Classify explicitly checks correction+tail against entry cutoff and tested ignition minus braking preparation; neither candidate rejection nor preparation mismatch is a global deadline. Three additional tests, 16 total; focused 30 including prior Duna tests. No flight control calls. Initial M1 CI run 45651859109 passed 13 independent and 27 focused tests, plugin compiled, broad 37/91 pass and 54 fail identical to 718247a9, overall regression gate failed. Final M1.1 requires own build and tests. Coarse integration that samples outside atmosphere domain or overshoots positive mass returns unknown; refine integration and terrain model before production. FirstPoweredUT includes correction and engine tail, not a certified braking ignition.
