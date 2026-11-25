@@ -3,7 +3,7 @@ using System.Threading;
 
 namespace MuMech.Landing
 {
-    // 2.16.0-landing.20261126.duna-dynamics-m1
+    // 2.16.0-landing.20261126.duna-dynamics-m1.1
     // Independent SI, body-centred inertial, non-actuating reference model.
     // Fixed spherical terrain and collinear fixed engines only. No KSP APIs.
     internal static class AtmosphericLandingDynamics
@@ -134,13 +134,17 @@ namespace MuMech.Landing
             internal readonly double Radius,Mu,AtmosphereTop,TerrainRadius,DragArea,BottomOffset;
             internal readonly V Omega;
             internal readonly Curve Pressure,Density;
+            internal readonly Func<V,V,V,double,double,V> PassiveLift;
             // DragArea = Cd*A m², constant synthetic/passive adapter. Lift is
             // NOT assumed zero for a real vessel; unsupported unless supplied
-            // via a verified external model (future). Terrain fixed sphere.
+            // via an explicitly supplied deterministic force model (r, air-relative
+            // velocity, forward, pressure Pa, density kg/m³ -> force N). Null
+            // means explicit zero lift for the model, not actual-vessel evidence.
             internal Environment(double radius,double mu,V omega,double atmosphereTop,
-                Curve pressure,Curve density,double dragArea,double terrainRadius,double bottomOffset)
+                Curve pressure,Curve density,double dragArea,double terrainRadius,double bottomOffset,
+                Func<V,V,V,double,double,V> passiveLift=null)
             {Radius=radius;Mu=mu;Omega=omega;AtmosphereTop=atmosphereTop;Pressure=pressure;Density=density;
-                DragArea=dragArea;TerrainRadius=terrainRadius;BottomOffset=bottomOffset;}
+                DragArea=dragArea;TerrainRadius=terrainRadius;BottomOffset=bottomOffset;PassiveLift=passiveLift;}
             internal bool Valid => Finite(Radius)&&Radius>0&&Finite(Mu)&&Mu>=0&&Omega.Valid&&
                 Finite(AtmosphereTop)&&AtmosphereTop>=0&&Finite(TerrainRadius)&&TerrainRadius>0&&
                 Finite(BottomOffset)&&BottomOffset>=0&&Finite(DragArea)&&DragArea>=0&&
@@ -186,7 +190,7 @@ namespace MuMech.Landing
             internal bool Valid=>Finite(Throttle)&&Throttle>=0&&Throttle<=1&&Direction.Valid&&Direction.Length>0;
         }
         internal enum Outcome { Advanced, CaptureEnvelope, ContactWithinLimits, ContactUnsafe,
-            ReserveExhausted, UnknownCapability, InvalidInput, Horizon, Cancelled }
+            ReserveExhausted, UnknownCapability, InvalidInput, Horizon, Cancelled, NoControllableThrust }
         internal readonly struct Result
         {
             internal readonly Outcome Status;
@@ -216,7 +220,14 @@ namespace MuMech.Landing
             if(!a.Known)return false;
             V air=env.Surface(r,v);
             V drag=air*(-.5*density*env.DragArea*air.Length);
-            acceleration=r*(-env.Mu/(r.Length*r.Length*r.Length))+(f*(a.Force*throttle)+drag)*(1/mass);
+            V lift=default;
+            if(density>0&&env.PassiveLift!=null)
+            {
+                try { lift=env.PassiveLift(r,air,f,p,density); }
+                catch(Exception) { return false; }
+                if(!lift.Valid)return false;
+            }
+            acceleration=r*(-env.Mu/(r.Length*r.Length*r.Length))+(f*(a.Force*throttle)+drag+lift)*(1/mass);
             flow=a.Flow*throttle;
             return acceleration.Valid&&Finite(flow)&&flow>=0;
         }
@@ -305,8 +316,16 @@ namespace MuMech.Landing
             {
                 if(cancellation.IsCancellationRequested)return new Result(Outcome.Cancelled,state,minimum,first);
                 V w=env.Surface(state.R,state.Velocity);
-                if(state.UT>=ignition&&w.Length<=captureSpeed&&env.Clearance(state.R)>=captureClearance)
+                if(state.UT>=ignition&&w.Length<=captureSpeed&&minimum>=captureClearance&&env.Clearance(state.R)>0)
+                {
+                    if(!env.Air(state.R,out double p,out _))
+                        return new Result(Outcome.UnknownCapability,state,minimum,first);
+                    Authority authority=propulsion.At(p);
+                    if(!authority.Known)return new Result(Outcome.UnknownCapability,state,minimum,first);
+                    if(authority.Force<=0||state.Mass<=lim.ReserveMass)
+                        return new Result(authority.Force<=0?Outcome.NoControllableThrust:Outcome.ReserveExhausted,state,minimum,first);
                     return new Result(Outcome.CaptureEnvelope,state,minimum,first);
+                }
                 V retro=w.Length>1e-8?w.Unit*(-1):state.R.Unit;
                 bool correcting=state.UT<correctionEnd,braking=state.UT>=ignition;
                 // Before ignition, turn toward required braking direction;
@@ -328,24 +347,27 @@ namespace MuMech.Landing
             return new Result(Outcome.Horizon,state,minimum,first);
         }
 
-        internal enum Window { CandidateFits, EntryReadinessExpired, EarlierCandidateOnly,
+        internal enum Window { CandidateFits, EntryReadinessExpired, TestedBrakingPreparationDoesNotFit, EarlierCandidateOnly,
             NoDemonstratedCandidate, Unresolved }
         // Does not command a burn. Caller supplies an independently calculated
         // absolute entry cutoff and exact tested preparation/correction plan.
         // A pair of failures cannot establish a latest safe ignition.
         internal static Window Classify(double now,double correctionAndTail,double entryCutoff,
-            Result immediate,Result delayed)
+            double testedIgnitionUT,double brakingPreparation,Result immediate,Result delayed)
         {
-            if(!Finite(now)||!Finite(correctionAndTail)||correctionAndTail<0||!Finite(entryCutoff))return Window.Unresolved;
+            if(!Finite(now)||!Finite(correctionAndTail)||correctionAndTail<0||!Finite(entryCutoff)||
+                !Finite(testedIgnitionUT)||testedIgnitionUT<now||!Finite(brakingPreparation)||brakingPreparation<0)
+                return Window.Unresolved;
             if(now+correctionAndTail>=entryCutoff)return Window.EntryReadinessExpired;
+            if(now+correctionAndTail+brakingPreparation>testedIgnitionUT)return Window.TestedBrakingPreparationDoesNotFit;
             bool Candidate(Result r)=>r.Status==Outcome.CaptureEnvelope||r.Status==Outcome.ContactWithinLimits;
             if(Candidate(delayed))return Window.CandidateFits;
             bool unresolved=delayed.Status==Outcome.UnknownCapability||delayed.Status==Outcome.InvalidInput||
-                delayed.Status==Outcome.Horizon||delayed.Status==Outcome.Cancelled;
+                delayed.Status==Outcome.Horizon||delayed.Status==Outcome.Cancelled||delayed.Status==Outcome.Advanced;
             if(unresolved)return Window.Unresolved;
             if(Candidate(immediate))return Window.EarlierCandidateOnly;
             if(immediate.Status==Outcome.UnknownCapability||immediate.Status==Outcome.InvalidInput||
-                immediate.Status==Outcome.Horizon||immediate.Status==Outcome.Cancelled)return Window.Unresolved;
+                immediate.Status==Outcome.Horizon||immediate.Status==Outcome.Cancelled||immediate.Status==Outcome.Advanced)return Window.Unresolved;
             return Window.NoDemonstratedCandidate;
         }
     }

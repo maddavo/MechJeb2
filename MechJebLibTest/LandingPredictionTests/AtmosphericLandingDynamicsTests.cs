@@ -149,10 +149,10 @@ namespace MechJebLibTest.LandingPredictionTests
             var delayed=D.Screen(Vacuum(),engines,lim,s,0,new D.Command(0,X),15,30);
             Assert.Equal(D.Outcome.CaptureEnvelope,immediate.Status);
             Assert.Equal(D.Outcome.ContactUnsafe,delayed.Status);
-            Assert.Equal(D.Window.EarlierCandidateOnly,D.Classify(0,2,20,immediate,delayed));
-            Assert.Equal(D.Window.NoDemonstratedCandidate,D.Classify(0,2,20,delayed,delayed));
-            Assert.Equal(D.Window.EntryReadinessExpired,D.Classify(0,20,20,immediate,immediate));
-            Assert.Equal(D.Window.CandidateFits,D.Classify(0,2,20,immediate,immediate));
+            Assert.Equal(D.Window.EarlierCandidateOnly,D.Classify(0,2,20,15,3,immediate,delayed));
+            Assert.Equal(D.Window.NoDemonstratedCandidate,D.Classify(0,2,20,15,3,delayed,delayed));
+            Assert.Equal(D.Window.EntryReadinessExpired,D.Classify(0,20,20,25,3,immediate,immediate));
+            Assert.Equal(D.Window.CandidateFits,D.Classify(0,2,20,15,3,immediate,immediate));
         }
         [Fact]
         public void MissingCapabilityIsNotPhysicalInfeasibility()
@@ -160,7 +160,7 @@ namespace MechJebLibTest.LandingPredictionTests
             var s=State(1000,-100);
             var unknown=D.Screen(Vacuum(),new D.Propulsion(false),Limits(),s,0,new D.Command(0,X),0,30);
             Assert.Equal(D.Outcome.UnknownCapability,unknown.Status);
-            Assert.Equal(D.Window.Unresolved,D.Classify(0,2,20,unknown,unknown));
+            Assert.Equal(D.Window.Unresolved,D.Classify(0,2,20,15,3,unknown,unknown));
         }
         [Fact]
         public void CorrectionIsFiniteAndEntryDeadlineIsIndependent()
@@ -170,7 +170,41 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.Equal(D.Outcome.CaptureEnvelope,a.Status);
             Assert.True(a.End.Mass<s.Mass);
             Assert.Equal(0,a.FirstPoweredUT,9);
-            Assert.Equal(D.Window.EntryReadinessExpired,D.Classify(0,4,3,a,a));
+            Assert.Equal(D.Window.EntryReadinessExpired,D.Classify(0,4,3,10,3,a,a));
+            Assert.Equal(D.Window.TestedBrakingPreparationDoesNotFit,D.Classify(0,4,30,6,3,a,a));
+            Assert.Equal(D.Window.CandidateFits,D.Classify(0,4,30,8,3,a,a));
+        }
+        [Fact]
+        public void CaptureCannotHideUnknownOrZeroSustainableAuthority()
+        {
+            var s=State(1000,-5);
+            var unknown=D.Screen(Vacuum(),new D.Propulsion(false),Limits(),s,0,new D.Command(0,X),0,10);
+            var zero=D.Screen(Vacuum(),new D.Propulsion(true,new D.Engine(1,1,G0,new D.V(1,0,0),Isp())),
+                Limits(),s,0,new D.Command(0,X),0,10);
+            Assert.Equal(D.Outcome.UnknownCapability,unknown.Status);
+            Assert.Equal(D.Outcome.NoControllableThrust,zero.Status);
+        }
+        [Fact]
+        public void SafeDirectContactDoesNotRequireHoverAuthority()
+        {
+            var s=State(.05,-.1);
+            var a=D.Screen(Vacuum(2.94*320000*320000.0),Engines(.01),Limits(dt:.1),s,0,new D.Command(0,X),1,10);
+            Assert.Equal(D.Outcome.ContactWithinLimits,a.Status);
+            Assert.InRange(a.End.Velocity.X,-1,0);
+            Assert.True(a.End.UT<1);
+        }
+        [Fact]
+        public void SuppliedPassiveLiftIsForceNotFreeSteering()
+        {
+            var p=new D.Curve(new D.Knot(0,0),new D.Knot(1000,0));
+            var rho=new D.Curve(new D.Knot(0,1),new D.Knot(1000,1));
+            var env=new D.Environment(320000,0,default,1000,p,rho,0,320000,0,
+                (r,w,f,pressure,density)=>new D.V(1000,0,0));
+            var s=new D.State(0,X*320500,new D.V(0,20,0),1000,X);
+            var a=D.Advance(env,Engines(),Limits(),s,new D.Command(0,X),.1);
+            Assert.Equal(D.Outcome.Advanced,a.Status);
+            Assert.Equal(.1,a.End.Velocity.X,10);
+            Assert.Equal(20,a.End.Velocity.Y,10);
         }
     }
 }
