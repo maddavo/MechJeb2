@@ -81,6 +81,73 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.False(DunaDynamicScreen.CanTerminalHandoff(10,2.8,3,100));
             Assert.False(DunaDynamicScreen.CanTerminalHandoff(10,10,3,-1));
             Assert.True(DunaDynamicScreen.CanTerminalHandoff(10,4,3,100));
+            Assert.False(DunaDynamicScreen.CanTerminalHandoff(10,4,3,84600));
+            Assert.True(DunaDynamicScreen.CanCaptureRecovery(10,4,3,84600));
+        }
+        [Fact]
+        public void RecordedNovember26UnknownPressureCannotCommitBraking()
+        {
+            // Reported outcomes at UT 31155016.770807, not a complete flight reconstruction.
+            var delayed=new DunaBrakingHandoff.Result(false,"terminal_pressure_unknown",74901.91,74901.91,14.13,199.865);
+            var immediate=new DunaBrakingHandoff.Result(true,"dynamic_capture_envelope",76512.64,double.NaN,double.NaN,double.NaN);
+            Assert.Equal(DunaDynamicScreen.ProbeStatus.TerminalUnresolved,DunaDynamicScreen.Status(delayed));
+            Assert.Equal(DunaDynamicScreen.Decision.TerminalUnresolved,DunaDynamicScreen.Classify(delayed,immediate));
+            Assert.False(DunaDynamicScreen.UnresolvedEmergency(31155016.770807,31155477.858,42.865,96058.9,true));
+            Assert.False(DunaDynamicScreen.UnresolvedEmergency(31155018.770807,31155477.858,42.865,96000,true));
+            Assert.True(DunaBrakingHandoff.EntryFits(31155016.770807,42.865,31155430.020));
+        }
+
+        [Theory]
+        [InlineData("UnknownCapability")]
+        [InlineData("Horizon")]
+        [InlineData("InvalidInput")]
+        [InlineData("ContactWithinLimits")]
+        [InlineData("NoControllableThrust")]
+        [InlineData("live_model_unsupported_engine")]
+        [InlineData("terminal_authority_unresolved")]
+        [InlineData("terminal_fuel_reserve")]
+        [InlineData("terminal_authority_unknown")]
+        public void MissingOrUnresolvedDelayedResultNeverEstablishesDeadline(string reason)
+        {
+            var decision=DunaDynamicScreen.Classify(R(false,reason),R(true,"dynamic_capture_envelope"));
+            Assert.NotEqual(DunaDynamicScreen.Decision.BrakeDeadline,decision);
+            Assert.NotEqual(DunaDynamicScreen.Decision.Emergency,decision);
+            Assert.NotEqual(DunaDynamicScreen.Decision.Continue,decision);
+        }
+
+        [Fact]
+        public void TerminalPressureLookupIsIndependentOfCaptureDirection()
+        {
+            const double radius=320000,lower=310123.456;
+            var p=new D.Curve(new D.Knot(lower-radius,8000),new D.Knot(50000,0));
+            var rho=new D.Curve(new D.Knot(lower-radius,0),new D.Knot(50000,0));
+            var env=new D.Environment(radius,301363211975.09772,default,50000,p,rho,0,330511,0);
+            var prop=D.Propulsion.FromAllocatedEnvelope(new D.Curve(new D.Knot(0,20000),new D.Knot(8000,19000)),1);
+            var lim=new D.Limits(500,1,0,0,1);
+            bool foundRoundoff=false;
+            for(int k=1;k<=128;k++)
+            {
+                var dir=new D.V(k*.021+1,Math.Sin(k*.37)+2,Math.Cos(k*.81)+2).Unit;
+                var pos=dir*413750;
+                if(!env.Air(pos.Unit*lower,out _,out _))foundRoundoff=true;
+                var state=new D.State(0,pos,dir*(-5),1000,dir);
+                var result=DunaDynamicScreen.Probe(env,prop,lim,state,0,terminalRadius:lower);
+                Assert.True(result.Safe,result.Reason);
+            }
+            Assert.True(foundRoundoff,"Fixture must exercise old vector round-trip boundary failure");
+            Assert.True(env.AirAtAltitude(lower-radius,out double pressure,out _));
+            Assert.Equal(8000.0,pressure);
+            Assert.False(env.AirAtAltitude(lower-radius-.001,out _,out _));
+        }
+
+        [Fact]
+        public void UnknownFallbackDependsOnGeometricUrgencyNotElapsedRetryTime()
+        {
+            Assert.False(DunaDynamicScreen.UnresolvedEmergency(100,500,45,97000,true));
+            Assert.False(DunaDynamicScreen.UnresolvedEmergency(300,500,45,50000,true));
+            Assert.True(DunaDynamicScreen.UnresolvedEmergency(460,500,45,12000,true));
+            Assert.False(DunaDynamicScreen.UnresolvedEmergency(460,500,45,12000,false));
+            Assert.True(DunaDynamicScreen.UnresolvedEmergency(100,double.NaN,45,900,true));
         }
     }
 }

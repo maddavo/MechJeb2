@@ -21,13 +21,15 @@ namespace MuMech.Landing
             {
                 // Evaluate terminal authority AFTER propagating mass loss and
                 // future pressure. Not a complete terminal control validation.
-                var terminalR=r.End.R.Unit*(D.Finite(terminalRadius)&&terminalRadius>0?terminalRadius:env.TerrainRadius+env.BottomOffset);
-                if(!env.Air(terminalR,out double p,out _))
+                double radius=D.Finite(terminalRadius)&&terminalRadius>0?terminalRadius:env.TerrainRadius+env.BottomOffset;
+                // Reconstructing a vector and measuring its length can
+                // round below the exact first pressure knot.
+                if(!env.AirAtAltitude(radius-env.Radius,out double p,out _))
                 {capture=false;reason="terminal_pressure_unknown";}
                 else
                 {
                     D.Authority authority=prop.At(p);
-                    double gravity=env.Mu/(terminalR.Length*terminalR.Length);
+                    double gravity=env.Mu/(radius*radius);
                     if(!authority.Known){capture=false;reason="terminal_authority_unknown";}
                     else if(!(authority.Force/r.End.Mass>gravity*Math.Sqrt(1.04)))
                     {capture=false;reason="terminal_authority_unresolved";}
@@ -38,28 +40,56 @@ namespace MuMech.Landing
             }
             return new DunaBrakingHandoff.Result(capture,reason,r.MinimumClearance,clearance,speed,r.End.UT-state.UT);
         }
+        internal enum ProbeStatus { Feasible, Rejected, TerminalUnresolved, Unknown }
+        internal static ProbeStatus Status(DunaBrakingHandoff.Result result)
+        {
+            if(result.Safe)return ProbeStatus.Feasible;
+            switch(result.Reason)
+            {
+                case "ContactUnsafe":
+                case "ReserveExhausted":
+                case "terminal_clearance_exhausted":
+                    return ProbeStatus.Rejected;
+                case "terminal_authority_unresolved":
+                case "terminal_authority_unknown":
+                case "terminal_pressure_unknown":
+                case "terminal_fuel_reserve":
+                    return ProbeStatus.TerminalUnresolved;
+                default:
+                    return ProbeStatus.Unknown;
+            }
+        }
         internal static Decision Classify(DunaBrakingHandoff.Result delayed,DunaBrakingHandoff.Result immediate)
         {
-            if(delayed.Safe)return Decision.Continue;
-            if(immediate.Safe)return Decision.BrakeDeadline;
-            bool TerminalOnly(DunaBrakingHandoff.Result result) =>
-                result.Reason=="terminal_authority_unresolved" || result.Reason=="terminal_authority_unknown" ||
-                result.Reason=="terminal_pressure_unknown" || result.Reason=="terminal_fuel_reserve";
-            if(TerminalOnly(delayed)&&TerminalOnly(immediate))return Decision.TerminalUnresolved;
-            if(TerminalOnly(immediate)&&(delayed.Reason=="ContactUnsafe"||delayed.Reason=="ContactWithinLimits"||
-                delayed.Reason=="ReserveExhausted"||delayed.Reason=="terminal_clearance_exhausted"))
+            ProbeStatus later=Status(delayed),earlier=Status(immediate);
+            if(later==ProbeStatus.Feasible)return Decision.Continue;
+            // Only a demonstrated violation of the delayed candidate can
+            // establish a tested deadline. Unknown is NOT rejected.
+            if(later==ProbeStatus.Rejected&&earlier==ProbeStatus.Feasible)return Decision.BrakeDeadline;
+            if(immediate.Reason=="ContactUnsafe"||immediate.Reason=="terminal_clearance_exhausted"||
+                (earlier==ProbeStatus.TerminalUnresolved&&
+                    (delayed.Reason=="ContactUnsafe"||delayed.Reason=="terminal_clearance_exhausted")))
                 return Decision.Emergency;
-            // Both failed: no demonstrated latest-safe ignition. A projected
-            // collision/clearance or resource exhaustion under immediate
-            // braking is a best-effort emergency, not a validated safe plan.
-            if(immediate.Reason=="ContactUnsafe" || immediate.Reason=="ContactWithinLimits" ||
-               immediate.Reason=="ReserveExhausted" || immediate.Reason=="terminal_clearance_exhausted")
-                return Decision.Emergency;
+            if(later==ProbeStatus.TerminalUnresolved||earlier==ProbeStatus.TerminalUnresolved)
+                return Decision.TerminalUnresolved;
             return Decision.HoldUnresolved;
         }
-        internal static bool CanTerminalHandoff(double speed,double acceleration,double gravity,double clearance)
+
+        // Independent best-effort geometric near-contact fallback. Neither
+        // an expired retry timer nor atmosphere entry is a braking deadline.
+        internal static bool UnresolvedEmergency(double now,double terrainUT,double prep,double clearance,bool descending)
+        {
+            if(!descending||!D.Finite(now))return false;
+            if(D.Finite(clearance)&&clearance<=1000)return true;
+            return D.Finite(terrainUT)&&terrainUT>=now&&D.Finite(prep)&&prep>=0&&terrainUT-now<=prep;
+        }
+
+        internal const double TerminalClearance=300;
+        internal static bool CanCaptureRecovery(double speed,double acceleration,double gravity,double clearance)
             =>D.Finite(speed)&&speed>=0&&speed<=CaptureSpeed&&D.Finite(acceleration)&&D.Finite(gravity)&&
                 gravity>0&&acceleration>gravity*Math.Sqrt(1.04)&&D.Finite(clearance)&&clearance>=0;
+        internal static bool CanTerminalHandoff(double speed,double acceleration,double gravity,double clearance)
+            =>CanCaptureRecovery(speed,acceleration,gravity,clearance)&&clearance<=TerminalClearance;
         internal static bool CorrectionFits(double now,double aim,double duration,double entryCutoff,
             double tail,double brakingPrep,double delay)
             =>D.Finite(now)&&D.Finite(aim)&&aim>=0&&D.Finite(duration)&&duration>0&&D.Finite(tail)&&tail>=0&&

@@ -84,7 +84,7 @@ namespace MuMech.Landing
                 double bottom=terminalRadius-body.Radius;
                 for(int i=0;i<pressureKeys.Length;i++)
                 {
-                    double h=bottom+(top-bottom)*i/(pressureKeys.Length-1);
+                    double h=i==0?bottom:i==pressureKeys.Length-1?top:bottom+(top-bottom)*i/(pressureKeys.Length-1);
                     double p=i==pressureKeys.Length-1?0:body.GetPressure(h)*1000;
                     if(!D.Finite(p)||p<0)return false;
                     pressureKeys[i]=new D.Knot(h,p);densityKeys[i]=new D.Knot(h,0);maxP=Math.Max(maxP,p);
@@ -121,7 +121,7 @@ namespace MuMech.Landing
                 reason="engine_isp";
                 for(int i=0;i<forceKeys.Length;i++)
                 {
-                    double p=maxP*i/(forceKeys.Length-1),ratio=1;
+                    double p=i==forceKeys.Length-1?maxP:maxP*i/(forceKeys.Length-1),ratio=1;
                     foreach(ModuleEngines e in engines)
                     {
                         double isp=e.atmosphereCurve.Evaluate((float)(pressure/101325)),

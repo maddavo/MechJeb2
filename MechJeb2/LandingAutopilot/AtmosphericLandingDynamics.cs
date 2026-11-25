@@ -3,7 +3,7 @@ using System.Threading;
 
 namespace MuMech.Landing
 {
-    // 2.16.0-landing.20261126.duna-live-screen
+    // 2.16.0-landing.20261126.duna-live-screen.1
     // Independent SI, body-centred inertial, non-actuating reference model.
     // Fixed spherical terrain and collinear fixed engines only. No KSP APIs.
     internal static class AtmosphericLandingDynamics
@@ -162,9 +162,10 @@ namespace MuMech.Landing
                 Finite(AtmosphereTop)&&AtmosphereTop>=0&&Finite(TerrainRadius)&&TerrainRadius>0&&
                 Finite(BottomOffset)&&BottomOffset>=0&&Finite(DragArea)&&DragArea>=0&&
                 (AtmosphereTop==0||Pressure!=null&&Density!=null);
-            internal bool Air(V r,out double p,out double rho)
+            internal bool Air(V r,out double p,out double rho) => AirAtAltitude(r.Length-Radius,out p,out rho);
+            // Exact scalar altitude for known body/terrain radii.
+            internal bool AirAtAltitude(double h,out double p,out double rho)
             {
-                double h=r.Length-Radius;
                 p=rho=0;
                 if(!Finite(h))return false;
                 if(AtmosphereTop==0||h>=AtmosphereTop)return true;
