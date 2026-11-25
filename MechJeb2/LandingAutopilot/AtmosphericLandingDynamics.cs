@@ -3,7 +3,7 @@ using System.Threading;
 
 namespace MuMech.Landing
 {
-    // 2.16.0-landing.20261126.duna-dynamics-m1.1
+    // 2.16.0-landing.20261126.duna-live-screen
     // Independent SI, body-centred inertial, non-actuating reference model.
     // Fixed spherical terrain and collinear fixed engines only. No KSP APIs.
     internal static class AtmosphericLandingDynamics
@@ -86,10 +86,23 @@ namespace MuMech.Landing
         {
             private readonly Engine[] _engines;
             private readonly bool _geometryVerified;
+            private readonly Curve _allocatedForce;
+            private readonly double _allocatedFlow;
             internal Propulsion(bool geometryVerified,params Engine[] engines)
             { _geometryVerified=geometryVerified;_engines=engines==null?Array.Empty<Engine>():(Engine[])engines.Clone(); }
+            // Explicit estimated snapshot envelope, not a claim of verified
+            // future torque balance. Force N vs pressure Pa, flow kg/s.
+            private Propulsion(Curve allocatedForce,double allocatedFlow)
+            { _allocatedForce=allocatedForce;_allocatedFlow=allocatedFlow;_engines=Array.Empty<Engine>(); }
+            internal static Propulsion FromAllocatedEnvelope(Curve force,double flow) => new Propulsion(force,flow);
             internal Authority At(double pressurePa)
             {
+                if(_allocatedForce!=null)
+                {
+                    double f=_allocatedForce.At(pressurePa);
+                    return Finite(f)&&f>=0&&Finite(_allocatedFlow)&&_allocatedFlow>=0
+                        ?new Authority(true,f,_allocatedFlow,double.NaN):default;
+                }
                 if(!_geometryVerified||_engines.Length<1||_engines.Length>2||
                     !Finite(pressurePa)||pressurePa<0) return default;
                 var forces=new double[_engines.Length];var flows=new double[_engines.Length];
@@ -302,16 +315,16 @@ namespace MuMech.Landing
         // Capturing low speed above terrain is NOT a safe touchdown forecast.
         internal static Result Screen(Environment env,Propulsion propulsion,Limits lim,State initial,
             double correctionSeconds,Command correction,double ignitionDelay,double horizon,
-            double captureClearance=300,double captureSpeed=15,CancellationToken cancellation=default)
+            double captureClearance=300,double captureSpeed=15,CancellationToken cancellation=default,double correctionLead=0)
         {
             if(env==null||propulsion==null||lim==null||!env.Valid||!lim.Valid||!initial.Valid||
                 initial.Mass<lim.ReserveMass||!correction.Valid||!Finite(correctionSeconds)||correctionSeconds<0||
-                !Finite(ignitionDelay)||ignitionDelay<correctionSeconds||!Finite(horizon)||horizon<=ignitionDelay||
+                !Finite(correctionLead)||correctionLead<0||!Finite(ignitionDelay)||ignitionDelay<correctionLead+correctionSeconds||!Finite(horizon)||horizon<=ignitionDelay||
                 horizon>1800||!Finite(captureClearance)||captureClearance<0||!Finite(captureSpeed)||captureSpeed<=0)
                 return new Result(Outcome.InvalidInput,initial,double.NaN);
             State state=initial;
             double minimum=env.Clearance(initial.R),first=double.NaN;
-            double correctionEnd=initial.UT+correctionSeconds,ignition=initial.UT+ignitionDelay,end=initial.UT+horizon;
+            double correctionStart=initial.UT+correctionLead,correctionEnd=correctionStart+correctionSeconds,ignition=initial.UT+ignitionDelay,end=initial.UT+horizon;
             for(int i=0;i<100000&&state.UT<end;i++)
             {
                 if(cancellation.IsCancellationRequested)return new Result(Outcome.Cancelled,state,minimum,first);
@@ -331,9 +344,15 @@ namespace MuMech.Landing
                 // Before ignition, turn toward required braking direction;
                 // retain engine tail. Braking throttle uses actual pointing
                 // and descent gate. No static hover rejection.
-                Command cmd=correcting?correction:new Command(braking&&V.Dot(w,state.R)<=0&&V.Dot(state.Forward,retro)>=.75?1:0,retro);
+                bool aiming=correcting&&state.UT<correctionStart;
+                // Never inject a correction impulse during the slew.
+                if(correcting&&!aiming&&V.Dot(state.Forward,correction.Direction.Unit)<Math.Cos(2*Math.PI/180))
+                    return new Result(Outcome.UnknownCapability,state,minimum,first);
+                Command cmd=correcting?new Command(aiming?0:correction.Throttle,correction.Direction):
+                    new Command(braking&&V.Dot(w,state.R)<=0&&V.Dot(state.Forward,retro)>=.75?1:0,retro);
                 double dt=Math.Min(lim.Step,end-state.UT);
-                if(correcting)dt=Math.Min(dt,correctionEnd-state.UT);
+                if(aiming)dt=Math.Min(dt,correctionStart-state.UT);
+                else if(correcting)dt=Math.Min(dt,correctionEnd-state.UT);
                 else if(!braking)dt=Math.Min(dt,ignition-state.UT);
                 if(dt<=0||state.UT+dt==state.UT)break;
                 Result step=Advance(env,propulsion,lim,state,cmd,dt);
