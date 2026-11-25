@@ -50,7 +50,7 @@ namespace MuMech
         private DunaLiveScreen _dunaLive;
         private string _dunaLiveReason="not_checked";
         private DunaDynamicScreen.Decision _dunaDecision;
-        private double _dunaLiveUT=double.NaN, _dunaUnresolvedSince=double.NaN;
+        private double _dunaLiveUT=double.NaN, _dunaEmergencyTerrainUT=double.NaN;
         internal bool DunaDynamicActive => DunaBrakingHandoffEnabled;
         internal bool DunaCorrectionScreenReady => _dunaLive!=null && _dunaDecision==DunaDynamicScreen.Decision.Continue;
         internal bool DunaBrakingHandoffEnabled => DunaM1Eligible();
@@ -66,7 +66,7 @@ namespace MuMech
             _dunaProbeUT=_dunaProbeDelay=_dunaAuthority=_dunaTerrainRadius=_dunaTurnReserve=double.NaN;
             _dunaProbe=default; _dunaImmediateProbe=default;
             _dunaProbeWhileBraking=_dunaImmediateChecked=false;
-            _dunaLive=null; _dunaLiveReason="not_checked"; _dunaLiveUT=_dunaUnresolvedSince=double.NaN;
+            _dunaLive=null; _dunaLiveReason="not_checked"; _dunaLiveUT=_dunaEmergencyTerrainUT=double.NaN;
             _dunaDecision=DunaDynamicScreen.Decision.HoldUnresolved;
         }
 
@@ -213,6 +213,7 @@ namespace MuMech
         private void EvaluateDunaBraking(double delay, bool braking)
         {
             _dunaProbeUT=VesselState.Time; _dunaProbeDelay=delay; _dunaProbeWhileBraking=braking;
+            _dunaEmergencyTerrainUT=double.NaN;
             _dunaProbe=ProbeDunaBraking(delay);
             _dunaImmediateChecked=!_dunaProbe.Safe;
             if (_dunaImmediateChecked) _dunaImmediateProbe=ProbeDunaBraking(0);
@@ -223,9 +224,28 @@ namespace MuMech
             !DunaBrakingHandoff.Finite(_dunaProbeUT) || _dunaProbeWhileBraking!=braking ||
             VesselState.Time<_dunaProbeUT || VesselState.Time-_dunaProbeUT>=DunaBrakingHandoff.RefreshSeconds;
 
+        private bool DunaUnresolvedEmergency()
+        {
+            _dunaEmergencyTerrainUT=double.NaN;
+            // Geometric warning, not proof of safe braking. The atmosphere
+            // entry readiness cutoff remains a separate event.
+            try
+            {
+                if (DunaBrakingHandoff.Finite(_dunaTerrainRadius) &&
+                    Orbit.PeR<_dunaTerrainRadius)
+                {
+                    double radius=(VesselState.CoM-MainBody.position).magnitude;
+                    _dunaEmergencyTerrainUT=radius<=_dunaTerrainRadius?VesselState.Time:
+                        Orbit.NextTimeOfRadius(VesselState.Time,_dunaTerrainRadius);
+                }
+            }
+            catch(Exception) { _dunaEmergencyTerrainUT=double.NaN; }
+            return DunaDynamicScreen.UnresolvedEmergency(VesselState.Time,_dunaEmergencyTerrainUT,
+                _dunaProbeDelay,VesselState.AltitudeBottom,VesselState.SpeedVertical<0);
+        }
+
         // Ahead of ALL ordinary readiness, settling and consensus waits.
-        // Failed delayed probe commits; an infeasible immediate probe
-        // must not authorize any further correction.
+        // Unknown results hold correction, never invent a braking deadline.
         internal bool CheckDunaBrakingHandoff()
         {
             if (!DunaBrakingHandoffEnabled) return false;
@@ -239,21 +259,9 @@ namespace MuMech
                     CommitDunaBraking("dynamic_deadline_"+_dunaProbe.Reason,true);
                 else if (_dunaDecision==DunaDynamicScreen.Decision.Emergency)
                     CommitDunaBraking("dynamic_emergency_"+_dunaImmediateProbe.Reason,true);
-                else if (_dunaDecision==DunaDynamicScreen.Decision.HoldUnresolved)
-                {
-                    if (!DunaBrakingHandoff.Finite(_dunaUnresolvedSince)) _dunaUnresolvedSince=VesselState.Time;
-                    // Unknown capability never authorizes a pulse. A brief
-                    // re-evaluation interval is not a proved safe coast.
-                    // Distinguish the explicit best-effort fallback from a
-                    // successful pair of timing probes.
-                    if (VesselState.Time-_dunaUnresolvedSince>=2 ||
-                        VesselState.AltitudeASL<=DunaInterfaceASL || VesselState.AltitudeBottom<=1000)
-                        CommitDunaBraking("dynamic_unresolved_best_effort_"+_dunaProbe.Reason,true);
-                }
-                // Both capture paths may fail a terminal assumption. Do not
-                // convert that into a fictitious ignition deadline. Hold
-                // correction, continue ready coast and re-evaluate.
-                else _dunaUnresolvedSince=double.NaN;
+                else if ((_dunaDecision==DunaDynamicScreen.Decision.HoldUnresolved ||
+                    _dunaDecision==DunaDynamicScreen.Decision.TerminalUnresolved) && DunaUnresolvedEmergency())
+                    CommitDunaBraking("dynamic_geometric_emergency_"+_dunaProbe.Reason,true);
             }
             return _dunaCommitment.Committed;
         }
@@ -318,9 +326,11 @@ namespace MuMech
             if (DunaProbeDue(true))
                 EvaluateDunaBraking(DunaBrakingPreparation(Vector3d.Angle(VesselState.Forward,
                     -VesselState.SurfaceVelocity)),true);
-            return !DunaDynamicTerminalReady;
+            return !DunaDynamicCaptureReady;
         }
 
+        internal bool DunaDynamicCaptureReady => DunaDynamicScreen.CanCaptureRecovery(VesselState.SpeedSurface,
+            DunaAvailableAcceleration(),VesselState.LocalGravity,VesselState.AltitudeBottom);
         internal bool DunaDynamicTerminalReady => DunaDynamicScreen.CanTerminalHandoff(VesselState.SpeedSurface,
             DunaAvailableAcceleration(),VesselState.LocalGravity,VesselState.AltitudeBottom);
 
@@ -356,13 +366,16 @@ namespace MuMech
                 " dunaAllocatedForceN={4:R} dunaAllocatedFlowKgS={5:R} dunaTorqueBalancedN={6:R}"+
                 " dunaBodyRadius={7:R} dunaBodyMu={8:R} dunaAtmosphereTop={9:R} dunaPressurePa={10:R}"+
                 " dunaOmegaX={11:R} dunaOmegaY={12:R} dunaOmegaZ={13:R} dunaVesselAngularRate={14:R}"+
-                " dunaLiveUT={15:R} dunaTerminalRadius={16:R} dunaEngines={17}",
+                " dunaLiveUT={15:R} dunaTerminalRadius={16:R} dunaEngines={17}"+
+                " dunaDelayedStatus={18} dunaImmediateStatus={19} dunaEmergencyTerrainUT={20:R}",
                 _dunaDecision,_dunaLiveReason,_dunaLive?.AuthoritySource??"unknown",
                 _dunaLive?.UsableMass??double.NaN,_dunaLive?.AllocatedForce??double.NaN,
                 _dunaLive?.AllocatedFlow??double.NaN,_dunaLive?.TorqueBalancedForce??double.NaN,
                 MainBody.Radius,MainBody.gravParameter,DunaInterfaceASL,Vessel.staticPressurekPa*1000,
                 MainBody.angularVelocity.x,MainBody.angularVelocity.y,MainBody.angularVelocity.z,Vessel.angularVelocity.magnitude,
-                _dunaLiveUT,_dunaLive?.TerminalRadius??double.NaN,_dunaLive?.EngineDetails??"none");
+                _dunaLiveUT,_dunaLive?.TerminalRadius??double.NaN,_dunaLive?.EngineDetails??"none",
+                DunaDynamicScreen.Status(_dunaProbe),_dunaImmediateChecked?DunaDynamicScreen.Status(_dunaImmediateProbe).ToString():"not_checked",
+                _dunaEmergencyTerrainUT);
 
         private bool DunaM1Eligible() => Active && LandAtTarget && MainBody != null &&
             MainBody.atmosphere && MainBody.bodyName == "Duna" && Core.Target.PositionTargetExists &&

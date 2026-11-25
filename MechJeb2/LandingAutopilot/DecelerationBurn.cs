@@ -66,10 +66,14 @@ namespace MuMech
                     if (!_poweredBrakingObserved) _firstActualThrustUT = VesselState.Time;
                     _poweredBrakingObserved = true;
                 }
-                if (dunaCommitted && Core.Landing.DunaDynamicTerminalReady)
+                if (dunaCommitted && Core.Landing.DunaDynamicCaptureReady)
                 {
                     Core.Warp.MinimumWarp();
                     Core.Thrust.RequestActiveThrottle(0);
+                    // Low speed high above terrain is not terminal readiness.
+                    // Do not hover there or continue a full retrograde burn.
+                    if (!Core.Landing.DunaDynamicTerminalReady)
+                        return new DunaCaptureRecovery(Core);
                     return new KillHorizontalVelocity(Core);
                 }
                 if (!dunaCommitted && VesselState.AltitudeASL < Core.Landing.DecelerationEndAltitude() + 5)
