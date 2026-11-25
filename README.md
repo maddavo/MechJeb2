@@ -204,3 +204,7 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 ## Landing guidance development (fork)
 
 See the [integrated landing guidance implementation plan](docs/Integrated-Landing-Guidance-Plan.md) for the proposed next architecture and staged validation. This is a planning document, not an implemented or released feature; current executable behavior remains unchanged.
+
+### Independent Duna dynamics M1 test build
+
+`2.16.0-landing.20261126.duna-dynamics-m1` adds a non-actuating atmospheric reference model and synthetic tests. See [M1 scope and limits](docs/Integrated-Landing-Dynamics-M1.md). Not a replacement live landing controller or flight-validated release.

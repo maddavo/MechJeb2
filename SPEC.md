@@ -13,3 +13,7 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 ## Proposed integrated landing guidance (2026-11-26)
 
 [Implementation plan](docs/Integrated-Landing-Guidance-Plan.md) is the reference for the proposed next development direction: constrained target-aware powered trajectory optimisation, consistent prediction/execution, atmospheric drag/passive lift without required aerodynamic steering, independent readiness and safety constraints, and capability-based compatibility. It supersedes incremental Duna tuning as a proposed development direction, not the current runtime contract. Preserve prior airless behavior. Minimum throttle limiter support excluded. Implementation and deployment are separate authorisations.
+
+## Independent M1 atmospheric dynamics (2026-11-26)
+
+Authorized non-actuating reference implementation: [M1 scope and contracts](docs/Integrated-Landing-Dynamics-M1.md). SI finite-burn propagation, pressure/Isp and mass, restricted verified torque-balanced engines, bounded pointing and lag, synthetic spherical contact, finite correction and independent entry deadline classification. No static hover pre-rejection; two failed candidates do not prove an ignition deadline. Capture is not touchdown. Unsupported actual data remains unknown. No live activation or changes to refined airless/legacy guidance. M0 evidence gaps remain; no flight validation.

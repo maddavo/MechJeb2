@@ -1,0 +1,155 @@
+name: Independent Duna dynamics build and tests
+
+on:
+  push:
+    branches:
+      - design/duna-dynamics-m1-20261126
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: windows-2022
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.x
+
+      - name: Independent net8 dynamics tests (no KSP references)
+        run: |
+          dotnet test tools/DunaDynamicsTests/DunaDynamicsTests.csproj -c Release --logger 'trx;LogFileName=dynamics-net8.trx' --results-directory TestResults
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Download KSP 1.12.5 references
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = Join-Path $env:RUNNER_TEMP 'ksp.zip'
+          $ksp = Join-Path $env:RUNNER_TEMP 'ksp'
+          Invoke-WebRequest -Uri 'https://github.com/KSPModdingLibs/KSPLibs/raw/main/KSP-1.12.5.zip' -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath $ksp
+          $data = Join-Path $ksp 'KSP_x64_Data'
+          if (!(Test-Path (Join-Path $data 'Managed/Assembly-CSharp.dll'))) { throw 'Unexpected reference archive layout' }
+          "KspDir=$ksp" >> $env:GITHUB_ENV
+          "KspData=$data" >> $env:GITHUB_ENV
+          Get-FileHash $zip -Algorithm SHA256
+
+      - name: Restore and build Release plugin
+        run: |
+          dotnet restore MechJeb2/MechJeb2.csproj "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet msbuild MechJeb2/MechJeb2.csproj -m:1 -p:Configuration=Release "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build landing test project
+        run: |
+          dotnet build MechJebLibTest/MechJebLibTest.csproj -c Release "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run focused Duna diagnostic, handoff and dynamics tests
+        id: duna
+        run: |
+          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release --no-build "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~DunaM1DiagnosticsTests|FullyQualifiedName~DunaBrakingHandoffTests|FullyQualifiedName~AtmosphericLandingDynamicsTests' --logger 'console;verbosity=normal' --logger 'trx;LogFileName=duna.trx' --results-directory TestResults
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          [xml]$trx = Get-Content TestResults/duna.trx -Raw
+          $tests = @($trx.TestRun.Results.UnitTestResult)
+          if ($tests.Count -lt 27 -or @($tests | Where-Object { $_.outcome -ne 'Passed' }).Count -gt 0) { throw 'Expected at least 27 passing focused tests' }
+
+      - name: Run broader landing regression suite
+        id: landing
+        continue-on-error: true
+        run: |
+          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release --no-build "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~LandingPredictionTests&FullyQualifiedName!~DunaM1DiagnosticsTests&FullyQualifiedName!~DunaBrakingHandoffTests&FullyQualifiedName!~AtmosphericLandingDynamicsTests' --logger 'trx;LogFileName=landing.trx' --results-directory TestResults
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Checkout exact installed M1 baseline for comparison
+        if: steps.landing.outcome == 'failure'
+        uses: actions/checkout@v4
+        with:
+          ref: 718247a9c8e0ddbd5a555267774b9b0900519bc2
+          path: baseline-v1
+          persist-credentials: false
+
+      - name: Run identical landing suite on baseline
+        id: baseline
+        if: steps.landing.outcome == 'failure'
+        continue-on-error: true
+        working-directory: baseline-v1
+        run: |
+          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~LandingPredictionTests&FullyQualifiedName!~DunaM1DiagnosticsTests&FullyQualifiedName!~DunaBrakingHandoffTests&FullyQualifiedName!~AtmosphericLandingDynamicsTests' --logger 'trx;LogFileName=baseline.trx' --results-directory ../TestResults
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Compare baseline and task regression outcomes
+        id: compare
+        if: steps.landing.outcome == 'failure'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [xml]$current = Get-Content TestResults/landing.trx -Raw
+          [xml]$baseline = Get-Content TestResults/baseline.trx -Raw
+          $a = @($current.TestRun.Results.UnitTestResult | ForEach-Object { "$($_.testName) : $($_.outcome)" } | Sort-Object)
+          $b = @($baseline.TestRun.Results.UnitTestResult | ForEach-Object { "$($_.testName) : $($_.outcome)" } | Sort-Object)
+          if (!$a.Count -or !$b.Count) { throw 'Missing baseline or task test outcomes' }
+          $delta = @(Compare-Object $b $a)
+          $summary = @("Task: $($a.Count) tests", "Baseline: $($b.Count) tests", "Differences: $($delta.Count)")
+          $summary += @($delta | Out-String)
+          $summary | Set-Content TestResults/baseline-comparison.txt
+          $summary | Write-Output
+          if ($delta.Count) { throw 'Baseline and task landing outcomes differ; investigate before use' }
+
+      - name: Package plugin and assembly identity manifest
+        if: always() && steps.duna.outcome == 'success' && (steps.landing.outcome == 'success' || steps.compare.outcome == 'success')
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = 'MechJeb2/bin/Release'
+          $dest = New-Item -ItemType Directory -Path 'ci-artifact'
+          $plugin = Join-Path $out 'MechJeb2.dll'
+          if (!(Test-Path $plugin)) { throw 'Release DLL missing' }
+          Copy-Item $plugin $dest.FullName
+          $manifest = @("Source commit: $env:GITHUB_SHA", "KSP reference archive: KSP-1.12.5.zip", 'Non-actuating atmospheric dynamics test build only; broader regression status is recorded in the test artifact and run.', 'Companions are identified for review only; not packaged or authorised for installation.')
+          $asm = [Reflection.Assembly]::ReflectionOnlyLoadFrom((Resolve-Path $plugin).Path)
+          $manifest += "Plugin: $($asm.FullName)"
+          $manifest += "Product version: $([Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path $plugin).Path).ProductVersion)"
+          $manifest += "SHA-256: $((Get-FileHash $plugin -Algorithm SHA256).Hash)"
+          foreach ($ref in $asm.GetReferencedAssemblies()) {
+            $manifest += "Reference: $($ref.FullName)"
+            $candidate = Join-Path $out ($ref.Name + '.dll')
+            if (Test-Path $candidate) {
+              $identity = [Reflection.AssemblyName]::GetAssemblyName((Resolve-Path $candidate).Path)
+              $manifest += "  Built/output identity: $($identity.FullName)"
+              $manifest += "  SHA-256: $((Get-FileHash $candidate -Algorithm SHA256).Hash)"
+            }
+          }
+          $manifest | Set-Content (Join-Path $dest.FullName 'assembly-manifest.txt') -Encoding UTF8
+          $manifest | Write-Output
+
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: duna-dynamics-m1-test-results
+          path: TestResults/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload diagnostic build output
+        if: always() && steps.duna.outcome == 'success' && (steps.landing.outcome == 'success' || steps.compare.outcome == 'success')
+        uses: actions/upload-artifact@v4
+        with:
+          name: duna-dynamics-m1-plugin-test-only
+          path: ci-artifact/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Report broader regression gate
+        if: always() && steps.landing.outcome == 'failure'
+        run: |
+          throw 'Broader landing regression suite failed; diagnostic artifact is NOT flight validated. Review baseline comparison.'
