@@ -99,12 +99,23 @@ namespace MuMech.AttitudeControllers
 
         [UsedImplicitly]
         public double Update(double input)
+            => UpdateInput(input, TimeWarp.fixedDeltaTime);
+
+        // Explicit timestep permits the production loop to be exercised offline.
+        public double UpdateWithDeltaTime(double input, double setpoint, double maxOutput, double dt)
+        {
+            MaxOutput = maxOutput;
+            MinOutput = -maxOutput;
+            Setpoint = setpoint;
+            return UpdateInput(input, dt);
+        }
+
+        private double UpdateInput(double input, double dt)
         {
             double error = Setpoint - input;
             double pTerm = error * Kp;
             double iTerm = 0;
             double dTerm = 0;
-            double dt = TimeWarp.fixedDeltaTime;
             if (_loopKi != 0)
             {
                 if (ExtraUnwind)

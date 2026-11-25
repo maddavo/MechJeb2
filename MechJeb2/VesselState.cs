@@ -1228,6 +1228,40 @@ namespace MuMech
         public double HeadingFromDirection(Vector3d dir) =>
             MuUtils.ClampDegrees360(UtilMath.Rad2Deg * Math.Atan2(Vector3d.Dot(dir, East), Vector3d.Dot(dir, North)));
 
+        // Read-only prospective upright offset. Current AltitudeBottom depends
+        // on orientation and is unsuitable for a sideways deorbit snapshot.
+        // AABB support bounds deployed collider geometry; wheel suspension and
+        // actual PQS contact remain measured uncertainties, not an exact mesh.
+        internal double TerminalBottomOffset()
+        {
+            double offset = Math.Max(0, AltitudeTrue - AltitudeBottom);
+            if (_vessel == null) return offset;
+            foreach (Part part in _vessel.parts)
+            {
+                if (part.collider == null) continue;
+                Bounds bounds = part.collider.bounds;
+                offset = Math.Max(offset, Landing.V1LandingControlPolicy.UprightColliderOffset(
+                    (Vector3d)bounds.center - CoM, bounds.extents, Forward));
+            }
+            return offset;
+        }
+
+        // Read-only prospective V1 controller altitude, separate from contact
+        // support. ComputeVesselBottomAltitude uses a max-extent sphere.
+        internal double TerminalControllerBottomOffset()
+        {
+            double offset = Math.Max(0, AltitudeTrue - AltitudeBottom);
+            if (_vessel == null) return offset;
+            foreach (Part part in _vessel.parts)
+            {
+                if (part.collider == null) continue;
+                Bounds bounds = part.collider.bounds;
+                double radius = Math.Max(bounds.extents.x, Math.Max(bounds.extents.y, bounds.extents.z));
+                offset = Math.Max(offset, -Vector3d.Dot((Vector3d)bounds.center - CoM, Forward.normalized) + radius);
+            }
+            return offset;
+        }
+
         private double ComputeVesselBottomAltitude()
         {
             if (_vessel == null || _vessel.rootPart.rb == null) return 0;

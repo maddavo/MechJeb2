@@ -1,5 +1,6 @@
 ﻿using System;
 using KSP.Localization;
+using System.Globalization;
 using UnityEngine;
 
 namespace MuMech
@@ -15,6 +16,11 @@ namespace MuMech
             private const double MaximumTerminalDescentSpeed = 25.0;
             private const double TerminalDescentGravityTime = 4.0;
             private IDescentSpeedPolicy _aggressivePolicy;
+            private double _deckASL, _deckClearance;
+            private bool _deckMeasured, _surfaceSaturated;
+            public override string TraceDetails => string.Format(CultureInfo.InvariantCulture,
+                " deckMeasured={0} deckASL={1:R} deckClearance={2:R} surfaceQuerySaturated={3}",
+                _deckMeasured, _deckASL, _deckClearance, _surfaceSaturated);
 
             public FinalDescent(MechJebCore core) : base(core)
             {
@@ -50,6 +56,14 @@ namespace MuMech
                 // TODO perhaps we should pop the parachutes at this point, or at least consider it depending on the altitude.
 
                 double minalt = Math.Min(VesselState.AltitudeBottom, Math.Min(VesselState.AltitudeASL, VesselState.AltitudeTrue));
+                double deckASL = Core.Landing.LandingSurface.Altitude(MainBody,
+                    MainBody.GetLatitude(VesselState.CoM), MainBody.GetLongitude(VesselState.CoM),
+                    VesselState.SurfaceAltitudeASL);
+                minalt = LandingSurfaceProvider.Clearance(minalt, VesselState.SurfaceAltitudeASL, deckASL);
+                _deckASL = deckASL;
+                _deckClearance = minalt;
+                _deckMeasured = Core.Landing.LandingSurface.LastQueryUsedDeck;
+                _surfaceSaturated = Core.Landing.LandingSurface.LastQuerySaturated;
 
                 if (VesselState.LimitedMaxThrustAcceleration < VesselState.GravityForce.magnitude)
                 {
@@ -85,7 +99,10 @@ namespace MuMech
                         //core.thrust.trans_spd_act = (float)Math.Sqrt((vesselState.maxThrustAccel - vesselState.gravityForce.magnitude) * 2 * minalt) * 0.90F;
                         Vector3d estimatedLandingPosition = VesselState.CoM + VesselState.SurfaceVelocity.sqrMagnitude /
                             (2 * VesselState.LimitedMaxThrustAcceleration) * VesselState.SurfaceVelocity.normalized;
-                        double terrainRadius = MainBody.Radius + MainBody.TerrainAltitude(estimatedLandingPosition);
+                        double latitude = MainBody.GetLatitude(estimatedLandingPosition);
+                        double longitude = MainBody.GetLongitude(estimatedLandingPosition);
+                        double terrainRadius = MainBody.Radius + Core.Landing.LandingSurface.Altitude(MainBody,
+                            latitude, longitude, MainBody.TerrainAltitude(latitude, longitude));
                         _aggressivePolicy =
                             new GravityTurnDescentSpeedPolicy(terrainRadius, MainBody.GeeASL * 9.81,
                                 VesselState.LimitedMaxThrustAcceleration); // this constant policy creation is wastefull...
@@ -110,7 +127,7 @@ namespace MuMech
                 }
 
                 Status = Localizer.Format("#MechJeb_LandingGuidance_Status9",
-                    VesselState.AltitudeBottom.ToString("F0")); //"Final descent: " +  + "m above terrain"
+                    minalt.ToString("F0")); // Final-descent clearance includes loaded KK decks.
 
                 // ComputeCourseCorrection doesn't work close to the ground
                 /* if (core.landing.landAtTarget)

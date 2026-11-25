@@ -9,6 +9,9 @@ namespace MuMech
 {
     public class MechJebModuleNodeExecutor : ComputerModule
     {
+        // Source-integrated contract: future DLL builds retain this repair;
+        // compatibility is never gated by an unrelated whole-assembly hash.
+        public const int NodeAlignmentContractVersion = 1;
         private static bool _isLoadedRealFuels => ReflectionUtils.IsAssemblyLoaded("RealFuels");
         private static bool _isLoadedPrincipia => ReflectionUtils.IsAssemblyLoaded("principia.ksp_plugin_adapter");
 
@@ -35,7 +38,8 @@ namespace MuMech
         // do burn on RCS engines only
         public bool RCSOnly = false;
 
-        // whether to kill roll rotation
+        // Legacy persisted field retained for compatibility with existing callers.
+        // Node execution always damps roll rate; it never holds a roll angle.
         [Persistent(pass = (int)Pass.GLOBAL)]
         public bool KillRollRotation = true;
 
@@ -144,6 +148,13 @@ namespace MuMech
         private double _timeToBurn;
         private bool _hasNodes => Vessel.patchedConicSolver.maneuverNodes.Count > 0;
         private double _ullageUntil;
+        private Vector3d _burnForce;
+        private Vector3d _availableBurnForce, _measuredBurnForce;
+        private string _lastAlignmentStatus;
+        private float _nextAlignmentTrace;
+        public string AlignmentStatus { get; private set; }
+        public Vector3d BurnForceDirection => _burnForce;
+        public double BurnForceErrorDegrees => NodeBurnAlignment.ErrorRadians(_burnForce, _worldDirection) * 180 / PI;
 
         public override void Drive(FlightCtrlState s) => DoRCS(s);
 
@@ -155,10 +166,10 @@ namespace MuMech
             // seconds to continue to apply RCS after ullage has settled to VeryStable
             const double MIN_RCS_TIME = 0.25;
 
-            if (State == States.BURN && RCSOnly)
+            if (RCSOnly)
             {
                 Vessel.ActionGroups.SetGroup(KSPActionGroup.RCS, true);
-                s.Z = -1.0F;
+                if (State == States.BURN) s.Z = -1.0F;
                 return;
             }
 
@@ -202,6 +213,14 @@ namespace MuMech
             }
 
             _direction = NextDirection();
+            if (RCSOnly || VesselState.RCSThrust)
+            {
+                _burnForce = _availableBurnForce = NodeBurnForceSource.Rcs(Core);
+                _measuredBurnForce = Vector3d.zero;
+            }
+            else
+                _burnForce = NodeBurnForceSource.Engines(Core, State == States.BURN,
+                    out _availableBurnForce, out _measuredBurnForce);
 
             // note that in principia after our node disappears this value will change to -1
             _ignitionUT = CalculateIgnitionUT();
@@ -209,6 +228,14 @@ namespace MuMech
 
             UpdateState();
             TickState();
+            if (Time.realtimeSinceStartup >= _nextAlignmentTrace && State != States.IDLE)
+            {
+                _nextAlignmentTrace = Time.realtimeSinceStartup + 2;
+                Debug.Log("[MechJeb Node Alignment] vessel=" + Vessel.vesselName + " state=" + State +
+                    " forceErrorDeg=" + BurnForceErrorDegrees + " force=" + _burnForce +
+                    " measured=" + _measuredBurnForce + " available=" + _availableBurnForce +
+                    " throttle=" + Vessel.ctrlState.mainThrottle + " status=" + AlignmentStatus);
+            }
         }
 
         private void UpdateState()
@@ -327,7 +354,11 @@ namespace MuMech
                 return;
             }
 
-            SetAttitude();
+            if (!SetAttitude())
+            {
+                Core.Thrust.ThrustOff();
+                return;
+            }
 
             UpdateDvLeft();
 
@@ -336,12 +367,46 @@ namespace MuMech
 
             if (!RCSOnly)
             {
-                double timeConstant = _dvLeft > 10 || VesselState.MinThrustAcceleration > 0.25 * VesselState.MaxThrustAcceleration ? 0.5 : 2;
-                Core.Thrust.ThrustForDv(_dvLeft, timeConstant);
+                double maximumAcceleration = _availableBurnForce.magnitude / VesselState.Mass;
+                double currentAcceleration = Max(0, Vector3d.Dot(_measuredBurnForce, _worldDirection.normalized)) / VesselState.Mass;
+                double timeConstant = _dvLeft > 10 || VesselState.MinThrustAcceleration > 0.25 * maximumAcceleration ? 0.5 : 2;
+                Core.Thrust.ThrustForDv(_dvLeft, timeConstant, maximumAcceleration, currentAcceleration);
             }
         }
 
-        private void SetAttitude() => Core.Attitude.attitudeTo(_worldDirection, AttitudeReference.INERTIAL_COT, this, KillRollRotation);
+        private bool SetAttitude()
+        {
+            QuaternionD current = (QuaternionD)Vessel.ReferenceTransform.rotation * MathExtensions.Euler(-90, 0, 0);
+            if (!NodeBurnAlignment.TryAttitude(_burnForce, _worldDirection, current, out QuaternionD attitude))
+            {
+                AlignmentStatus = "Waiting for available node-burn propulsion";
+                if (_lastAlignmentStatus != AlignmentStatus)
+                    Debug.LogWarning("[MechJeb Node Alignment] " + Vessel.vesselName + ": " + AlignmentStatus);
+                _lastAlignmentStatus = AlignmentStatus;
+                return false;
+            }
+            if (_lastAlignmentStatus != "force-axis")
+                Debug.Log("[MechJeb Node Alignment] force-axis steering active; vessel=" + Vessel.vesselName +
+                    " RCSOnly=" + RCSOnly + " differentialThrottle=" + Core.Thrust.DifferentialThrottle);
+            _lastAlignmentStatus = "force-axis";
+            AlignmentStatus = "Aligning resultant burn force";
+            Vector3d unpoweredTorque = VesselState.TorqueAvailable -
+                Vector3d.Max(VesselState.TorqueGimbal.Positive, VesselState.TorqueGimbal.Negative);
+            if (State != States.BURN && Vessel.ctrlState.mainThrottle == 0 &&
+                unpoweredTorque.sqrMagnitude <= 1e-18 && !Aligned())
+                AlignmentStatus = "Waiting for zero-throttle attitude authority";
+            Core.Attitude.attitudeTo(attitude, AttitudeReference.INERTIAL, this,
+                AxisCtrlRoll: true);
+            ApplyNodeRollPolicy(Core.Attitude);
+            return true;
+        }
+
+        internal static void ApplyNodeRollPolicy(MechJebModuleAttitudeController attitude)
+        {
+            // Automatic node-execution damping, independent of the legacy flag.
+            attitude.SetAxisControl(true, true, true);
+            attitude.SetOmegaTarget(roll: 0);
+        }
 
         private bool ShouldTerminatePrincipia()
         {
@@ -377,25 +442,25 @@ namespace MuMech
 
         private bool AlignedAndSettled() =>
             Aligned()
-            && Vector3.Scale(Core.vessel.angularVelocity, new Vector3(1f, KillRollRotation ? 1f : 0f, 1f)).magnitude < 0.001;
+            && Core.vessel.angularVelocity.magnitude < 0.001;
 
         // This returns the angle to the node (in radians), note that you probably don't want to use this outside of
         // stock checks for maneuver termination, and probably never in principia (see SafeCurrentPrincipiaNode()).
         private double AngleFromNode()
         {
             //Vector3d fwd = Quaternion.FromToRotation(VesselState.forward, VesselState.thrustForward) * VesselState.forward;
-            Vector3d fwd = VesselState.Forward;
+            Vector3d fwd = _burnForce;
             Vector3d dir = Vessel.patchedConicSolver.maneuverNodes[0].GetBurnVector(Orbit).normalized;
-            return SafeAcos(Vector3d.Dot(fwd, dir));
+            return NodeBurnAlignment.Valid(fwd) ? NodeBurnAlignment.ErrorRadians(fwd, dir) : 0;
         }
 
         // This returns the angle to saved inertial direction (in radians).
         private double AngleFromDirection()
         {
             //Vector3d fwd = Quaternion.FromToRotation(VesselState.forward, VesselState.thrustForward) * VesselState.forward;
-            Vector3d fwd = VesselState.Forward;
+            Vector3d fwd = _burnForce;
             Vector3d dir = _worldDirection.normalized;
-            return SafeAcos(Vector3d.Dot(fwd, dir));
+            return NodeBurnAlignment.ErrorRadians(fwd, dir);
         }
 
         // This handles safely getting the current burning node in Principia without grabbing any subsequent node after
@@ -428,7 +493,7 @@ namespace MuMech
                 return _direction;
 
             // FIXME: need to deal with RCS forward thrust accel here if we're RCSOnly
-            if (!_isLoadedPrincipia && _dvLeft < VesselState.MaxThrustAcceleration)
+            if (!_isLoadedPrincipia && _dvLeft < _availableBurnForce.magnitude / VesselState.Mass)
                 return _direction;
 
             return invRot * Vessel.patchedConicSolver.maneuverNodes[0].GetBurnVector(Orbit).normalized;
@@ -472,6 +537,14 @@ namespace MuMech
         // FIXME: this needs to work with RCSOnly
         private double BurnTime(double dv, out double halfBurnTime, out double spoolupTime)
         {
+            if (RCSOnly || VesselState.RCSThrust)
+            {
+                double acceleration = _availableBurnForce.magnitude / VesselState.Mass;
+                spoolupTime = 0;
+                double seconds = acceleration > 0 ? dv / acceleration : 0;
+                halfBurnTime = seconds / 2;
+                return seconds;
+            }
             double dvLeft = dv;
             double halfDvLeft = dv / 2;
 

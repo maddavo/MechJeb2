@@ -14,7 +14,21 @@ namespace MuMech
     // -
     public class MechJebModuleLandingAutopilot : AutopilotModule
     {
+        internal readonly LandingSurfaceProvider LandingSurface = new LandingSurfaceProvider();
         private bool _deployedGears;
+        internal V1WarpPreparation WarpPreparation { get; private set; } = new V1WarpPreparation();
+        private object _warpBody;
+        private double _warpLatitude = double.NaN, _warpLongitude = double.NaN;
+        private void CancelPreparedWarp()
+        {
+            if (WarpPreparation.OwnsWarpTarget(Core.Warp.warpToUT)) Core.Warp.MinimumWarp();
+            WarpPreparation.ClearWarpRequest();
+        }
+        private void ResetWarpPreparation()
+        {
+            CancelPreparedWarp();
+            WarpPreparation = new V1WarpPreparation();
+        }
         public bool LandAtTarget;
         internal bool AirlessTargetedForecast => LandAtTarget && MainBody != null &&
             !MainBody.atmosphere && Core.Target.PositionTargetExists &&
@@ -25,7 +39,6 @@ namespace MuMech
         [Persistent(pass = (int)(Pass.LOCAL | Pass.TYPE | Pass.GLOBAL))]
         public bool LandingTraceEnabled = true;
 
-        public const string DiagnosticBuildVersion = "V1 Beta guidance predictor 2026-09-30";
         private double _nextLandingTraceUT;
         private long _lastTracedPredictionVersion = -1;
         private string _lastTracedStep;
@@ -75,7 +88,8 @@ namespace MuMech
         {
             get
             {
-                if (!PredictionReady) return 0;
+                if (!PredictionReady)
+                    return _predictor.TryGetValidatedApproachTerrain(out double height) ? height : 0;
 
                 // Although we know the landingASL as it is in the prediction, we suspect that
                 // it might sometimes be incorrect. So to check we will calculate it again here,
@@ -88,6 +102,9 @@ namespace MuMech
                 // the landing results.
                 {
                     double checkASL = Prediction.Body.TerrainAltitude(Prediction.EndPosition.Latitude, Prediction.EndPosition.Longitude);
+                    // Braking still uses natural ground. Do not overwrite the
+                    // separately resolved deck-contact height in a published result.
+                    if (Prediction.HasSeparateTerminalSurface) return checkASL;
                     // ReSharper disable once CompareOfFloatsByEqualityOperator
                     // ReSharper disable once RedundantCheckBeforeAssignment
                     if (checkASL != Prediction.EndASL)
@@ -114,6 +131,43 @@ namespace MuMech
         public double LastCourseCorrectionDownrangeError { get; private set; } = double.NaN;
         public double LastCourseCorrectionLongBias       { get; private set; }
         public double LastCourseCorrectionHandoffLimit   { get; private set; }
+        internal Vector3d LastCourseCorrectionLocalResponse { get; private set; }
+        internal double LastCourseCorrectionCrossrangeError { get; private set; }
+        internal void InvalidateCourseCorrectionPrediction() => _predictor.InvalidateAfterCourseCorrectionPulse();
+        internal void TraceCourseCorrectionHandoff(string detail, string destination)
+        {
+            if (!LandingTraceEnabled) return;
+            LandingPredictorTrace.WriteState(nameof(Landing.CourseCorrection), Status, VesselState.Time, TimeWarp.CurrentRate,
+                VesselState.CoM, VesselState.OrbitalVelocity, Core.Thrust.TargetThrottle,
+                VesselState.CurrentThrustAcceleration, PredictionVersion, Prediction,
+                detail + " handoffDestination=" + destination, VesselState, Core.Attitude.attitudeAngleFromTarget(),
+                Core.Thrust.Tmode.ToString(), Core.Thrust.TransSpdAct, Core.Thrust.TransKillH,
+                "correction_handoff");
+        }
+        internal int PrepareCorrectionBurn(Vector3d direction, double requested, double conservative,
+            double preparation, double deadline, out CorrectionBurnPlan plan, out string reason) =>
+            _predictor.PrepareCorrectionBurn(direction, requested, conservative, preparation, deadline, out plan, out reason);
+
+        private Vector3d _correctionOrbitEndpoint, _correctionActualEndpoint;
+        private Quaternion _correctionOrbitRotation;
+        private double _correctionEndRadius;
+
+        // A geometric trust check for this solver invocation only. This screens
+        // descending orbit geometry and local linearity; it does not certify a
+        // terrain-clear powered landing or replace a subsequent fresh forecast.
+        internal bool CourseCorrectionGeometryTrusted(Vector3d direction, double dv,
+            double maximumMovement, double maximumDisagreement)
+        {
+            Orbit trial = Orbit.PerturbedOrbit(VesselState.Time, direction * dv);
+            if (trial.PeR >= _correctionEndRadius) return false;
+            double contactUT = trial.NextTimeOfRadius(VesselState.Time, _correctionEndRadius);
+            if (double.IsNaN(contactUT) || double.IsInfinity(contactUT) || contactUT <= VesselState.Time)
+                return false;
+            Vector3d movement = Vector3d.Exclude(_correctionActualEndpoint,
+                _correctionOrbitRotation * (trial.WorldBCIPositionAtUT(contactUT) - _correctionOrbitEndpoint));
+            return movement.magnitude <= maximumMovement &&
+                (movement - LastCourseCorrectionLocalResponse * dv).magnitude <= maximumDisagreement;
+        }
 
         public IDescentSpeedPolicy DescentSpeedPolicy;
         private double _vesselAverageDrag;
@@ -128,6 +182,10 @@ namespace MuMech
         //public interface:
         public void LandAtPositionTarget(object controller)
         {
+            ResetWarpPreparation();
+            // Saved/shared thrust settings must not silently impose a throttle floor
+            // on a new landing. The user can explicitly enable it after activation.
+            Core.Thrust.LimiterMinThrottle = false;
             LandAtTarget = true;
             Users.Add(controller);
 
@@ -151,6 +209,8 @@ namespace MuMech
 
         public void LandUntargeted(object controller)
         {
+            ResetWarpPreparation();
+            Core.Thrust.LimiterMinThrottle = false;
             if (LandingTraceEnabled && LandAtTarget && MainBody != null && !MainBody.atmosphere)
                 LandingPredictorCapture.Lifecycle("switched_to_untargeted", 0, PredictionVersion,
                     Prediction?.CaptureSubmissionId ?? 0);
@@ -168,6 +228,7 @@ namespace MuMech
 
         public void StopLanding()
         {
+            ResetWarpPreparation();
             if (LandingTraceEnabled && LandAtTarget && MainBody != null && !MainBody.atmosphere)
                 LandingPredictorCapture.Lifecycle("landing_stopped", 0, PredictionVersion,
                     Prediction?.CaptureSubmissionId ?? 0);
@@ -204,8 +265,18 @@ namespace MuMech
 
         public override void OnFixedUpdate()
         {
+            if (!ReferenceEquals(_warpBody, MainBody) || _warpLatitude != (double)Core.Target.targetLatitude ||
+                _warpLongitude != (double)Core.Target.targetLongitude)
+            {
+                ResetWarpPreparation();
+                _warpBody = MainBody; _warpLatitude = Core.Target.targetLatitude;
+                _warpLongitude = Core.Target.targetLongitude;
+            }
+            WarpPreparation.ObserveWarp(VesselState.Time, TimeWarp.CurrentRate);
             _vesselAverageDrag = VesselAverageDrag();
+            Type previousPhase = CurrentStep?.GetType();
             base.OnFixedUpdate();
+            if (previousPhase != CurrentStep?.GetType()) CancelPreparedWarp();
             DeployParachutes();
             TraceLandingState();
         }
@@ -295,6 +366,7 @@ namespace MuMech
 
         protected override void OnModuleDisabled()
         {
+            ResetWarpPreparation();
             if (LandingTraceEnabled && LandAtTarget && MainBody != null && !MainBody.atmosphere)
                 LandingPredictorCapture.Lifecycle("landing_module_disabled", 0, PredictionVersion,
                     Prediction?.CaptureSubmissionId ?? 0);
@@ -312,6 +384,22 @@ namespace MuMech
 
         // Estimate the delta-V of the correction burn that would be required to put us on
         // course for the target
+        internal bool TryPoweredBrakingCorrection(out Vector3d correction, out double horizon)
+        {
+            correction=Vector3d.zero; horizon=0;
+            ReentrySimulation.Result forecast=Prediction;
+            double age=forecast==null ? double.PositiveInfinity : VesselState.Time-forecast.InputUT;
+            if (!AirlessTargetedForecast || Core.Thrust.LimiterMinThrottle || !(CurrentStep is DecelerationBurn) ||
+                forecast==null || forecast.Body!=MainBody ||
+                !BrakingEndpointResponse.FreshCorrectionForecast(forecast.Outcome,
+                    forecast.PoweredBrakingResponse.HasValue, age,
+                    2*MechJebModuleLandingPredictions.TargetAwareRefreshSeconds)) return false;
+            PublishedBrakingResponse response=forecast.PoweredBrakingResponse.Value;
+            horizon=response.Horizon;
+            correction=forecast.ReferenceFrame.WorldVelocityAtCurrentTime(response.SteeringCommand);
+            return correction.sqrMagnitude>0 && correction.magnitude<=response.MaximumRatio+1e-8;
+        }
+
         public Vector3d ComputeCourseCorrection(bool allowPrograde, double downrangeLongBias = 0,
             double downrangeHandoffLimit = 0)
         {
@@ -331,6 +419,10 @@ namespace MuMech
 
             // convertOrbitToActual is a rotation that rotates orbitLandingPosition on actualLandingPosition
             var convertOrbitToActual = Quaternion.FromToRotation(orbitLandingPosition, actualLandingPosition);
+            _correctionOrbitEndpoint = orbitLandingPosition;
+            _correctionActualEndpoint = actualLandingPosition;
+            _correctionOrbitRotation = convertOrbitToActual;
+            _correctionEndRadius = endRadius;
 
             // Consider the effect small changes in the velocity in each of these three directions
             Vector3d[] perturbationDirections = { VesselState.SurfaceVelocity.normalized, VesselState.RadialPlusSurface, VesselState.NormalPlusSurface };
@@ -409,6 +501,8 @@ namespace MuMech
             LastCourseCorrectionDownrangeError = double.NaN;
             LastCourseCorrectionLongBias = 0;
             LastCourseCorrectionHandoffLimit = downrangeHandoffLimit;
+            LastCourseCorrectionCrossrangeError = downrangeDelta.sqrMagnitude > 1e-12 ?
+                Vector3d.Exclude(downrangeDelta, desiredDelta).magnitude : desiredDelta.magnitude;
             if (allowPrograde && downrangeDelta.sqrMagnitude > 1e-12)
             {
                 Vector3d responseDownrangeDirection = downrangeDelta.normalized;
@@ -442,6 +536,8 @@ namespace MuMech
             Vector2d coeffs = a.Inverse() * b;
 
             Vector3d courseCorrection = coeffs.x * downrangeDirection + coeffs.y * perturbationDirections[2];
+            LastCourseCorrectionLocalResponse = courseCorrection.magnitude > 0 ?
+                (coeffs.x * downrangeDelta + coeffs.y * deltas[2]) / courseCorrection.magnitude : Vector3d.zero;
 
             return courseCorrection;
         }
@@ -563,7 +659,8 @@ namespace MuMech
             //if the atmosphere is thin, the deceleration burn should end
             //500 meters above the landing site to allow for a controlled final descent
             //MechJebCore.print("DecelerationEndAltitude Vacum " + (200 + LandingAltitude).ToString("F2"));
-            if (!UseAtmosphereToBrake()) return 200 + _landingAltitude;
+            if (!UseAtmosphereToBrake())
+                return 200 + (_predictor.TryGetOwnedBrakingTerrain(out double policyHeight) ? policyHeight : _landingAltitude);
 
             // if the atmosphere is thick, deceleration (meaning freefall through the atmosphere)
             // should end a safe height above the landing site in order to allow braking from terminal velocity

@@ -87,10 +87,15 @@ namespace MuMech.Landing
                 fields.Append(",\"attitudeErrorDegrees\":").Append(Number(core.Attitude.attitudeAngleFromTarget()));
                 fields.Append(",\"vesselAngularSpeed\":").Append(Number(core.vessel.angularVelocity.magnitude));
                 fields.Append(",\"commandedThrottle\":").Append(Number(core.Thrust.TargetThrottle));
+                fields.Append(",\"controllerDetail\":").Append(Quote(core.Landing.CurrentStep?.TraceDetails));
                 fields.Append(",\"autoWarpEnabled\":").Append(core.Node.Autowarp ? "true" : "false");
                 fields.Append(",\"landingTouchdownSpeed\":").Append(Number(core.Landing.TouchdownSpeed));
                 fields.Append(",\"rcsAdjustmentEnabled\":").Append(core.Landing.RCSAdjustment ? "true" : "false");
                 fields.Append(",\"activePredictionVersion\":").Append(core.Landing.PredictionVersion);
+                fields.Append(",\"measuredTurnAngle\":").Append(Number(core.Landing.WarpPreparation.MeasuredAngle));
+                fields.Append(",\"measuredTurnSeconds\":").Append(Number(core.Landing.WarpPreparation.TurnSeconds));
+                fields.Append(",\"measuredSettleSeconds\":").Append(Number(core.Landing.WarpPreparation.SettleSeconds));
+                fields.Append(",\"warpOverrunSeconds\":").Append(Number(core.Landing.WarpPreparation.WarpOverrunSeconds));
                 fields.Append(",\"activePredictionInputUT\":").Append(Number(core.Landing.Prediction?.InputUT ?? double.NaN));
                 fields.Append(",\"targetLatitude\":").Append(Number(targetLatitude));
                 fields.Append(",\"targetLongitude\":").Append(Number(targetLongitude));
@@ -115,7 +120,23 @@ namespace MuMech.Landing
                         fields.Append(",\"controllerThrottleSmoothingSeconds\":").Append(Number(activeSnapshot.Value.ThrottleSmoothingSeconds));
                         fields.Append(",\"controllerInitialAppliedThrottle\":").Append(Number(activeSnapshot.Value.InitialAppliedThrottle));
                         fields.Append(",\"controllerTouchdownSpeed\":").Append(Number(activeSnapshot.Value.TouchdownSpeed));
+                        fields.Append(",\"controllerSafeTouchdownSpeed\":").Append(Number(activeSnapshot.Value.SafeTouchdownSpeed));
                         fields.Append(",\"controllerBottomOffset\":").Append(Number(activeSnapshot.Value.BottomOffset));
+                        fields.Append(",\"controllerTerminalBottomOffset\":").Append(Number(activeSnapshot.Value.TerminalBottomOffset));
+                        fields.Append(",\"controllerTerminalAltitudeOffset\":").Append(Number(activeSnapshot.Value.TerminalControllerBottomOffset));
+                        fields.Append(",\"controllerTerminalPhase\":").Append(activeSnapshot.Value.TerminalPhase);
+                        fields.Append(",\"controllerTerminalAngularAcceleration\":").Append(Number(activeSnapshot.Value.TerminalAngularAcceleration));
+                        fields.Append(",\"controllerTerminalAngularSpeed\":").Append(Number(activeSnapshot.Value.TerminalAngularSpeed));
+                        fields.Append(",\"controllerTerminalStoppingTime\":").Append(Number(activeSnapshot.Value.TerminalStoppingTime));
+                        fields.Append(",\"controllerVerticalPidPreviousError\":").Append(Number(activeSnapshot.Value.VerticalPidPreviousError));
+                        fields.Append(",\"controllerVerticalPidIntegral\":").Append(Number(activeSnapshot.Value.VerticalPidIntegral));
+                        fields.Append(",\"forecastStateUT\":").Append(Number(activeSnapshot.Value.InputUT + activeSnapshot.Value.DeliveryLeadSeconds));
+                        fields.Append(",\"deliveryLeadSeconds\":").Append(Number(activeSnapshot.Value.DeliveryLeadSeconds));
+                        fields.Append(",\"deliveryHeldBurnDeltaVEstimate\":").Append(Number(
+                            activeSnapshot.Value.ObservedThrustAcceleration.magnitude * activeSnapshot.Value.DeliveryLeadSeconds));
+                        fields.Append(",\"deliveryObservedThrustAcceleration\":").Append(Vector(activeSnapshot.Value.ObservedThrustAcceleration));
+                        fields.Append(",\"deliveryObservedMassFlow\":").Append(Number(activeSnapshot.Value.ObservedMassFlow));
+                        fields.Append(",\"controllerDecelerationAlreadyTriggered\":").Append(activeSnapshot.Value.DecelerationAlreadyTriggered ? "true" : "false");
                         fields.Append(",\"controllerPreviousTransThrottle\":").Append(Number(activeSnapshot.Value.PreviousTransThrottle));
                         if (core.Landing.DescentSpeedPolicy is SafeDescentSpeedPolicy livePolicy)
                         {
@@ -190,10 +211,15 @@ namespace MuMech.Landing
                 .Append(",\"inputUT\":").Append(Number(result.InputUT))
                 .Append(",\"endUT\":").Append(hasEndpoint ? Number(result.EndUT) : "null")
                 .Append(",\"virtualBrakeUT\":").Append(hasEndpoint ? Number(result.SimulatedBrakingStartUT) : "null")
+                .Append(",\"ownedBrakingPlanId\":").Append(result.OwnedBrakingPlanId)
+                .Append(",\"brakingPolicyTerrainASL\":").Append(Number(result.InputProbableLandingSiteASL))
                 .Append(",\"controllerBrakeReferenceUT\":").Append(
                     result.HasControllerBrakeReferenceUT ? Number(result.ControllerBrakeReferenceUT) : "null")
                 .Append(",\"controllerBrakeReferencePosition\":").Append(
                     result.HasControllerBrakeReferenceUT ? Absolute(result.ControllerBrakeReferencePosition) : "null")
+                .Append(",\"firstRequiredThrustUT\":").Append(result.HasFirstRequiredThrust ? Number(result.FirstRequiredThrustUT) : "null")
+                .Append(",\"firstRequiredThrustPosition\":").Append(result.HasFirstRequiredThrust ? Absolute(result.FirstRequiredThrustPosition) : "null")
+                .Append(",\"firstRequiredThrustVelocity\":").Append(result.HasFirstRequiredThrust ? Absolute(result.FirstRequiredThrustVelocity) : "null")
                 .Append(",\"forcedBrakeUT\":").Append(Number(result.InputForcedBrakingStartUT))
                 .Append(",\"start\":").Append(hasEndpoint ? Absolute(result.StartPosition) : "null")
                 .Append(",\"simulatorEnd\":").Append(hasEndpoint ? Absolute(result.EndPosition) : "null")
@@ -286,24 +312,48 @@ namespace MuMech.Landing
                         "ImpactForecast" : "NoForecast"))
                     .Append(",\"failure\":").Append(Quote(planner.Failure))
                     .Append(",\"directForecast\":").Append(planner.IsDirectForecast ? "true" : "false")
+                    .Append(",\"deliveryValidation\":").Append(planner.IsDeliveryValidation ? "true" : "false")
                     .Append(",\"selectedPolicyTerrainASL\":").Append(Number(planner.SelectedPolicyTerrainASL))
                     .Append(",\"policyEscalations\":").Append(planner.PolicyEscalations)
+                    .Append(",\"requestedTouchdownSpeed\":").Append(Number(planner.Snapshot.TouchdownSpeed))
+                    .Append(",\"safeTouchdownSpeed\":").Append(Number(planner.Snapshot.SafeTouchdownSpeed))
+                    .Append(",\"nominalTouchdownVerticalSpeed\":").Append(Number(planner.NominalTouchdownVerticalSpeed))
+                    .Append(",\"delayedTouchdownVerticalSpeed\":").Append(Number(planner.DelayedTouchdownVerticalSpeed))
+                    .Append(",\"requestedTouchdownSpeedMet\":").Append(planner.RequestedTouchdownSpeedMet ? "true" : "false")
+                    .Append(",\"candidateSimulationCount\":").Append(planner.CandidateSimulationCount)
+                    .Append(",\"brakingResponseValidated\":").Append(planner.BrakingResponse?.Validated == true ? "true" : "false")
+                    .Append(",\"brakingResponseFailure\":").Append(Quote(planner.BrakingResponseFailure))
+                    .Append(",\"brakingResponseRatioLimit\":").Append(Number(planner.BrakingResponse?.MaximumRatio ?? double.NaN))
+                    .Append(",\"brakingResponseCommand\":").Append(planner.BrakingResponse?.Validated == true ? Vector(planner.BrakingResponse.SteeringCommand) : "null")
+                    .Append(",\"brakingResponsePredictedResidual\":").Append(Number(planner.BrakingResponse?.PredictedResidual ?? double.NaN))
+                    .Append(",\"brakingResponseRadial\":").Append(planner.BrakingResponse?.Validated == true ? Vector(planner.BrakingResponse.RadialResponse) : "null")
+                    .Append(",\"brakingResponseNormal\":").Append(planner.BrakingResponse?.Validated == true ? Vector(planner.BrakingResponse.NormalResponse) : "null")
+                    .Append(",\"candidateSimulationCacheHits\":").Append(planner.CandidateSimulationCacheHits)
                     .Append(",\"policySimulationCount\":").Append(planner.PolicySimulationCount)
                     .Append(",\"policySimulationCacheHits\":").Append(planner.PolicySimulationCacheHits)
                     .Append(",\"coverageRefinements\":").Append(planner.CoverageRefinements)
-                    .Append(",\"terminalAttitudeModel\":\"retained_braking_attitude_bounded_turn_v1\"")
+                    .Append(",\"terminalAttitudeModel\":\"").Append(planner.Snapshot.TerminalAngularAcceleration > 0 ?
+                        "hybrid_projected_torque_inertia_v1" : "retained_braking_attitude_bounded_turn_v1").Append('"')
                     .Append(",\"terminalNominalTurnRate\":").Append(Number(AirlessTargetAwareSimulation.NominalTerminalTurnRate))
                     .Append(",\"terminalSlowTurnRate\":").Append(Number(AirlessTargetAwareSimulation.SlowTerminalTurnRate))
                     .Append(",\"handoffForward\":").Append(selected == null ? "null" : Vector(selected.EndForward))
                     .Append(",\"handoffAppliedThrottle\":").Append(Number(selected?.EndAppliedThrottle ?? double.NaN))
                     .Append(",\"continuitySeedUT\":").Append(Number(planner.ContinuitySeedUT))
                     .Append(",\"usedLocalSearch\":").Append(planner.UsedLocalSearch ? "true" : "false")
+                    .Append(",\"brakingReserveSimulationCount\":").Append(planner.BrakingReserveSimulationCount)
+                    .Append(",\"brakingReserveThrustFraction\":").Append(Number(TargetAwareAirlessPlanner.BrakingAvailableThrustFraction))
+                    .Append(",\"brakingReserveChecked\":").Append(planner.SelectedBrakingReserveChecked ? "true" : "false")
+                    .Append(",\"brakingReservePasses\":").Append(planner.SelectedBrakingReservePasses ? "true" : "false")
                     .Append(",\"broadSearchFallback\":").Append(planner.BroadSearchFallback ? "true" : "false")
                     .Append(",\"brakeTimeBracketed\":").Append(
                         selected != null && !double.IsNaN(planner.TimingInterval) ? "true" : "false")
+                    .Append(",\"ballisticContactFound\":").Append(planner.BallisticContactFound ? "true" : "false")
+                    .Append(",\"inheritedBallisticContactWindow\":").Append(planner.InheritedBallisticContactWindow ? "true" : "false")
                     .Append(",\"ballisticContactUT\":").Append(Number(planner.BallisticContactUT))
                     .Append(",\"ballisticContact\":").Append(planner.BallisticContactUT > 0 ?
                         Absolute(planner.BallisticContact) : "null")
+                    .Append(",\"ballisticReferenceUT\":").Append(Number(planner.BallisticReferenceUT))
+                    .Append(",\"brakeSearchWindowEndUT\":").Append(Number(planner.BrakeSearchWindowEndUT))
                     .Append(",\"virtualBrakeUT\":").Append(Number(selected?.BrakeUT ?? double.NaN))
                     .Append(",\"firstContactUT\":").Append(Number(terminalContact ? endpoint.UT : impact ?
                         terrain.FirstContact.UT : double.NaN))
@@ -313,6 +363,8 @@ namespace MuMech.Landing
                     .Append(",\"timingDistanceEstimate\":").Append(Number(selected == null ? double.NaN : planner.TimingDistanceEstimate))
                     .Append(",\"terrainResolved\":").Append(terrain != null && terrain.Resolved ? "true" : "false")
                     .Append(",\"clearPath\":").Append(terrain != null && terrain.ClearPath ? "true" : "false")
+                    .Append(",\"pathValidToFirstContact\":").Append(terrain != null && terrain.Resolved &&
+                        terrain.HasFirstContact ? "true" : "false")
                     .Append(",\"minimumSampledClearance\":").Append(Number(terrain?.MinimumSampledClearance ?? double.NaN))
                     .Append(",\"handoffClearance\":").Append(Number(terrain?.HandoffClearance ?? double.NaN))
                     .Append(",\"localTerrainASL\":").Append(Number(terrain?.LocalTerrainASL ?? double.NaN))
@@ -342,6 +394,16 @@ namespace MuMech.Landing
                     .Append(",\"terrainCacheSamples\":[");
                 bool first = true;
                 foreach (var sample in planner.TerrainSamples)
+                {
+                    if (!first) line.Append(',');
+                    first = false;
+                    line.Append('[').Append(Number(sample.Key.Latitude)).Append(',')
+                        .Append(Number(sample.Key.Longitude)).Append(',')
+                        .Append(Number(sample.Value)).Append(']');
+                }
+                line.Append(']').Append(",\"terminalSurfaceSamples\":[");
+                first = true;
+                foreach (var sample in planner.TerminalSurfaceSamples)
                 {
                     if (!first) line.Append(',');
                     first = false;

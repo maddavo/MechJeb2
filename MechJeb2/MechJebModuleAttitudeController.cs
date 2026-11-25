@@ -56,6 +56,7 @@ namespace MuMech
 
         public void SetActiveController(int i)
         {
+            ResetRateFeedback();
             activeController = i;
             Controller = _controllers[activeController];
             Controller.OnStart();
@@ -63,6 +64,7 @@ namespace MuMech
 
         protected override void OnModuleEnabled()
         {
+            ResetRateFeedback();
             timeCount = 50;
             SetAxisControl(true, true, true);
             SetActuationControl();
@@ -112,6 +114,19 @@ namespace MuMech
         public Vector3d torque;
         public Vector3d inertia;
 
+        // Physics-step elastic motion must not become full alternating wheel torque.
+        public Vector3d FeedbackAngularVelocity { get; private set; }
+        private readonly AttitudeRateFilter[] _rateFilters =
+            { new AttitudeRateFilter(), new AttitudeRateFilter(), new AttitudeRateFilter() };
+        private Part _rateReferencePart;
+
+        private void ResetRateFeedback()
+        {
+            foreach (AttitudeRateFilter filter in _rateFilters) filter.Reset();
+            _rateReferencePart = null;
+        }
+
+
         public MechJebModuleAttitudeController(MechJebCore core)
             : base(core)
         {
@@ -129,6 +144,7 @@ namespace MuMech
         protected override void OnModuleDisabled()
         {
             if (useSAS) Part.vessel.ActionGroups.SetGroup(KSPActionGroup.SAS, false);
+            ResetRateFeedback();
             Controller.OnModuleDisabled();
         }
 
@@ -319,11 +335,23 @@ namespace MuMech
                 Core.Thrust.DifferentialThrottleSuccess == MechJebModuleThrustController.DifferentialThrottleStatus.SUCCESS)
                 torque += VesselState.TorqueDifferentialThrottle * Vessel.ctrlState.mainThrottle / 2.0;
 
+            Part referencePart = Vessel.GetReferenceTransformPart();
+            if (_rateReferencePart != referencePart) ResetRateFeedback();
+            _rateReferencePart = referencePart;
+            Vector3d rate = Vessel.angularVelocityD;
+            double ut = Planetarium.GetUniversalTime();
+            for (int i = 0; i < 3; i++)
+                rate[i] = _rateFilters[i].Update(rate[i], ut, VesselState.DeltaT);
+            FeedbackAngularVelocity = rate;
+            // Hybrid's stopping distance must use the same rate as its rate loop.
+            Vector3d momentum = Controller is HybridController
+                ? Vector3d.Scale(rate, VesselState.MoI) : VesselState.AngularMomentum;
+
             // Inertia is a bad name. It's the "angular distance to stop"
             inertia = 0.5 * Vector3d.Scale(
-                VesselState.AngularMomentum.Sign(),
+                momentum.Sign(),
                 Vector3d.Scale(
-                    Vector3d.Scale(VesselState.AngularMomentum, VesselState.AngularMomentum),
+                    Vector3d.Scale(momentum, momentum),
                     Vector3d.Scale(torque, VesselState.MoI).InvertNoNaN()
                 )
             );
@@ -375,10 +403,9 @@ namespace MuMech
             }
             else
             {
-                Controller.DrivePre(s, out Vector3d act, out Vector3d deltaEuler);
+                DriveWithRollDamping(Controller, s, out Vector3d act, out Vector3d deltaEuler);
 
                 act.Scale(ActuationControl);
-
                 SetFlightCtrlState(act, deltaEuler, s, 1);
 
                 act = new Vector3d(s.pitch, s.roll, s.yaw);
@@ -387,6 +414,31 @@ namespace MuMech
                 if (Core.Thrust.DifferentialThrottleSuccess == MechJebModuleThrustController.DifferentialThrottleStatus.SUCCESS)
                     Core.Thrust.DifferentialThrottleDemandedTorque =
                         -Vector3d.Scale(act, VesselState.TorqueDifferentialThrottle * Vessel.ctrlState.mainThrottle);
+            }
+        }
+
+        // AxisControl disables roll POSITION targeting, not angular-rate damping.
+        // All active attitude modes must stop uncommanded spin. Preserve the
+        // caller's settings and explicit Force Roll / spinup requests.
+        internal void DriveWithRollDamping(BaseAttitudeController controller, FlightCtrlState s,
+            out Vector3d act, out Vector3d deltaEuler)
+        {
+            Vector3d axes = AxisControl;
+            Vector3d rates = OmegaTarget;
+            try
+            {
+                if (axes.y == 0)
+                {
+                    AxisControl = new Vector3d(axes.x, 1, axes.z);
+                    OmegaTarget = new Vector3d(rates.x,
+                        AttitudeRollPolicy.RateWithoutAngle(rates.y), rates.z);
+                }
+                controller.DrivePre(s, out act, out deltaEuler);
+            }
+            finally
+            {
+                AxisControl = axes;
+                OmegaTarget = rates;
             }
         }
 

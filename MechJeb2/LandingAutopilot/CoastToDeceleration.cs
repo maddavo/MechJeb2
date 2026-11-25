@@ -92,7 +92,7 @@ namespace MuMech
 
                 Status = Localizer.Format("#MechJeb_LandingGuidance_Status1"); //"Coasting toward deceleration burn"
 
-                if (Core.Landing.LandAtTarget)
+                if (Core.Landing.LandAtTarget && Core.Landing.PredictionReady)
                 {
                     double currentError = Vector3d.Distance(Core.Target.GetPositionTargetPosition(), Core.Landing.LandingSite);
                     if (currentError > 1000)

@@ -42,6 +42,7 @@ namespace MuMech.AttitudeControllers
 
         /* max angular rotation */
         private Vector3d _maxOmega = Vector3d.zero;
+        private Vector3d _rateGain = Vector3d.zero;
 
         private Vector3d _controlTorque => Ac.torque;
 
@@ -95,18 +96,21 @@ namespace MuMech.AttitudeControllers
             if (UseInertia)
                 phi -= Ac.inertia;
 
+            phi.y = AttitudeRollPolicy.PositionError(phi.y, Ac.OmegaTarget.y);
             _phiVector = phi;
         }
 
         private void UpdatePredictionPI()
         {
-            _omega = -Ac.Vessel.angularVelocity;
+            _omega = -Ac.FeedbackAngularVelocity;
 
             UpdatePhi();
 
             for (int i = 0; i < 3; i++)
             {
                 _maxOmega[i] = _controlTorque[i] * MaxStoppingTime / Ac.VesselState.MoI[i];
+                _rateGain[i] = AttitudeRateResponse.Gain(_phiVector[i], _omega[i],
+                    Ac.VesselState.MoI[i], _controlTorque[i], MaxStoppingTime);
             }
 
             _targetOmega[0] = _pitchRatePI.Update(_phiVector[0], 0, _maxOmega[0]);
@@ -119,9 +123,16 @@ namespace MuMech.AttitudeControllers
                 _rollRatePI.ResetI();
             }
 
-            _targetTorque[0] = _pitchPI.Update(_omega[0], _targetOmega[0], Ac.VesselState.MoI[0], _controlTorque[0]);
-            _targetTorque[1] = _rollPI.Update(_omega[1], _targetOmega[1], Ac.VesselState.MoI[1], _controlTorque[1]);
-            _targetTorque[2] = _yawPI.Update(_omega[2], _targetOmega[2], Ac.VesselState.MoI[2], _controlTorque[2]);
+            if (AttitudeRollPolicy.KillRateOnly(Ac.OmegaTarget.y))
+            {
+                // Kill angular rate; never chase the requested roll angle.
+                _rollRatePI.ResetI();
+                _targetOmega.y = AttitudeRollPolicy.TargetRate(_targetOmega.y, Ac.OmegaTarget.y);
+            }
+
+            _targetTorque[0] = _pitchPI.UpdateWithResponse(_omega[0], _targetOmega[0], Ac.VesselState.MoI[0], _controlTorque[0], _rateGain[0], Ac.VesselState.DeltaT);
+            _targetTorque[1] = _rollPI.UpdateWithResponse(_omega[1], _targetOmega[1], Ac.VesselState.MoI[1], _controlTorque[1], _rateGain[1], Ac.VesselState.DeltaT);
+            _targetTorque[2] = _yawPI.UpdateWithResponse(_omega[2], _targetOmega[2], Ac.VesselState.MoI[2], _controlTorque[2], _rateGain[2], Ac.VesselState.DeltaT);
         }
 
         public override void Reset()

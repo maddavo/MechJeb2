@@ -5,6 +5,7 @@ namespace MuMech
     public class PIDController : IConfigNode
     {
         private double _prevError;
+        internal double PreviousError => _prevError;
         public double INTAccum, Kp, Ki, Kd;
         private readonly double _max;
         private readonly double _min;

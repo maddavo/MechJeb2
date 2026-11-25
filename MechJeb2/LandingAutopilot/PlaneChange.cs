@@ -23,8 +23,10 @@ namespace MuMech
                     Core.vessel.mainBody.GetWorldSurfacePosition(Core.Target.targetLatitude, Core.Target.targetLongitude, 0) - MainBody.position;
                 Vector3d currentRadialVector = Core.VesselState.CoM - Core.vessel.mainBody.position;
                 double angleToTarget = Vector3d.Angle(targetRadialVector, currentRadialVector);
-                //this calculation seems like it might be be working right:
-                double timeToTarget = Orbit.TimeOfTrueAnomaly(Core.vessel.orbit.trueAnomaly * UtilMath.Rad2Deg + angleToTarget, VesselState.Time) -
+                // Vector3d.Angle is degrees; both trueAnomaly and KSP's
+                // TimeOfTrueAnomaly argument are radians.
+                double timeToTarget = Orbit.TimeOfTrueAnomaly(V1LandingControlPolicy.PlaneChangeTargetTrueAnomaly(
+                    Core.vessel.orbit.trueAnomaly, angleToTarget), VesselState.Time) -
                     VesselState.Time;
                 double planetRotationAngle = 360 * timeToTarget / MainBody.rotationPeriod;
                 var planetRotation = Quaternion.AngleAxis((float)planetRotationAngle, MainBody.angularVelocity);
@@ -76,6 +78,8 @@ namespace MuMech
                     _planeChangeDVLeft = UtilMath.Deg2Rad * Vector3d.Angle(finalVelocity, VesselState.OrbitalVelocity) *
                         VesselState.SpeedOrbitalHorizontal;
                     Core.Attitude.attitudeTo(burnDir, AttitudeReference.INERTIAL, Core.Landing);
+                    Core.Landing.WarpPreparation.Observe(VesselState.Forward, burnDir,
+                        Core.vessel.angularVelocity.magnitude, VesselState.DeltaT, MuUtils.PhysicsRunning());
                     Status = Localizer.Format("#MechJeb_LandingGuidance_Status14",
                         _planeChangeDVLeft.ToString("F0")); //"Executing low orbit plane change of about " +  + " m/s"
 

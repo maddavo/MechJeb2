@@ -41,6 +41,14 @@ namespace MuMech.AttitudeControllers
             _current = _directionTracker.TrackedRotation;
             (_desired, _error, _distance) = _directionTracker.Desired(Ac.RequestedAttitude);
             _velocity = _vessel.angularVelocityD;
+            if (AttitudeRollPolicy.KillRateOnly(Ac.OmegaTarget.y))
+            {
+                // Equal desired/current roll removes angle feedback. Existing
+                // velocity damping remains; no new rate-control gain is added.
+                _desired.y = _current.y;
+                _error.y = AttitudeRollPolicy.PositionError(_error.y, Ac.OmegaTarget.y);
+            }
+
 
             // low-pass filter the control torque
             _controlTorque = _controlTorque == Vector3d.zero ? Ac.torque : _controlTorque + SmoothTorque * (Ac.torque - _controlTorque);

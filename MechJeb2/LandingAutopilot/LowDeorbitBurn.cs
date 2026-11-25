@@ -1,5 +1,6 @@
 ﻿using System;
 using KSP.Localization;
+using System.Globalization;
 using UnityEngine;
 
 // FIXME: use a maneuver node
@@ -17,6 +18,64 @@ namespace MuMech
             private bool _lowDeorbitEndOnLandingSiteNearer;
 
             private const double LOW_DEORBIT_BURN_TRIGGER_FACTOR = 2;
+
+            private V1DeorbitPreparation _preparation = new V1DeorbitPreparation();
+            private double _nextPreparationEstimateUT;
+            private double _estimatedTriggerUT = double.NaN;
+            private double _preparationTargetLatitude = double.NaN, _preparationTargetLongitude = double.NaN;
+            private double _reserveSeconds = double.NaN, _warpExitUT = double.NaN;
+
+            public override string TraceDetails => string.Format(CultureInfo.InvariantCulture,
+                " deorbitTriggered={0} preparationStartedUT={1:R} prepared={2} preparationSeconds={3:R} estimatedTriggerUT={4:R} preparationLiveRetrograde={5} warpExitUT={6:R} orientationReserve={7:R} measuredTurnSeconds={8:R} measuredSettleSeconds={9:R} actualWarpExitUT={10:R}",
+                _deorbitBurnTriggered, _preparation.StartedUT, _preparation.Complete,
+                _preparation.Seconds, _estimatedTriggerUT, _preparation.LiveRetrograde,
+                _warpExitUT, _reserveSeconds, Core.Landing.WarpPreparation.TurnSeconds,
+                Core.Landing.WarpPreparation.SettleSeconds, Core.Landing.WarpPreparation.ActualWarpExitUT);
+
+            private Vector3d PrepareDeorbitAttitude(double decelerationEndASL)
+            {
+                double now = VesselState.Time;
+                // KSP inverse-rotates world coordinates and osculating LAN/
+                // argument each tick. Those are not new manoeuvres. Refresh
+                // geometry from the current orbit without resetting turn time.
+                if (Core.Target.targetLatitude != _preparationTargetLatitude ||
+                    Core.Target.targetLongitude != _preparationTargetLongitude)
+                {
+                    _preparation = new V1DeorbitPreparation();
+                    _nextPreparationEstimateUT = 0;
+                    _estimatedTriggerUT = double.NaN;
+                    _reserveSeconds = double.NaN;
+                    _preparationTargetLatitude = Core.Target.targetLatitude;
+                    _preparationTargetLongitude = Core.Target.targetLongitude;
+                }
+                _preparation.Start(now);
+                if (_preparation.UseLiveRetrograde(_estimatedTriggerUT, now, _reserveSeconds))
+                    return -VesselState.SurfaceVelocity.normalized;
+                if (now >= _nextPreparationEstimateUT)
+                {
+                    // This accessor already returns body-centred coordinates.
+                    Vector3d target = Core.Target.GetPositionTargetPosition();
+                    double acceleration = VesselState.LimitedMaxThrustAcceleration;
+                    _estimatedTriggerUT = V1LandingControlPolicy.UpcomingDeorbitTrigger(ut =>
+                    {
+                        Vector3d position = Orbit.WorldBCIPositionAtUT(ut);
+                        return V1LandingControlPolicy.DeorbitPreparationRangeError(position,
+                            Orbit.WorldOrbitalVelocityAtUT(ut), target, MainBody.angularVelocity,
+                            ut - now, MainBody.Radius, decelerationEndASL, acceleration);
+                    }, now, Orbit.period);
+                    _nextPreparationEstimateUT = now + 0.5;
+                }
+                if (double.IsNaN(_estimatedTriggerUT))
+                    return -VesselState.SurfaceVelocity.normalized;
+                Vector3d futurePosition = Orbit.WorldBCIPositionAtUT(_estimatedTriggerUT);
+                Vector3d futureDirection = -(Orbit.WorldOrbitalVelocityAtUT(_estimatedTriggerUT) -
+                    Vector3d.Cross(MainBody.angularVelocity, futurePosition)).normalized;
+                _reserveSeconds = Core.Landing.WarpPreparation.Estimate(Vector3d.Angle(
+                    futureDirection, -VesselState.SurfaceVelocity.normalized), _preparation.Seconds);
+                if (_preparation.UseLiveRetrograde(_estimatedTriggerUT, now, _reserveSeconds))
+                    return -VesselState.SurfaceVelocity.normalized;
+                return futureDirection;
+            }
 
             public LowDeorbitBurn(MechJebCore core) : base(core)
             {
@@ -45,7 +104,8 @@ namespace MuMech
                 //Decide when we will start the deorbit burn:
                 double stoppingDistance = Math.Pow(VesselState.SpeedSurfaceHorizontal, 2) / (2 * VesselState.LimitedMaxThrustAcceleration);
                 double triggerDistance = LOW_DEORBIT_BURN_TRIGGER_FACTOR * stoppingDistance;
-                double heightAboveTarget = VesselState.AltitudeASL - Core.Landing.DecelerationEndAltitude();
+                double decelerationEndASL = Core.Landing.DecelerationEndAltitude();
+                double heightAboveTarget = VesselState.AltitudeASL - decelerationEndASL;
                 if (triggerDistance < heightAboveTarget)
                 {
                     triggerDistance = heightAboveTarget;
@@ -65,13 +125,9 @@ namespace MuMech
                     : //"Executing low deorbit burn"
                     "#MechJeb_LandingGuidance_Status12"); //"Moving to low deorbit burn point"
 
-                //Warp toward deorbit burn if it hasn't been triggerd yet:
-                if (!_deorbitBurnTriggered && Core.Node.Autowarp && rangeToTarget > 2 * triggerDistance && Core.vessel.angularVelocity.magnitude < 0.001)
-                    Core.Warp.WarpRegularAtRate((float)(Orbit.period / 6));
-                if (rangeToTarget < triggerDistance && !MuUtils.PhysicsRunning()) Core.Warp.MinimumWarp();
-
                 //By default, thrust straight back at max throttle
-                Vector3d thrustDirection = -VesselState.SurfaceVelocity.normalized;
+                Vector3d thrustDirection = !_deorbitBurnTriggered && Core.Node.Autowarp ?
+                    PrepareDeorbitAttitude(decelerationEndASL) : -VesselState.SurfaceVelocity.normalized;
                 _lowDeorbitBurnMaxThrottle = 1;
 
                 //If we are burning, we watch the predicted landing site and switch to the braking
@@ -137,6 +193,42 @@ namespace MuMech
                 }
 
                 Core.Attitude.attitudeTo(thrustDirection, AttitudeReference.INERTIAL, Core.Landing);
+
+                if (!_deorbitBurnTriggered && Core.Node.Autowarp)
+                {
+                    Core.Landing.WarpPreparation.Observe(VesselState.Forward, thrustDirection,
+                        Core.vessel.angularVelocity.magnitude, VesselState.DeltaT, MuUtils.PhysicsRunning());
+                    // Test the newly issued direction, never the old plane-
+                    // change command. Measure turn plus settling at physics rate.
+                    bool ready = Core.Landing.WarpPreparation.ReadyForWarp(
+                        Vector3d.Angle(VesselState.Forward, thrustDirection), MuUtils.PhysicsRunning(),
+                        Core.Landing.WarpPreparation.OwnsWarpTarget(Core.Warp.warpToUT));
+                    _preparation.Observe(ready, MuUtils.PhysicsRunning(), VesselState.Time, VesselState.DeltaT);
+                    if (ready && _preparation.Complete && MuUtils.PhysicsRunning())
+                        Core.Landing.WarpPreparation.RetainMeasuredPreparation(_preparation.Seconds);
+                    _warpExitUT = _preparation.LiveRetrograde || !ready || !_preparation.Complete ? double.NaN :
+                        Core.Landing.WarpPreparation.ExitUT(_estimatedTriggerUT, VesselState.Time,
+                            Vector3d.Angle(thrustDirection, -VesselState.SurfaceVelocity.normalized),
+                            _preparation.Seconds, Time.fixedDeltaTime);
+                    if (!double.IsNaN(_warpExitUT))
+                    {
+                        Core.Landing.WarpPreparation.RequestedWarpExit(_warpExitUT);
+                        Core.Warp.WarpToUT(_warpExitUT);
+                    }
+                    else if (Core.Landing.WarpPreparation.OwnsWarpTarget(Core.Warp.warpToUT))
+                    {
+                        Core.Warp.MinimumWarp();
+                        Core.Landing.WarpPreparation.ClearWarpRequest();
+                    }
+                    else if (!MuUtils.PhysicsRunning()) Core.Warp.MinimumWarp();
+                }
+                else if (!_deorbitBurnTriggered && !Core.Node.Autowarp &&
+                    Core.Landing.WarpPreparation.OwnsWarpTarget(Core.Warp.warpToUT))
+                {
+                    Core.Warp.MinimumWarp();
+                    Core.Landing.WarpPreparation.ClearWarpRequest();
+                }
+                if (rangeToTarget < triggerDistance && !MuUtils.PhysicsRunning()) Core.Warp.MinimumWarp();
 
                 return this;
             }

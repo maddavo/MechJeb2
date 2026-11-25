@@ -309,7 +309,7 @@ namespace MuMech.AttitudeControllers
                 _velPID[i].IntegralDeadband = VelDeadband * _maxAlpha[i];
                 _velPID[i].Clegg = VelClegg;
 
-                _targetAlpha[i] = _velPID[i].Update(_targetOmega[i], _vessel.angularVelocityD[i]);
+                _targetAlpha[i] = _velPID[i].Update(_targetOmega[i], Ac.FeedbackAngularVelocity[i]);
 
                 _targetTorque[i] = _vessel.MOI[i] * _targetAlpha[i];
 

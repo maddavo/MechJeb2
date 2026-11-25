@@ -120,6 +120,7 @@ namespace MuMech.AttitudeControllers
                 _maxOmega[i] = _controlTorque[i] * MaxStoppingTime / Ac.VesselState.MoI[i];
             }
 
+            _phiVector.y = AttitudeRollPolicy.PositionError(_phiVector.y, Ac.OmegaTarget.y);
             _targetOmega[0] = _pitchRatePI.Update(-_phiVector[0], 0, _maxOmega[0]);
             _targetOmega[1] = _rollRatePI.Update(-_phiVector[1], 0, _maxOmega[1]);
             _targetOmega[2] = _yawRatePI.Update(-_phiVector[2], 0, _maxOmega[2]);
@@ -128,6 +129,12 @@ namespace MuMech.AttitudeControllers
             {
                 _targetOmega[1] = 0;
                 _rollRatePI.ResetI();
+            }
+
+            if (AttitudeRollPolicy.KillRateOnly(Ac.OmegaTarget.y))
+            {
+                _rollRatePI.ResetI();
+                _targetOmega.y = AttitudeRollPolicy.TargetRate(_targetOmega.y, Ac.OmegaTarget.y);
             }
 
             _targetTorque[0] = _pitchPI.Update(_omega[0], _targetOmega[0], Ac.VesselState.MoI[0], _controlTorque[0]);
