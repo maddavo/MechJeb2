@@ -212,3 +212,5 @@ See the [integrated landing guidance implementation plan](docs/Integrated-Landin
 ### Experimental live Duna screen
 
 `2.16.0-landing.20261126.duna-live-screen` is a controlled same-flight experiment with live dynamic braking/correction gating, not a flight-validated landing solution. Read [test requirements and limitations](docs/Duna-Live-Screen.md) before any trial.
+
+`2.16.0-landing.20261126.duna-live-screen.1` corrects the observed terminal-pressure false deadline and distinguishes high capture recovery from terminal handoff. See latest [experiment record](docs/Duna-Live-Screen.md); not a flight-validated precision landing.

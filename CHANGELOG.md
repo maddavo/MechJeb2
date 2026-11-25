@@ -30,3 +30,9 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Integrate dynamic pressure/mass/capability screen in Duna approach, distinguish terminal assumptions and ignition deadline, retry correction candidates and prevent altitude-only premature terminal transfer.
 - Add trace-derived synthetic decision regression, live snapshot diagnostics and experimental test workflow. Airless unchanged.
+
+## 2.16.0-landing.20261126.duna-live-screen.1
+
+- Fix scalar pressure boundary and unknown-versus-rejected deadline classification.
+- Replace arbitrary unresolved retry timeout with separate geometric emergency, retain entry/correction gates.
+- Explicit high-altitude capture recovery and additional decision/boundary tests.
