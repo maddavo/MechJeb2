@@ -11,6 +11,7 @@ namespace MuMech
         public class DecelerationBurn : AutopilotStep
         {
             private bool _decelerationBurnTriggered;
+            private bool _dunaBrakingCommanded, _dunaForceBraking;
             private bool _poweredBrakingObserved, _coastWarpOwned;
             private double _firstActualThrustUT = double.NaN, _warpExitUT = double.NaN;
             private string _warpReason = "reference_wait";
@@ -28,7 +29,8 @@ namespace MuMech
                 string.Format(CultureInfo.InvariantCulture,
                     " brakingCorrection=({0:R},{1:R},{2:R}) brakingThrustCommand=({3:R},{4:R},{5:R})",
                     _correctionVector.x,_correctionVector.y,_correctionVector.z,
-                    _thrustCommand.x,_thrustCommand.y,_thrustCommand.z);
+                    _thrustCommand.x,_thrustCommand.y,_thrustCommand.z) +
+                (Core.Landing.DunaBrakingCommitted ? " dunaForceBraking="+_dunaForceBraking : string.Empty);
 
             private void CancelCoastWarp()
             {
@@ -48,7 +50,10 @@ namespace MuMech
 
             public override AutopilotStep OnFixedUpdate()
             {
-                if (_decelerationBurnTriggered && VesselState.CurrentThrustAcceleration > 0)
+                bool dunaCommitted=Core.Landing.DunaBrakingCommitted;
+                if (_decelerationBurnTriggered && VesselState.CurrentThrustAcceleration > 0 &&
+                    (!dunaCommitted || _dunaBrakingCommanded &&
+                        Vector3d.Dot(VesselState.Forward,-VesselState.SurfaceVelocity.normalized)>0.75))
                 {
                     if (!_poweredBrakingObserved) _firstActualThrustUT = VesselState.Time;
                     _poweredBrakingObserved = true;
@@ -62,7 +67,7 @@ namespace MuMech
                     return new KillHorizontalVelocity(Core);
                 }
 
-                double decelerationStartTime =
+                double decelerationStartTime = dunaCommitted ? VesselState.Time :
                     Core.Landing.Prediction.BrakeReferenceUT(VesselState.Time);
                 if (decelerationStartTime - VesselState.Time > 5 && !_decelerationBurnTriggered)
                 {
@@ -101,12 +106,23 @@ namespace MuMech
                 // An expired forecast exposes timing only, not an endpoint.
                 // Continue the nominal braking law without optional steering;
                 // never dereference its deliberately absent landing frame.
-                _poweredResponseUsed=Core.Landing.TryPoweredBrakingCorrection(out Vector3d courseCorrection,
-                    out _correctionHorizon);
-                if (!_poweredResponseUsed) courseCorrection=Core.Landing.PredictionReady ?
-                    Core.Landing.ComputeCourseCorrection(false) : Vector3d.zero;
+                _dunaForceBraking=dunaCommitted && Core.Landing.DunaBrakingRequiresThrust(_poweredBrakingObserved);
+                Vector3d courseCorrection=Vector3d.zero;
+                _poweredResponseUsed=false;
+                if (!_dunaForceBraking)
+                {
+                    _poweredResponseUsed=Core.Landing.TryPoweredBrakingCorrection(out courseCorrection,
+                        out _correctionHorizon);
+                    if (!_poweredResponseUsed) courseCorrection=Core.Landing.PredictionReady &&
+                        (!dunaCommitted || Core.Landing.DunaBrakingForecastUsable) ?
+                        Core.Landing.ComputeCourseCorrection(false) : Vector3d.zero;
+                }
+                else _correctionHorizon=0;
+                if (dunaCommitted && !DunaBrakingHandoff.Finite(courseCorrection.magnitude))
+                    courseCorrection=Vector3d.zero;
                 double correctionAngle = _poweredResponseUsed ? courseCorrection.magnitude :
                     courseCorrection.magnitude / (2.0 * VesselState.LimitedMaxThrustAcceleration);
+                if (dunaCommitted && !DunaBrakingHandoff.Finite(correctionAngle)) correctionAngle=0;
                 correctionAngle = Math.Min(_poweredResponseUsed ?
                     Math.Max(.1,BrakingEndpointResponse.MarginRatio(Core.Thrust.LastThrottle,Core.Thrust.ThrottleLimit)) : .1,
                     correctionAngle);
@@ -120,6 +136,13 @@ namespace MuMech
                 {
                     Core.Thrust.RequestActiveThrottle(0.0f);
                     Status = Localizer.Format("#MechJeb_LandingGuidance_Status5"); //"Braking"
+                }
+                else if (_dunaForceBraking)
+                {
+                    // Do not wait for a less conservative or invalid legacy
+                    // envelope. Retain alignment gate and thrust limiters.
+                    Core.Thrust.RequestActiveThrottle(1.0f);
+                    Status = "Duna braking: conservative reserve";
                 }
                 else
                 {
@@ -141,6 +164,7 @@ namespace MuMech
                         desiredSpeed >= double.MaxValue ? "∞" : Math.Abs(desiredSpeed).ToString("F1")); //"Braking: target speed = " +  + " m/s"
                 }
 
+                if (dunaCommitted) _dunaBrakingCommanded=Core.Thrust.TargetThrottle>0;
                 Core.Attitude.attitudeTo(desiredThrustVector, AttitudeReference.INERTIAL, Core.Landing);
 
                 Core.Landing.WarpPreparation.Observe(VesselState.Forward, desiredThrustVector,

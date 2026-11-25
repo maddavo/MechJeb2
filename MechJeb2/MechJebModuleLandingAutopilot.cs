@@ -34,6 +34,149 @@ namespace MuMech
 
         internal DunaM1Capture DunaM1 => _dunaM1;
 
+        private DunaBrakingCommitment _dunaCommitment = new DunaBrakingCommitment();
+        private DunaBrakingHandoff.Result _dunaProbe, _dunaImmediateProbe;
+        private double _dunaProbeUT=double.NaN, _dunaProbeDelay=double.NaN, _dunaAuthority=double.NaN,
+            _dunaTerrainRadius=double.NaN, _dunaTurnReserve=double.NaN;
+        private bool _dunaProbeWhileBraking, _dunaImmediateChecked;
+        internal bool DunaBrakingHandoffEnabled => DunaM1Eligible();
+        internal bool DunaBrakingCommitted => DunaBrakingHandoffEnabled && _dunaCommitment.Committed;
+
+        private void ResetDunaBrakingHandoff()
+        {
+            _dunaCommitment=new DunaBrakingCommitment();
+            _dunaProbeUT=_dunaProbeDelay=_dunaAuthority=_dunaTerrainRadius=_dunaTurnReserve=double.NaN;
+            _dunaProbe=default; _dunaImmediateProbe=default;
+            _dunaProbeWhileBraking=_dunaImmediateChecked=false;
+        }
+
+        private static DunaBrakingHandoff.Vec DunaVector(Vector3d v) =>
+            new DunaBrakingHandoff.Vec(v.x,v.y,v.z);
+
+        private double DunaTurnReserve(double angle) =>
+            DunaBrakingHandoff.TurnReserve(angle,WarpPreparation.Estimate(angle));
+
+        private double DunaBrakingPreparation(double angle)
+        {
+            _dunaTurnReserve=DunaTurnReserve(angle);
+            return DunaBrakingHandoff.PreparationReserve(_dunaTurnReserve,VesselState.MaxEngineResponseTime,
+                Core.Thrust.SmoothThrottle ? (double)Core.Thrust.ThrottleSmoothingTime : 0,
+                WarpPreparation.WarpOverrunSeconds,TimeWarp.fixedDeltaTime);
+        }
+
+        private double DunaAvailableAcceleration()
+        {
+            // Both fixed and transient throttle authority. Later changes
+            // are picked up on the next check; no credit for future mass loss.
+            return Math.Min(VesselState.LimitedMaxThrustAcceleration,
+                VesselState.ThrustAccel(Math.Max(0,Math.Min(1,VesselState.ThrottleLimit))));
+        }
+
+        private DunaBrakingHandoff.Result ProbeDunaBraking(double delay)
+        {
+            _dunaAuthority=DunaAvailableAcceleration();
+            double upper=MainBody.pqsController == null ? double.NaN : MainBody.pqsController.radiusMax;
+            double bottom=Math.Max(0,VesselState.AltitudeTrue-VesselState.AltitudeBottom);
+            _dunaTerrainRadius=Math.Max(upper,MainBody.Radius+VesselState.SurfaceAltitudeASL)+bottom;
+            return DunaBrakingHandoff.Probe(DunaVector(VesselState.CoM-MainBody.position),
+                DunaVector(VesselState.OrbitalVelocity),DunaVector(MainBody.angularVelocity),
+                MainBody.gravParameter,_dunaTerrainRadius,_dunaAuthority,delay);
+        }
+
+        private void EvaluateDunaBraking(double delay, bool braking)
+        {
+            _dunaProbeUT=VesselState.Time; _dunaProbeDelay=delay; _dunaProbeWhileBraking=braking;
+            _dunaProbe=ProbeDunaBraking(delay);
+            _dunaImmediateChecked=!_dunaProbe.Safe;
+            if (_dunaImmediateChecked) _dunaImmediateProbe=ProbeDunaBraking(0);
+        }
+
+        private bool DunaProbeDue(bool braking) =>
+            !DunaBrakingHandoff.Finite(_dunaProbeUT) || _dunaProbeWhileBraking!=braking ||
+            VesselState.Time<_dunaProbeUT || VesselState.Time-_dunaProbeUT>=DunaBrakingHandoff.RefreshSeconds;
+
+        // Ahead of ALL ordinary readiness, settling and consensus waits.
+        // Failed delayed probe commits; an infeasible immediate probe
+        // must not authorize any further correction.
+        internal bool CheckDunaBrakingHandoff()
+        {
+            if (!DunaBrakingHandoffEnabled) return false;
+            if (_dunaCommitment.Committed) return true;
+            if (TimeWarp.CurrentRate>1) Core.Warp.MinimumWarp();
+            if (DunaProbeDue(false))
+            {
+                EvaluateDunaBraking(DunaBrakingPreparation(Vector3d.Angle(VesselState.Forward,
+                    -VesselState.SurfaceVelocity)),false);
+                if (!_dunaProbe.Safe) CommitDunaBraking("delayed_probe_"+_dunaProbe.Reason,true);
+            }
+            return _dunaCommitment.Committed;
+        }
+
+        // Preserve legacy pulse magnitudes. Reject a pulse rather than spend
+        // braking preparation window. Forecast waits remain interruptible.
+        internal bool AllowDunaCorrectionPulse(Vector3d direction, double dv)
+        {
+            if (!DunaBrakingHandoffEnabled) return true;
+            if (_dunaCommitment.Committed) return false;
+            if (!DunaBrakingHandoff.Finite(dv) || dv<=0 || !DunaBrakingHandoff.Finite(direction.magnitude))
+            {
+                CommitDunaBraking("invalid_correction_request",true);
+                return false;
+            }
+            double aim=DunaTurnReserve(Vector3d.Angle(VesselState.Forward,direction));
+            double pulse=V1LandingControlPolicy.CorrectionPulseSeconds(dv,DunaAvailableAcceleration(),
+                VesselState.MaxThrustAcceleration,VesselState.MaxEngineResponseTime,0,
+                VesselState.MinThrustAcceleration,TimeWarp.fixedDeltaTime);
+            double brakeAngle=Math.Min(180,Vector3d.Angle(direction,-VesselState.SurfaceVelocity)+15);
+            double reserve=aim+pulse+0.75+DunaBrakingPreparation(brakeAngle);
+            EvaluateDunaBraking(reserve,false);
+            if (!_dunaProbe.Safe) CommitDunaBraking("pulse_slack_"+_dunaProbe.Reason,true);
+            return !_dunaCommitment.Committed;
+        }
+
+        internal void CommitDunaBraking(string reason, bool forceFirst)
+        {
+            if (!DunaBrakingHandoffEnabled || _dunaCommitment.Committed) return;
+            _dunaCommitment.Commit(VesselState.Time,reason,forceFirst);
+            Core.Thrust.TargetThrottle=0;
+            Core.Warp.MinimumWarp();
+            if (VesselState.SpeedSurface>1e-6 && DunaBrakingHandoff.Finite(VesselState.SpeedSurface))
+                Core.Attitude.attitudeTo(-VesselState.SurfaceVelocity.normalized,AttitudeReference.INERTIAL,this);
+            TraceLanding("Duna braking committed"+DunaBrakingDetail);
+        }
+
+        internal bool DunaBrakingRequiresThrust(bool poweredObserved)
+        {
+            if (!DunaBrakingCommitted) return false;
+            if (DunaProbeDue(true))
+                EvaluateDunaBraking(DunaBrakingPreparation(Vector3d.Angle(VesselState.Forward,
+                    -VesselState.SurfaceVelocity)),true);
+            return _dunaCommitment.RequiresThrust(poweredObserved,_dunaProbe.Safe,VesselState.SpeedSurface);
+        }
+
+        // Optional braking steering only from a recent landing prediction.
+        // The committed ignition decision never consumes this forecast.
+        internal bool DunaBrakingForecastUsable => PredictionReady &&
+            DunaBrakingHandoff.Finite(Prediction.InputUT) && VesselState.Time>=Prediction.InputUT &&
+            VesselState.Time-Prediction.InputUT<=5;
+
+        internal string DunaBrakingDetail => !DunaBrakingHandoffEnabled ? string.Empty :
+            string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                " dunaBrakeCommitted={0} dunaBrakeCommitUT={1:R} dunaBrakeReason={2} dunaProbeUT={3:R}"+
+                " dunaProbeDelay={4:R} dunaTestedThrustUT={5:R} dunaProbeSafe={6} dunaProbeReason={7}"+
+                " dunaProbeMinClearance={8:R} dunaProbeEndClearance={9:R} dunaProbeEndSpeed={10:R}"+
+                " dunaProbeElapsed={11:R} dunaImmediateChecked={12} dunaImmediateSafe={13}"+
+                " dunaImmediateReason={14} dunaImmediateMinClearance={15:R} dunaAuthority={16:R}"+
+                " dunaTerrainRadius={17:R} dunaTurnReserve={18:R} dunaEngineResponse={19:R}"+
+                " dunaAppliedThrottle={20:R} dunaActualThrottleLimit={21:R} dunaDragAccel={22:R}",
+                _dunaCommitment.Committed,_dunaCommitment.CommitUT,_dunaCommitment.Reason,_dunaProbeUT,
+                _dunaProbeDelay,_dunaProbeUT+_dunaProbeDelay,_dunaProbe.Safe,_dunaProbe.Reason??"not_checked",
+                _dunaProbe.MinimumClearance,_dunaProbe.EndClearance,_dunaProbe.EndSpeed,_dunaProbe.Elapsed,
+                _dunaImmediateChecked,_dunaImmediateProbe.Safe,_dunaImmediateProbe.Reason??"not_checked",
+                _dunaImmediateProbe.MinimumClearance,_dunaAuthority,_dunaTerrainRadius,_dunaTurnReserve,
+                VesselState.MaxEngineResponseTime,Vessel.ctrlState.mainThrottle,VesselState.ThrottleLimit,
+                VesselState.DragAcceleration);
+
         private bool DunaM1Eligible() => Active && LandAtTarget && MainBody != null &&
             MainBody.atmosphere && MainBody.bodyName == "Duna" && Core.Target.PositionTargetExists &&
             Core.Target.targetBody == MainBody && !DeployChutes && !VesselState.ParachuteDeployed &&
@@ -48,7 +191,7 @@ namespace MuMech
                     !_dunaM1.Matches(Vessel.id, Core.Target.targetLatitude, Core.Target.targetLongitude, VesselState.Time)))
                     terminalReason = "context_changed";
                 if (_dunaM1.Open && (terminalReason != null || _dunaM1.LiveDue(VesselState.Time, CurrentStep?.GetType().Name)))
-                    _dunaM1.Live(Vessel, VesselState, CurrentStep?.GetType().Name, Status, CurrentStep?.TraceDetails,
+                    _dunaM1.Live(Vessel, VesselState, CurrentStep?.GetType().Name, Status, CurrentStep?.TraceDetails + DunaBrakingDetail,
                         PredictionVersion, Prediction, Core.Thrust.TargetThrottle, Core.Attitude.attitudeAngleFromTarget(),
                         Core.Thrust.Tmode.ToString(), Core.Thrust.TransSpdAct, Core.Thrust.TransKillH, terminalReason);
                 if (terminalReason != null || !_dunaM1.Open)
@@ -216,6 +359,7 @@ namespace MuMech
         public void LandAtPositionTarget(object controller)
         {
             ObserveDunaM1("new_targeted_landing");
+            ResetDunaBrakingHandoff();
             ResetWarpPreparation();
             // Saved/shared thrust settings must not silently impose a throttle floor
             // on a new landing. The user can explicitly enable it after activation.
@@ -252,6 +396,7 @@ namespace MuMech
         public void LandUntargeted(object controller)
         {
             ObserveDunaM1("switched_to_untargeted");
+            ResetDunaBrakingHandoff();
             ResetWarpPreparation();
             Core.Thrust.LimiterMinThrottle = false;
             if (LandingTraceEnabled && LandAtTarget && MainBody != null && !MainBody.atmosphere)
@@ -272,6 +417,7 @@ namespace MuMech
         public void StopLanding()
         {
             ObserveDunaM1(Vessel.LandedOrSplashed ? "landed_or_splashed" : "landing_stopped");
+            ResetDunaBrakingHandoff();
             ResetWarpPreparation();
             if (LandingTraceEnabled && LandAtTarget && MainBody != null && !MainBody.atmosphere)
                 LandingPredictorCapture.Lifecycle("landing_stopped", 0, PredictionVersion,
@@ -339,7 +485,7 @@ namespace MuMech
                 LandingPredictorTrace.WriteState(step, Status, VesselState.Time, TimeWarp.CurrentRate,
                     VesselState.CoM, VesselState.OrbitalVelocity, Core.Thrust.TargetThrottle,
                     VesselState.CurrentThrustAcceleration, PredictionVersion, Prediction,
-                    "phase transition", VesselState, Core.Attitude.attitudeAngleFromTarget(),
+                    "phase transition" + DunaBrakingDetail, VesselState, Core.Attitude.attitudeAngleFromTarget(),
                     Core.Thrust.Tmode.ToString(), Core.Thrust.TransSpdAct, Core.Thrust.TransKillH,
                     "guidance_transition");
             }
@@ -371,11 +517,11 @@ namespace MuMech
                 $"surfaceSpeed={VesselState.SpeedSurface:F2} verticalSpeed={VesselState.SpeedVertical:F2} horizontalSpeed={VesselState.SpeedSurfaceHorizontal:F2} " +
                 $"throttle={Core.Thrust.TargetThrottle:F3} thrustAccel={VesselState.CurrentThrustAcceleration:F3} maxAccel={VesselState.LimitedMaxThrustAcceleration:F3} " +
                 $"apA={Orbit.ApA:F1} peA={Orbit.PeA:F1} attitudeError={Core.Attitude.attitudeAngleFromTarget():F2} " +
-                $"predictionVersion={PredictionVersion}{CurrentStep.TraceDetails}");
+                $"predictionVersion={PredictionVersion}{CurrentStep.TraceDetails}{DunaBrakingDetail}");
             LandingPredictorTrace.WriteState(step, Status, VesselState.Time, TimeWarp.CurrentRate,
                 VesselState.CoM, VesselState.OrbitalVelocity, Core.Thrust.TargetThrottle,
                 VesselState.CurrentThrustAcceleration, PredictionVersion, Prediction,
-                CurrentStep.TraceDetails, VesselState, Core.Attitude.attitudeAngleFromTarget(),
+                CurrentStep.TraceDetails + DunaBrakingDetail, VesselState, Core.Attitude.attitudeAngleFromTarget(),
                 Core.Thrust.Tmode.ToString(), Core.Thrust.TransSpdAct, Core.Thrust.TransKillH);
         }
 
@@ -412,6 +558,7 @@ namespace MuMech
         protected override void OnModuleDisabled()
         {
             ObserveDunaM1("module_disabled");
+            ResetDunaBrakingHandoff();
             ResetWarpPreparation();
             if (LandingTraceEnabled && LandAtTarget && MainBody != null && !MainBody.atmosphere)
                 LandingPredictorCapture.Lifecycle("landing_module_disabled", 0, PredictionVersion,

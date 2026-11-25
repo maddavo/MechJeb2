@@ -192,3 +192,7 @@ the affected source code headers.
 ### Duna M1 diagnostic build
 
 `2.16.0-landing.20261125.duna-m1`: opt-in bounded Duna targeted powered landing diagnostics. See [Duna M1 capture, build and test instructions](docs/Duna-M1.md). No change to guidance commands or installation policy.
+
+### Duna braking handoff test candidate
+
+`2.16.0-landing.20261126.duna-brake-handoff`: see [Duna braking handoff](docs/Duna-Braking-Handoff.md) for the narrowly scoped experimental guidance change, configuration, diagnostics, limits and matched-flight validation. Build/test output is supplied only through branch-scoped GitHub Actions artifacts; no release or installation implied.

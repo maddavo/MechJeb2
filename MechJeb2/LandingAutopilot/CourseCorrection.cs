@@ -118,6 +118,7 @@ namespace MuMech
             public override AutopilotStep Drive(FlightCtrlState s)
             {
                 if (UseAirlessPolicy()) return DriveAirless();
+                if (Core.Landing.CheckDunaBrakingHandoff()) return DunaBrakeHandoff();
                 if (!Core.Landing.PredictionReady)
                     return this;
 
@@ -143,6 +144,7 @@ namespace MuMech
                 // If we're off course, but already too low, skip the course correction
                 if (VesselState.AltitudeASL < Core.Landing.DecelerationEndAltitude() + 5)
                 {
+                    Core.Landing.CommitDunaBraking("legacy_terminal_altitude",true);
                     return new DecelerationBurn(Core);
                 }
 
@@ -200,6 +202,7 @@ namespace MuMech
                     _courseCorrectionBurning = false;
                     _hasPendingCorrection = false;
                     BeginPulse(_pendingCorrection, currentError);
+                    if (!Core.Landing.AllowDunaCorrectionPulse(_pulseDirection,_remainingPulseDv)) return DunaBrakeHandoff();
                 }
                 else if (_remainingPulseDv <= 0)
                 {
@@ -209,9 +212,13 @@ namespace MuMech
                         return new CoastToDeceleration(Core);
 
                     BeginPulse(deltaV, currentError);
+                    if (!Core.Landing.AllowDunaCorrectionPulse(_pulseDirection,_remainingPulseDv)) return DunaBrakeHandoff();
                 }
 
                 Core.Attitude.attitudeTo(_pulseDirection, AttitudeReference.INERTIAL, Core.Landing);
+                if (Core.Landing.DunaBrakingHandoffEnabled)
+                    Core.Landing.WarpPreparation.Observe(VesselState.Forward,_pulseDirection,
+                        Core.vessel.angularVelocity.magnitude,VesselState.DeltaT,MuUtils.PhysicsRunning());
 
                 if (Core.Attitude.attitudeAngleFromTarget() < 2)
                     _courseCorrectionBurning = true;
@@ -242,6 +249,16 @@ namespace MuMech
                 }
 
                 return this;
+            }
+
+            private AutopilotStep DunaBrakeHandoff()
+            {
+                Core.Thrust.TargetThrottle=0;
+                _remainingPulseDv=0; _courseCorrectionBurning=false;
+                _waitingForPostBurnPrediction=false;
+                Core.Landing.TraceCourseCorrectionHandoff(Core.Landing.DunaBrakingDetail,
+                    nameof(DecelerationBurn));
+                return new DecelerationBurn(Core);
             }
 
             private double CompletionError => Math.Max(200, MainBody.Radius * 0.0005);

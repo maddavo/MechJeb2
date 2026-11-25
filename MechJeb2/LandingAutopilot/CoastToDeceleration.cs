@@ -71,6 +71,7 @@ namespace MuMech
             public override AutopilotStep OnFixedUpdate()
             {
                 Core.Thrust.TargetThrottle = 0;
+                if (Core.Landing.CheckDunaBrakingHandoff()) return new DecelerationBurn(Core);
 
                 // If the atmospheric drag is has started to act on the vessel then we are in a position to start considering when to deploy the parachutes.
                 if (Core.Landing.DeployChutes)
@@ -84,6 +85,7 @@ namespace MuMech
                 double maxAllowedSpeed = Core.Landing.MaxAllowedSpeed();
                 if (VesselState.SpeedSurface > 0.9 * maxAllowedSpeed)
                 {
+                    Core.Landing.CommitDunaBraking("legacy_speed_trigger",false);
                     Core.Warp.MinimumWarp();
                     if (Core.Landing.RCSAdjustment)
                         Core.RCS.Enabled = false;
@@ -118,6 +120,7 @@ namespace MuMech
                 // If we're already low, skip directly to the Deceleration burn
                 if (VesselState.AltitudeASL < Core.Landing.DecelerationEndAltitude() + 5)
                 {
+                    Core.Landing.CommitDunaBraking("legacy_terminal_altitude",true);
                     Core.Warp.MinimumWarp();
                     if (Core.Landing.RCSAdjustment)
                         Core.RCS.Enabled = false;
@@ -147,7 +150,7 @@ namespace MuMech
                 }
 
                 //Warp at a rate no higher than the rate that would have us impacting the ground 10 seconds from now:
-                if (_warpReady && Core.Node.Autowarp)
+                if (_warpReady && Core.Node.Autowarp && !Core.Landing.DunaBrakingHandoffEnabled)
                 {
                     // Make sure if we're hovering that we don't go straight into too fast of a warp
                     // (g * 5 is average velocity falling for 10 seconds from a hover)

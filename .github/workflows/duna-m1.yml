@@ -1,9 +1,9 @@
-name: Duna M1 build and landing tests
+name: Duna braking handoff build and landing tests
 
 on:
   push:
     branches:
-      - design/duna-m1-diagnostics-20261125
+      - design/duna-brake-handoff-20261126
 
 permissions:
   contents: read
@@ -49,27 +49,27 @@ jobs:
           dotnet build MechJebLibTest/MechJebLibTest.csproj -c Release "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Run focused Duna M1 tests
+      - name: Run focused Duna diagnostic and braking handoff tests
         id: duna
         run: |
-          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release --no-build "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~DunaM1DiagnosticsTests' --logger 'console;verbosity=normal' --logger 'trx;LogFileName=duna.trx' --results-directory TestResults
+          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release --no-build "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~DunaM1DiagnosticsTests|FullyQualifiedName~DunaBrakingHandoffTests' --logger 'console;verbosity=normal' --logger 'trx;LogFileName=duna.trx' --results-directory TestResults
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           [xml]$trx = Get-Content TestResults/duna.trx -Raw
           $tests = @($trx.TestRun.Results.UnitTestResult)
-          if ($tests.Count -lt 4 -or @($tests | Where-Object { $_.outcome -ne 'Passed' }).Count -gt 0) { throw 'Expected at least four passing Duna M1 tests' }
+          if ($tests.Count -lt 11 -or @($tests | Where-Object { $_.outcome -ne 'Passed' }).Count -gt 0) { throw 'Expected eleven passing Duna tests' }
 
       - name: Run broader landing regression suite
         id: landing
         continue-on-error: true
         run: |
-          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release --no-build "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~LandingPredictionTests&FullyQualifiedName!~DunaM1DiagnosticsTests' --logger 'trx;LogFileName=landing.trx' --results-directory TestResults
+          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release --no-build "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~LandingPredictionTests&FullyQualifiedName!~DunaM1DiagnosticsTests&FullyQualifiedName!~DunaBrakingHandoffTests' --logger 'trx;LogFileName=landing.trx' --results-directory TestResults
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Checkout exact unmodified V1 baseline for comparison
+      - name: Checkout exact installed M1 baseline for comparison
         if: steps.landing.outcome == 'failure'
         uses: actions/checkout@v4
         with:
-          ref: 907349e78b3212cf67b30ef4eaea37dd1412e829
+          ref: 718247a9c8e0ddbd5a555267774b9b0900519bc2
           path: baseline-v1
           persist-credentials: false
 
@@ -79,10 +79,11 @@ jobs:
         continue-on-error: true
         working-directory: baseline-v1
         run: |
-          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~LandingPredictionTests&FullyQualifiedName!~DunaM1DiagnosticsTests' --logger 'trx;LogFileName=baseline.trx' --results-directory ../TestResults
+          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~LandingPredictionTests&FullyQualifiedName!~DunaM1DiagnosticsTests&FullyQualifiedName!~DunaBrakingHandoffTests' --logger 'trx;LogFileName=baseline.trx' --results-directory ../TestResults
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Compare baseline and task regression outcomes
+        id: compare
         if: steps.landing.outcome == 'failure'
         run: |
           $ErrorActionPreference = 'Stop'
@@ -99,7 +100,7 @@ jobs:
           if ($delta.Count) { throw 'Baseline and task landing outcomes differ; investigate before use' }
 
       - name: Package plugin and assembly identity manifest
-        if: always() && steps.duna.outcome == 'success'
+        if: always() && steps.duna.outcome == 'success' && (steps.landing.outcome == 'success' || steps.compare.outcome == 'success')
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -108,7 +109,7 @@ jobs:
           $plugin = Join-Path $out 'MechJeb2.dll'
           if (!(Test-Path $plugin)) { throw 'Release DLL missing' }
           Copy-Item $plugin $dest.FullName
-          $manifest = @("Source commit: $env:GITHUB_SHA", "KSP reference archive: KSP-1.12.5.zip", 'Diagnostic test build only; broader regression status is recorded in the test artifact and run.', 'Companions are identified for review only; not packaged or authorised for installation.')
+          $manifest = @("Source commit: $env:GITHUB_SHA", "KSP reference archive: KSP-1.12.5.zip", 'Experimental handoff test build only; broader regression status is recorded in the test artifact and run.', 'Companions are identified for review only; not packaged or authorised for installation.')
           $asm = [Reflection.Assembly]::ReflectionOnlyLoadFrom((Resolve-Path $plugin).Path)
           $manifest += "Plugin: $($asm.FullName)"
           $manifest += "Product version: $([Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path $plugin).Path).ProductVersion)"
@@ -129,16 +130,16 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: duna-m1-test-results
+          name: duna-brake-handoff-test-results
           path: TestResults/
           if-no-files-found: warn
           retention-days: 14
 
       - name: Upload diagnostic build output
-        if: always() && steps.duna.outcome == 'success'
+        if: always() && steps.duna.outcome == 'success' && (steps.landing.outcome == 'success' || steps.compare.outcome == 'success')
         uses: actions/upload-artifact@v4
         with:
-          name: duna-m1-plugin-test-only
+          name: duna-brake-handoff-plugin-test-only
           path: ci-artifact/
           if-no-files-found: error
           retention-days: 14
