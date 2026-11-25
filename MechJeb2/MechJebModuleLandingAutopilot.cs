@@ -30,6 +30,39 @@ namespace MuMech
             WarpPreparation = new V1WarpPreparation();
         }
         public bool LandAtTarget;
+        private DunaM1Capture _dunaM1;
+
+        internal DunaM1Capture DunaM1 => _dunaM1;
+
+        private bool DunaM1Eligible() => Active && LandAtTarget && MainBody != null &&
+            MainBody.atmosphere && MainBody.bodyName == "Duna" && Core.Target.PositionTargetExists &&
+            Core.Target.targetBody == MainBody && !DeployChutes && !VesselState.ParachuteDeployed &&
+            !RCSAdjustment && !Core.Thrust.LimiterMinThrottle;
+
+        private void ObserveDunaM1(string terminalReason = null)
+        {
+            if (_dunaM1 == null) return;
+            try
+            {
+                if (terminalReason == null && (!DunaM1Eligible() ||
+                    !_dunaM1.Matches(Vessel.id, Core.Target.targetLatitude, Core.Target.targetLongitude, VesselState.Time)))
+                    terminalReason = "context_changed";
+                if (_dunaM1.Open && (terminalReason != null || _dunaM1.LiveDue(VesselState.Time, CurrentStep?.GetType().Name)))
+                    _dunaM1.Live(Vessel, VesselState, CurrentStep?.GetType().Name, Status, CurrentStep?.TraceDetails,
+                        PredictionVersion, Prediction, Core.Thrust.TargetThrottle, Core.Attitude.attitudeAngleFromTarget(),
+                        Core.Thrust.Tmode.ToString(), Core.Thrust.TransSpdAct, Core.Thrust.TransKillH, terminalReason);
+                if (terminalReason != null || !_dunaM1.Open)
+                {
+                    _dunaM1.Close(terminalReason ?? "capture_limit");
+                    _dunaM1 = null;
+                }
+            }
+            catch (Exception ex)
+            {
+                _dunaM1?.Fail(ex);
+                _dunaM1 = null;
+            }
+        }
         internal bool AirlessTargetedForecast => LandAtTarget && MainBody != null &&
             !MainBody.atmosphere && Core.Target.PositionTargetExists &&
             Core.Target.targetBody == MainBody;
@@ -182,6 +215,7 @@ namespace MuMech
         //public interface:
         public void LandAtPositionTarget(object controller)
         {
+            ObserveDunaM1("new_targeted_landing");
             ResetWarpPreparation();
             // Saved/shared thrust settings must not silently impose a throttle floor
             // on a new landing. The user can explicitly enable it after activation.
@@ -205,10 +239,19 @@ namespace MuMech
                 SetStep(new PlaneChange(Core));
             else
                 SetStep(new DeorbitBurn(Core));
+            // Explicit one-shot process opt-in; no UI or controller configuration changes.
+            try
+            {
+                if (DunaM1Eligible())
+                    _dunaM1 = DunaM1Capture.TryOpen(Vessel.id, Core.Target.targetLatitude,
+                        Core.Target.targetLongitude, VesselState.Time, TouchdownSpeed);
+            }
+            catch (Exception ex) { Debug.Log("[DunaM1] capture start failed: " + ex.Message); }
         }
 
         public void LandUntargeted(object controller)
         {
+            ObserveDunaM1("switched_to_untargeted");
             ResetWarpPreparation();
             Core.Thrust.LimiterMinThrottle = false;
             if (LandingTraceEnabled && LandAtTarget && MainBody != null && !MainBody.atmosphere)
@@ -228,6 +271,7 @@ namespace MuMech
 
         public void StopLanding()
         {
+            ObserveDunaM1(Vessel.LandedOrSplashed ? "landed_or_splashed" : "landing_stopped");
             ResetWarpPreparation();
             if (LandingTraceEnabled && LandAtTarget && MainBody != null && !MainBody.atmosphere)
                 LandingPredictorCapture.Lifecycle("landing_stopped", 0, PredictionVersion,
@@ -278,6 +322,7 @@ namespace MuMech
             base.OnFixedUpdate();
             if (previousPhase != CurrentStep?.GetType()) CancelPreparedWarp();
             DeployParachutes();
+            ObserveDunaM1();
             TraceLandingState();
         }
 
@@ -366,6 +411,7 @@ namespace MuMech
 
         protected override void OnModuleDisabled()
         {
+            ObserveDunaM1("module_disabled");
             ResetWarpPreparation();
             if (LandingTraceEnabled && LandAtTarget && MainBody != null && !MainBody.atmosphere)
                 LandingPredictorCapture.Lifecycle("landing_module_disabled", 0, PredictionVersion,

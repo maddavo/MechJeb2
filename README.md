@@ -187,3 +187,8 @@ Licensed under the [GNU General Public License, Version 3](LICENSE.md).
 
 Portions (in the "MechJebLib" directory) are placed in the public domain and are documented in
 the affected source code headers.
+
+
+### Duna M1 diagnostic build
+
+`2.16.0-landing.20261125.duna-m1`: opt-in bounded Duna targeted powered landing diagnostics. See [Duna M1 capture, build and test instructions](docs/Duna-M1.md). No change to guidance commands or installation policy.

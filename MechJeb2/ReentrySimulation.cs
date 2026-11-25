@@ -86,6 +86,9 @@ namespace MuMech
         //Accumulated results
         private double _maxDragGees;
         private double _deltaVExpended;
+        // Optional M1 observer, never an input to simulation or guidance.
+        internal Landing.DunaM1Prediction DunaM1;
+        private double _dunaAcceptedDt, _dunaLiftAcceleration;
         private List<AbsoluteVector> _trajectory;
 
         private int _steps;
@@ -109,6 +112,7 @@ namespace MuMech
 
         private static void Reset(ReentrySimulation obj)
         {
+            obj.DunaM1 = null;
         }
 
         public static ReentrySimulation Borrow(Orbit initialOrbit, double ut, SimulatedVessel vessel, SimCurves simcurves,
@@ -203,6 +207,7 @@ namespace MuMech
         public Result RunSimulation()
         {
             _result = Result.Borrow();
+            _result.DunaM1 = DunaM1;
             try
             {
                 // First put all the problem parameters into the result, to aid debugging.
@@ -229,6 +234,7 @@ namespace MuMech
 
                 _result.StartPosition = _referenceFrame.ToAbsolute(_x, _t);
                 _result.SimulatedBrakingStartUT = _t;
+                DunaM1?.Start(_t);
 
                 // Simulate a maximum of maxOrbits periods of a circular orbit at the entry altitude
                 _maxSimulatedTime = _maxOrbits * 2.0 * Math.PI * Math.Sqrt(Math.Pow(Math.Abs(_x.magnitude), 3.0) / _gravParameter);
@@ -263,6 +269,13 @@ namespace MuMech
                     BS34Step();
                     LimitSpeed();
                     RecordTrajectory();
+                    if (DunaM1 != null)
+                    {
+                        Vector3d surface = SurfaceVelocity(_x, _v);
+                        DunaM1.ObserveStep(_trajectory[_trajectory.Count - 1], _dunaAcceptedDt, _dt,
+                            _deltaVExpended, _maxThrustAccel, surface.magnitude,
+                            Vector3d.Dot(surface, _x.normalized), _lastRecordedDrag.magnitude, _dunaLiftAcceleration);
+                    }
                 }
 
                 //MechJebCore.print("Sim ready " + result.outcome + " " + (t - startUT).ToString("F2"));
@@ -481,6 +494,7 @@ namespace MuMech
                         _parachuteSemiDeployMultiplier);
                     _x += dx;
                     _v += dv;
+                    if (DunaM1 != null) _dunaAcceptedDt = _dt;
                     _t += _dt;
                     // If a parachute is opening we need to lower dt to make sure we capture the opening sequence properly
                     _dt = parachutesDeploying ? MinDT : nextDT;
@@ -537,6 +551,7 @@ namespace MuMech
 
             Vector3d gravAccel = GravAccel(pos);
             Vector3d liftAccel = LiftForce(pos, vel, dynamicPressurekPa, mach) / _vessel.totalMass;
+            if (record && DunaM1 != null) _dunaLiftAcceleration = liftAccel.magnitude;
 
             Vector3d totalAccel = gravAccel + dragAccel + liftAccel;
 
@@ -844,6 +859,7 @@ namespace MuMech
 
             // Passive capture correlation only; never used by simulation or control.
             public long CaptureSubmissionId;
+            internal Landing.DunaM1Prediction DunaM1;
 
             public string DebugLog;
 
@@ -868,6 +884,7 @@ namespace MuMech
 
             private static void Reset(Result obj)
             {
+                obj.DunaM1 = null;
                 obj.AeroBrake = false;
                 obj.ForecastKind = LandingForecastKind.NoForecast;
                 obj.EndVerticalSpeed = double.NaN;

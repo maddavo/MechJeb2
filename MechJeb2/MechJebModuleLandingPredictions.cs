@@ -654,6 +654,15 @@ namespace MuMech
             var sim = ReentrySimulation.Borrow(patch, patch.StartUT, simVessel, simCurves, descentSpeedPolicy, decelEndAltitudeASL,
                 VesselState.LimitedMaxThrustAcceleration, parachuteMultiplierForThisSimulation, altitudeOfPreviousPrediction, addParachuteError, dt,
                 Time.fixedDeltaTime, maxOrbits, noSkipToFreefall);
+            // M1 observes ordinary predictions only; no alternate result or scheduling path.
+            DunaM1Capture duna = Core.Landing.DunaM1;
+            if (duna != null && !addParachuteError && patch.referenceBody == VesselState.MainBody &&
+                !deployChutes && !Core.Landing.DeployChutes && !VesselState.ParachuteDeployed)
+            {
+                try { sim.DunaM1 = duna.Submit(patch, VesselState, Interlocked.Read(ref predictionGeneration),
+                    descentSpeedPolicy?.GetType().Name, decelEndAltitudeASL, altitudeOfPreviousPrediction, dt); }
+                catch (Exception ex) { duna.Fail(ex); }
+            }
             long captureId = 0;
             LandingPredictorCapture.Snapshot capture = CaptureSnapshot(patch, patch.StartUT, patch.referenceBody);
             if (capture != null)
@@ -1704,6 +1713,7 @@ namespace MuMech
                     }
                     else
                     {
+                        Core.Landing.DunaM1?.Result(newResult, "simulation_error_discarded", VesselState.Time, ResultVersion);
                         LandingPredictorCapture.ResolvedResult(newResult.CaptureSubmissionId, newResult, null,
                             "simulation_error_discarded", Interlocked.Read(ref predictionGeneration),
                             Core.Landing.CurrentStep?.GetType().Name);
@@ -1837,6 +1847,7 @@ namespace MuMech
         private void TraceNormalResultDecision(string decision, ReentrySimulation.Result comparedResult,
             ReentrySimulation.Result newResult, TerrainProfileTrace terrainTrace)
         {
+            Core.Landing.DunaM1?.Result(newResult, decision, VesselState.Time, ResultVersion);
             if (!Core.Landing.LandingTraceEnabled || !Core.Landing.LandAtTarget)
                 return;
 
@@ -1881,6 +1892,7 @@ namespace MuMech
 
             result = newResult;
             ResultVersion++;
+            Core.Landing.DunaM1?.Published(newResult, VesselState.Time, ResultVersion);
             LandingPredictorCapture.Published(newResult.CaptureSubmissionId, ResultVersion,
                 Interlocked.Read(ref predictionGeneration), Core.Landing.CurrentStep?.GetType().Name);
         }
