@@ -19,6 +19,8 @@ namespace MuMech
             private double _dunaTrust=4, _dunaBeforeError=double.NaN, _dunaExpectedMovement, _dunaStartInputUT;
             private double _dunaPreviousError=double.NaN, _dunaPreviousInputUT=double.NaN, _dunaDriftRate=double.NaN;
             private bool _dunaResponsePending;
+            private double _dunaLastAttemptUT=double.NegativeInfinity;
+            private long _dunaLastAttemptVersion=-1;
             private bool _courseCorrectionBurning;
             private bool _waitingForPostBurnPrediction;
             private double _remainingPulseDv;
@@ -125,6 +127,19 @@ namespace MuMech
                 if (Core.Landing.CheckDunaBrakingHandoff()) return DunaBrakeHandoff();
                 if (Core.Landing.CheckDunaEntryHandoff()) return DunaBrakeHandoff();
                 bool duna=Core.Landing.DunaBrakingHandoffEnabled;
+                if (duna && !Core.Landing.DunaCorrectionScreenReady)
+                {
+                    Core.Landing.HoldDunaEntryAttitude();
+                    if (_remainingPulseDv>0)
+                    {
+                        _remainingPulseDv=0; _courseCorrectionBurning=false;
+                        _waitingForPostBurnPrediction=true; _postBurnCompletionUT=VesselState.Time;
+                        _predictionVersionAtPulseCompletion=Core.Landing.PredictionVersion;
+                        _hasPendingCorrection=false; _pendingPredictionCount=0;
+                    }
+                    Status="Duna: braking feasibility unresolved";
+                    return this;
+                }
                 // Tail impulse belongs to the preceding pulse; never use an
                 // input snapshot taken before the measured tail has ended.
                 if (duna && _waitingForPostBurnPrediction &&
@@ -184,7 +199,7 @@ namespace MuMech
                 }
 
                 // If we're off course, but already too low, skip the course correction
-                if (VesselState.AltitudeASL < Core.Landing.DecelerationEndAltitude() + 5)
+                if (!duna && VesselState.AltitudeASL < Core.Landing.DecelerationEndAltitude() + 5)
                 {
                     Core.Landing.CommitDunaBraking("legacy_terminal_altitude",true);
                     return new DecelerationBurn(Core);
@@ -265,10 +280,16 @@ namespace MuMech
                     _courseCorrectionBurning = false;
                     _hasPendingCorrection = false;
                     BeginPulse(_pendingCorrection, currentError);
-                    if (duna && _remainingPulseDv<=0) return DunaBrakeHandoff();
+                    if (duna && _remainingPulseDv<=0) { Core.Thrust.TargetThrottle=0; Status="Duna: retrying correction candidate"; return this; }
                 }
                 else if (_remainingPulseDv <= 0)
                 {
+                    if (duna && (VesselState.Time-_dunaLastAttemptUT<0.5 ||
+                        Core.Landing.PredictionVersion==_dunaLastAttemptVersion))
+                    {
+                        Core.Thrust.TargetThrottle=0;
+                        return this;
+                    }
                     Vector3d deltaV = Core.Landing.ComputeCourseCorrection(true, DownrangeCaptureDistance,
                         MaximumDownrangeHandoffDistance);
                     if (deltaV.magnitude <= MinimumUsefulCorrectionDv)
@@ -278,7 +299,7 @@ namespace MuMech
                     }
 
                     BeginPulse(deltaV, currentError);
-                    if (duna && _remainingPulseDv<=0) return DunaBrakeHandoff();
+                    if (duna && _remainingPulseDv<=0) { Core.Thrust.TargetThrottle=0; Status="Duna: retrying correction candidate"; return this; }
                 }
 
                 Core.Attitude.attitudeTo(_pulseDirection, AttitudeReference.INERTIAL, Core.Landing);
@@ -375,6 +396,8 @@ namespace MuMech
                     double cap=targetError>=4*nearTargetDistance ? _dunaTrust : Math.Min(_dunaTrust,maximumPulseDv);
                     if (_hasLastPulseDirection && Vector3d.Angle(_lastPulseDirection,direction)>90)
                         cap=Math.Min(cap,0.25);
+                    _dunaLastAttemptUT=VesselState.Time;
+                    _dunaLastAttemptVersion=Core.Landing.PredictionVersion;
                     _requestedCorrectionDv=deltaV.magnitude;
                     _remainingPulseDv=Core.Landing.SelectDunaCorrectionPulse(direction,deltaV.magnitude,cap,targetError);
                     _selectedPulseDv=Math.Max(0,_remainingPulseDv-PulseCompletionDv);
@@ -385,8 +408,11 @@ namespace MuMech
                 }
                 else _remainingPulseDv = Math.Min(deltaV.magnitude, maximumPulseDv);
                 _pulseDirection = direction;
-                _lastPulseDirection = direction;
-                _hasLastPulseDirection = true;
+                if (_remainingPulseDv>0)
+                {
+                    _lastPulseDirection = direction;
+                    _hasLastPulseDirection = true;
+                }
                 Status = Localizer.Format("#MechJeb_LandingGuidance_Status3",
                     deltaV.magnitude.ToString("F1")); //"Performing course correction of about " +  + " m/s"
             }

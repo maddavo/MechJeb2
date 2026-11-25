@@ -50,6 +50,14 @@ namespace MuMech
 
             public override AutopilotStep OnFixedUpdate()
             {
+                if (Core.Landing.DunaDynamicActive && !Core.Landing.DunaBrakingCommitted)
+                {
+                    if (!Core.Landing.CheckDunaBrakingHandoff())
+                    {
+                        Core.Thrust.TargetThrottle=0;
+                        return new CoastToDeceleration(Core);
+                    }
+                }
                 bool dunaCommitted=Core.Landing.DunaBrakingCommitted;
                 if (_decelerationBurnTriggered && VesselState.CurrentThrustAcceleration > 0 &&
                     (!dunaCommitted || _dunaBrakingCommanded &&
@@ -58,7 +66,13 @@ namespace MuMech
                     if (!_poweredBrakingObserved) _firstActualThrustUT = VesselState.Time;
                     _poweredBrakingObserved = true;
                 }
-                if (VesselState.AltitudeASL < Core.Landing.DecelerationEndAltitude() + 5)
+                if (dunaCommitted && Core.Landing.DunaDynamicTerminalReady)
+                {
+                    Core.Warp.MinimumWarp();
+                    Core.Thrust.RequestActiveThrottle(0);
+                    return new KillHorizontalVelocity(Core);
+                }
+                if (!dunaCommitted && VesselState.AltitudeASL < Core.Landing.DecelerationEndAltitude() + 5)
                 {
                     Core.Warp.MinimumWarp();
 
@@ -142,7 +156,7 @@ namespace MuMech
                     // Do not wait for a less conservative or invalid legacy
                     // envelope. Retain alignment gate and thrust limiters.
                     Core.Thrust.RequestActiveThrottle(1.0f);
-                    Status = "Duna braking: conservative reserve";
+                    Status = "Duna braking: dynamic capture";
                 }
                 else
                 {

@@ -84,7 +84,7 @@ namespace MuMech
                 }
 
                 double maxAllowedSpeed = Core.Landing.MaxAllowedSpeed();
-                if (VesselState.SpeedSurface > 0.9 * maxAllowedSpeed)
+                if (!Core.Landing.DunaDynamicActive && VesselState.SpeedSurface > 0.9 * maxAllowedSpeed)
                 {
                     Core.Landing.CommitDunaBraking("legacy_speed_trigger",false);
                     Core.Warp.MinimumWarp();
@@ -119,7 +119,7 @@ namespace MuMech
                 }
 
                 // If we're already low, skip directly to the Deceleration burn
-                if (VesselState.AltitudeASL < Core.Landing.DecelerationEndAltitude() + 5)
+                if (!Core.Landing.DunaDynamicActive && VesselState.AltitudeASL < Core.Landing.DecelerationEndAltitude() + 5)
                 {
                     Core.Landing.CommitDunaBraking("legacy_terminal_altitude",true);
                     Core.Warp.MinimumWarp();
