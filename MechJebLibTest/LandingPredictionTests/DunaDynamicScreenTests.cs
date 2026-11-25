@@ -13,8 +13,12 @@ namespace MechJebLibTest.LandingPredictionTests
         [Fact]
         public void BothTerminalFailuresAreNotADeadline()
         {
-            Assert.Equal(DunaDynamicScreen.Decision.HoldUnresolved,DunaDynamicScreen.Classify(
+            Assert.Equal(DunaDynamicScreen.Decision.TerminalUnresolved,DunaDynamicScreen.Classify(
                 R(false,"terminal_authority_unresolved"),R(false,"terminal_authority_unresolved")));
+            Assert.Equal(DunaDynamicScreen.Decision.HoldUnresolved,DunaDynamicScreen.Classify(
+                R(false,"UnknownCapability"),R(false,"UnknownCapability")));
+            Assert.Equal(DunaDynamicScreen.Decision.Emergency,DunaDynamicScreen.Classify(
+                R(false,"ContactUnsafe"),R(false,"terminal_authority_unresolved")));
             Assert.Equal(DunaDynamicScreen.Decision.BrakeDeadline,DunaDynamicScreen.Classify(
                 R(false,"ContactUnsafe"),R(true,"dynamic_capture_envelope")));
             Assert.Equal(DunaDynamicScreen.Decision.Emergency,DunaDynamicScreen.Classify(
@@ -48,7 +52,7 @@ namespace MechJebLibTest.LandingPredictionTests
             var prop=D.Propulsion.FromAllocatedEnvelope(force,f/(400*9.80665));
             var limits=new D.Limits(145000,3*Math.PI/180,0,0,1);
             var state=new D.State(0,pos,vel,mass,new D.V(-.2022141069173813,.9557151198387146,.2138177752494812).Unit);
-            var delayed=DunaDynamicScreen.Probe(env,prop,limits,state,30.194323782889);
+            var delayed=DunaDynamicScreen.Probe(env,prop,limits,state,55,terminalRadius:radius);
             Assert.True(delayed.Safe,delayed.Reason);
             Assert.True(delayed.Elapsed>30);
             Assert.True(delayed.MinimumClearance>300);

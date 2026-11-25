@@ -193,7 +193,7 @@ namespace MuMech
                 {
                     if (duna) Core.Landing.CommitDunaEntry("target_converged");
                     Core.Thrust.TargetThrottle = 0;
-                    if (Core.Landing.RCSAdjustment)
+                    if (!duna && Core.Landing.RCSAdjustment)
                         Core.RCS.Enabled = true;
                     return new CoastToDeceleration(Core);
                 }
@@ -235,7 +235,12 @@ namespace MuMech
                         MaximumDownrangeHandoffDistance);
                     if (candidateCorrection.magnitude <= MinimumUsefulCorrectionDv)
                     {
-                        if (duna) Core.Landing.CommitDunaEntry("no_useful_correction");
+                        if (duna)
+                        {
+                            _predictionVersionAtPulseCompletion=Core.Landing.PredictionVersion;
+                            Status="Duna: awaiting useful correction";
+                            return this;
+                        }
                         return new CoastToDeceleration(Core);
                     }
 
@@ -294,7 +299,14 @@ namespace MuMech
                         MaximumDownrangeHandoffDistance);
                     if (deltaV.magnitude <= MinimumUsefulCorrectionDv)
                     {
-                        if (duna) Core.Landing.CommitDunaEntry("no_useful_correction");
+                        if (duna)
+                        {
+                            _dunaLastAttemptUT=VesselState.Time;
+                            _dunaLastAttemptVersion=Core.Landing.PredictionVersion;
+                            Core.Thrust.TargetThrottle=0;
+                            Status="Duna: awaiting useful correction";
+                            return this;
+                        }
                         return new CoastToDeceleration(Core);
                     }
 

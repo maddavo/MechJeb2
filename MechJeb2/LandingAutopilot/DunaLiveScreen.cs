@@ -13,7 +13,8 @@ namespace MuMech.Landing
         internal D.Propulsion Propulsion;
         internal D.Limits Limits;
         internal D.State State;
-        internal double UsableMass,AllocatedForce,AllocatedFlow,TorqueBalancedForce=double.NaN;
+        internal double UsableMass,AllocatedForce,AllocatedFlow,TerminalRadius,TorqueBalancedForce=double.NaN;
+        internal string EngineDetails="none";
         internal string AuthoritySource="allocated_margin";
         internal static D.V Vector(Vector3d v)=>new D.V(v.x,v.y,v.z);
         internal static bool TryBuild(Vessel vessel,VesselState vs,double available,double terrain,double turnRate,
@@ -78,7 +79,9 @@ namespace MuMech.Landing
                 double maxP=0;
                 var pressureKeys=new D.Knot[65];var densityKeys=new D.Knot[65];
                 // Pressure is sampled on the flight thread, no drag credit.
-                double bottom=Math.Min(0,terrain-body.Radius);
+                double terminalRadius=Math.Min(body.Radius,body.pqsController.radiusMin);
+                if(!D.Finite(terminalRadius)||terminalRadius<=0)return false;
+                double bottom=terminalRadius-body.Radius;
                 for(int i=0;i<pressureKeys.Length;i++)
                 {
                     double h=bottom+(top-bottom)*i/(pressureKeys.Length-1);
@@ -142,10 +145,20 @@ namespace MuMech.Landing
                     Limits=new D.Limits(mass-usable*(1-DunaDynamicScreen.FuelReserveFraction),turnRate,response,response,1),
                     State=new D.State(vs.Time,Vector(vs.CoM-body.position),Vector(vs.OrbitalVelocity),mass,Vector(vs.Forward).Unit,
                         Math.Max(0,Math.Min(1,vessel.ctrlState.mainThrottle))),
-                    UsableMass=usable,AllocatedForce=allocated,AllocatedFlow=flow,
+                    UsableMass=usable,AllocatedForce=allocated,AllocatedFlow=flow,TerminalRadius=terminalRadius,
                     TorqueBalancedForce=balanced.Known?balanced.Force:double.NaN,
                     AuthoritySource=balanced.Known&&balanced.Force>0?"bounded_neutral_balance":"allocated_margin"
                 };
+                var details=new System.Text.StringBuilder();
+                for(int i=0;i<engines.Count;i++)
+                {
+                    ModuleEngines e=engines[i];
+                    if(i>0)details.Append(';');
+                    details.AppendFormat(System.Globalization.CultureInfo.InvariantCulture,
+                        "{0}:{1:R},{2:R},{3:R},{4:R},{5:R}",i,e.thrustPercentage,e.maxFuelFlow,e.flowMultiplier,
+                        e.atmosphereCurve.Evaluate((float)(pressure/101325)),e.finalThrust);
+                }
+                snapshot.EngineDetails=details.ToString();
                 reason="ok";
                 if(snapshot.State.Valid&&snapshot.Limits.Valid&&snapshot.Environment.Valid)return true;
                 snapshot=null;reason="invalid_model";return false;

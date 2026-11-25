@@ -74,7 +74,7 @@ namespace MuMech
             new DunaBrakingHandoff.Vec(v.x,v.y,v.z);
 
         private double DunaTurnReserve(double angle) =>
-            DunaBrakingHandoff.TurnReserve(angle,WarpPreparation.Estimate(angle));
+            Math.Max(DunaBrakingHandoff.TurnReserve(angle,WarpPreparation.Estimate(angle)),angle/3+5);
 
         private double DunaBrakingPreparation(double angle)
         {
@@ -146,6 +146,7 @@ namespace MuMech
         internal void HoldDunaEntryAttitude()
         {
             Core.Thrust.TargetThrottle=0;
+            if (RCSAdjustment) Core.RCS.Enabled=false;
             Core.Warp.MinimumWarp();
             if (VesselState.SpeedSurface>1e-6 && DunaBrakingHandoff.Finite(VesselState.SpeedSurface))
                 Core.Attitude.attitudeTo(-VesselState.SurfaceVelocity.normalized,AttitudeReference.INERTIAL,this);
@@ -206,7 +207,7 @@ namespace MuMech
                 return new DunaBrakingHandoff.Result(false,"live_model_"+_dunaLiveReason,
                     double.NaN,double.NaN,double.NaN,0);
             return DunaDynamicScreen.Probe(_dunaLive.Environment,_dunaLive.Propulsion,_dunaLive.Limits,
-                _dunaLive.State,delay,aim,duration,new AtmosphericLandingDynamics.Command(throttle,DunaLiveScreen.Vector(direction)));
+                _dunaLive.State,delay,aim,duration,new AtmosphericLandingDynamics.Command(throttle,DunaLiveScreen.Vector(direction)),_dunaLive.TerminalRadius);
         }
 
         private void EvaluateDunaBraking(double delay, bool braking)
@@ -249,6 +250,9 @@ namespace MuMech
                         VesselState.AltitudeASL<=DunaInterfaceASL || VesselState.AltitudeBottom<=1000)
                         CommitDunaBraking("dynamic_unresolved_best_effort_"+_dunaProbe.Reason,true);
                 }
+                // Both capture paths may fail a terminal assumption. Do not
+                // convert that into a fictitious ignition deadline. Hold
+                // correction, continue ready coast and re-evaluate.
                 else _dunaUnresolvedSince=double.NaN;
             }
             return _dunaCommitment.Committed;
@@ -262,10 +266,12 @@ namespace MuMech
             double response=LastCourseCorrectionLocalResponse.magnitude;
             double aim=DunaTurnReserve(Vector3d.Angle(VesselState.Forward,direction));
             double brakeAngle=Math.Min(180,Vector3d.Angle(direction,-VesselState.SurfaceVelocity)+15);
+            int attempts=0;
             double selected=DunaBrakingHandoff.SelectPulse(requested,cap,dv =>
             {
                 try
                 {
+                    if (++attempts>6)return false;
                     if (!(response>0) || !DunaBrakingHandoff.Finite(response) ||
                         !CourseCorrectionGeometryTrusted(direction,dv,Math.Max(1,targetError*0.6),
                             Math.Max(50,response*dv*0.25))) return false;
@@ -281,8 +287,8 @@ namespace MuMech
                     double tail=DunaTailReserve()+0.75,prep=DunaBrakingPreparation(brakeAngle);
                     double reserve=duration+tail+prep;
                     if (!DunaDynamicScreen.CorrectionFits(VesselState.Time,aim,pulse,cutoff,tail,prep,reserve)) return false;
-                    // Full model burn for pulse duration deliberately tests a
-                    // larger impulse than the tapered live ThrustForDv law.
+                    // Finite delivery estimate at the derated available force.
+                    // Actual tapered live impulse remains a replay requirement.
                     double throttle=Math.Min(1,dv/Math.Max(1e-9,pulse*DunaAvailableAcceleration()*DunaDynamicScreen.Margin));
                     return ProbeDunaBraking(reserve).Safe &&
                         ProbeDunaBraking(reserve,aim,pulse,direction,throttle).Safe;
@@ -299,6 +305,7 @@ namespace MuMech
             RecordDunaCorrectionCommit(reason);
             _dunaCommitment.Commit(VesselState.Time,reason,forceFirst);
             Core.Thrust.TargetThrottle=0;
+            if (RCSAdjustment) Core.RCS.Enabled=false;
             Core.Warp.MinimumWarp();
             if (VesselState.SpeedSurface>1e-6 && DunaBrakingHandoff.Finite(VesselState.SpeedSurface))
                 Core.Attitude.attitudeTo(-VesselState.SurfaceVelocity.normalized,AttitudeReference.INERTIAL,this);
@@ -348,12 +355,14 @@ namespace MuMech
                 " dunaDynamicDecision={0} dunaLiveReason={1} dunaForceSource={2} dunaFuelKg={3:R}"+
                 " dunaAllocatedForceN={4:R} dunaAllocatedFlowKgS={5:R} dunaTorqueBalancedN={6:R}"+
                 " dunaBodyRadius={7:R} dunaBodyMu={8:R} dunaAtmosphereTop={9:R} dunaPressurePa={10:R}"+
-                " dunaOmegaX={11:R} dunaOmegaY={12:R} dunaOmegaZ={13:R} dunaVesselAngularRate={14:R}",
+                " dunaOmegaX={11:R} dunaOmegaY={12:R} dunaOmegaZ={13:R} dunaVesselAngularRate={14:R}"+
+                " dunaLiveUT={15:R} dunaTerminalRadius={16:R} dunaEngines={17}",
                 _dunaDecision,_dunaLiveReason,_dunaLive?.AuthoritySource??"unknown",
                 _dunaLive?.UsableMass??double.NaN,_dunaLive?.AllocatedForce??double.NaN,
                 _dunaLive?.AllocatedFlow??double.NaN,_dunaLive?.TorqueBalancedForce??double.NaN,
                 MainBody.Radius,MainBody.gravParameter,DunaInterfaceASL,Vessel.staticPressurekPa*1000,
-                MainBody.angularVelocity.x,MainBody.angularVelocity.y,MainBody.angularVelocity.z,Vessel.angularVelocity.magnitude);
+                MainBody.angularVelocity.x,MainBody.angularVelocity.y,MainBody.angularVelocity.z,Vessel.angularVelocity.magnitude,
+                _dunaLiveUT,_dunaLive?.TerminalRadius??double.NaN,_dunaLive?.EngineDetails??"none");
 
         private bool DunaM1Eligible() => Active && LandAtTarget && MainBody != null &&
             MainBody.atmosphere && MainBody.bodyName == "Duna" && Core.Target.PositionTargetExists &&

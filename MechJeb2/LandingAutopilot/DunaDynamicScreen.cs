@@ -7,9 +7,9 @@ namespace MuMech.Landing
     internal static class DunaDynamicScreen
     {
         internal const double Margin=.8, FuelReserveFraction=.10, CaptureClearance=300, CaptureSpeed=15;
-        internal enum Decision { Continue, BrakeDeadline, HoldUnresolved, Emergency }
+        internal enum Decision { Continue, BrakeDeadline, HoldUnresolved, TerminalUnresolved, Emergency }
         internal static DunaBrakingHandoff.Result Probe(D.Environment env,D.Propulsion prop,D.Limits limits,D.State state,
-            double delay,double correctionLead=0,double correctionSeconds=0,D.Command correction=default)
+            double delay,double correctionLead=0,double correctionSeconds=0,D.Command correction=default,double terminalRadius=double.NaN)
         {
             if(correctionSeconds==0) correction=new D.Command(0,state.Forward);
             D.Result r=D.Screen(env,prop,limits,state,correctionSeconds,correction,delay,1200,
@@ -21,7 +21,7 @@ namespace MuMech.Landing
             {
                 // Evaluate terminal authority AFTER propagating mass loss and
                 // future pressure. Not a complete terminal control validation.
-                var terminalR=r.End.R.Unit*(env.TerrainRadius+env.BottomOffset);
+                var terminalR=r.End.R.Unit*(D.Finite(terminalRadius)&&terminalRadius>0?terminalRadius:env.TerrainRadius+env.BottomOffset);
                 if(!env.Air(terminalR,out double p,out _))
                 {capture=false;reason="terminal_pressure_unknown";}
                 else
@@ -42,6 +42,13 @@ namespace MuMech.Landing
         {
             if(delayed.Safe)return Decision.Continue;
             if(immediate.Safe)return Decision.BrakeDeadline;
+            bool TerminalOnly(DunaBrakingHandoff.Result result) =>
+                result.Reason=="terminal_authority_unresolved" || result.Reason=="terminal_authority_unknown" ||
+                result.Reason=="terminal_pressure_unknown" || result.Reason=="terminal_fuel_reserve";
+            if(TerminalOnly(delayed)&&TerminalOnly(immediate))return Decision.TerminalUnresolved;
+            if(TerminalOnly(immediate)&&(delayed.Reason=="ContactUnsafe"||delayed.Reason=="ContactWithinLimits"||
+                delayed.Reason=="ReserveExhausted"||delayed.Reason=="terminal_clearance_exhausted"))
+                return Decision.Emergency;
             // Both failed: no demonstrated latest-safe ignition. A projected
             // collision/clearance or resource exhaustion under immediate
             // braking is a best-effort emergency, not a validated safe plan.

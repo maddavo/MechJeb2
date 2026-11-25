@@ -24,6 +24,13 @@ namespace MuMech
 
             public override AutopilotStep Drive(FlightCtrlState s)
             {
+                // Do not add unmodelled translational RCS impulses to this
+                // experimental powered plan. Attitude authority is untouched.
+                if (Core.Landing.DunaDynamicActive)
+                {
+                    if (Core.Landing.RCSAdjustment) Core.RCS.Enabled=false;
+                    return this;
+                }
                 if (!Core.Landing.PredictionReady)
                     return this;
                 if (!Core.Landing.RCSAdjustment)
@@ -83,7 +90,13 @@ namespace MuMech
                     }
                 }
 
-                double maxAllowedSpeed = Core.Landing.MaxAllowedSpeed();
+                if (Core.Landing.DunaDynamicActive && !Core.Landing.DunaCorrectionScreenReady)
+                {
+                    Core.Landing.HoldDunaEntryAttitude();
+                    Status="Duna: unresolved braking/terminal screen";
+                    return this;
+                }
+                double maxAllowedSpeed = Core.Landing.DunaDynamicActive?double.PositiveInfinity:Core.Landing.MaxAllowedSpeed();
                 if (!Core.Landing.DunaDynamicActive && VesselState.SpeedSurface > 0.9 * maxAllowedSpeed)
                 {
                     Core.Landing.CommitDunaBraking("legacy_speed_trigger",false);
