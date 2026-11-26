@@ -301,6 +301,12 @@ def measurement_inventory(samples,max_gap):
     vectors=("surfaceVelocityNEU","forwardNEU","thrustVectorNEU","dragAccelNEU","liftAccelNEU")
     by_phase=collections.defaultdict(list)
     for s in samples:by_phase[str(s.get("phase"))].append(s)
+    # Use original adjacent rows, not phase-filtered adjacency: a return
+    # to a phase after an intervening command does not bridge that interval.
+    mass_rates=collections.defaultdict(list)
+    for a,b in zip(samples,samples[1:]):
+        if interval_ok(a,b,max_gap) and finite(a.get("mass")) and finite(b.get("mass")) and a["mass"]>0 and b["mass"]>0:
+            mass_rates[str(a.get("phase"))].append((a["mass"]-b["mass"])*1000/(b["ut"]-a["ut"]))
     out={}
     def stats(values):
         v=[x for x in values if finite(x)]
@@ -327,10 +333,7 @@ def measurement_inventory(samples,max_gap):
                 if finite(s.get("dynamicPressurePa")):q_error.append(q-s["dynamicPressurePa"])
                 if q>1 and finite(m) and m>0 and vec(d):
                     area.append(-dot(d,u)*m*1000/q)
-        rates=[]
-        for a,b in zip(rows,rows[1:]):
-            if interval_ok(a,b,max_gap) and finite(a.get("mass")) and finite(b.get("mass")):
-                rates.append((a["mass"]-b["mass"])*1000/(b["ut"]-a["ut"]))
+        rates=mass_rates[phase]
         out[phase]={"rows":len(rows),"coverage":coverage,"positiveMeasuredThrustRows":powered,
             "effectiveDragArea_m2":stats(area),"dragAlongAir_m_s2":stats(drag_along),
             "liftAlongAir_m_s2":stats(lift_along),"thrustProjectionResidual_m_s2":stats(thrust_error),
@@ -450,6 +453,12 @@ class Tests(unittest.TestCase):
         self.assertEqual(p["effectiveDragArea_m2"]["count"],0)
         self.assertIsNone(p["observedTotalMassLossRate_kg_s"]["mean"])
         self.assertEqual(p["coverage"]["thrustVectorNEU"],0)
+    def test_measurement_inventory_does_not_bridge_intervening_phase(self):
+        a={"ut":1,"phase":"CourseCorrection","warpRate":1,"mass":2}
+        b=dict(a,ut=1.1,phase="CoastToDeceleration",mass=1.9)
+        c=dict(a,ut=1.2,mass=1.8)
+        p=measurement_inventory([a,b,c],1.25)["byPhase"]["CourseCorrection"]
+        self.assertEqual(p["observedTotalMassLossRate_kg_s"]["count"],0)
     def test_legacy_no_contact_claim(self):
         p=self.write([self.legacy_state(1),{"recordType":"predictor_result","processUT":1,
             "body":"Duna","targetLat":1,"targetLon":2,"outcome":"LANDED"}])
