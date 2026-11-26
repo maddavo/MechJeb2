@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using D=MuMech.Landing.AtmosphericLandingDynamics;
 using P=MuMech.Landing.AtmosphericFeasibleRangePlanner;
+using R=MuMech.Landing.AtmosphericLandingReplay;
 
 namespace MuMech.Landing
 {
@@ -74,6 +75,41 @@ namespace MuMech.Landing
             return command.Valid;
         }
 
+        // Complete only a fully replayed terminal command history using
+        // the same bounded feedback extension used by live guidance.
+        // Never alter the generic exact-history replay contract.
+        internal static R.Report CompleteTerminalReplay(D.Environment env,D.Propulsion propulsion,D.Limits limits,
+            AtmosphericPlanTracker tracker,R.Report replay,int budget,CancellationToken token=default)
+        {
+            if(replay==null||replay.Outcome!=D.Outcome.Advanced||!replay.HistoryCompleted||
+                tracker==null||replay.Steps>=budget)return replay;
+            var state=replay.End;
+            int steps=replay.Steps;
+            double minimum=replay.MinimumClearance;
+            var common=tracker.Settings.Common;
+            R.Report Finish(D.Outcome status)=>new R.Report(status,state,minimum,steps,replay.CompletedSegments,
+                replay.HistoryCompleted,new List<R.Comparison>(replay.Comparisons));
+            double end=tracker.EndUT+5;
+            while(state.UT<end)
+            {
+                if(token.IsCancellationRequested)return Finish(D.Outcome.Cancelled);
+                if(steps>=budget)return Finish(D.Outcome.Horizon);
+                if(!env.Air(state.UT,state.R,out double pressure,out _))return Finish(D.Outcome.UnknownCapability);
+                var authority=propulsion.At(pressure);
+                if(!authority.Known||authority.Force<=0)return Finish(D.Outcome.UnknownCapability);
+                double raw=authority.Force/state.Mass,g=env.Mu/(state.R.Length*state.R.Length);
+                if(!TryTerminalExtension(tracker,env,propulsion,state,env.Surface(state.R,state.Velocity),
+                    env.PhysicalClearance(state),raw,common.CommandCap,g,out var command))return Finish(D.Outcome.Advanced);
+                double dt=Math.Min(Math.Min(.2,limits.Step),end-state.UT);
+                if(dt<=0||state.UT+dt<=state.UT)return Finish(D.Outcome.InvalidInput);
+                var result=D.Advance(env,propulsion,limits,state,command,dt,common.SafeVertical,
+                    common.SafeHorizontal,common.SafeAngle,common.SafeRate);
+                steps++;state=result.End;minimum=Math.Min(minimum,result.MinimumClearance);
+                if(result.Status!=D.Outcome.Advanced)return Finish(result.Status);
+            }
+            return Finish(D.Outcome.Advanced);
+        }
+
         internal static Trial Run(D.Environment model,D.Propulsion propulsion,D.Limits limits,
             AtmosphericPlanTracker tracker,Scenario scenario,int budget,CancellationToken token=default)
         {
@@ -110,7 +146,8 @@ namespace MuMech.Landing
                 if(d.Valid)command=d.Command;
                 else if(d.Reason=="plan epoch expired"&&TryTerminalExtension(tracker,model,propulsion,state,
                     env.Surface(state.R,state.Velocity),clearance,raw,cap,g,out var t))command=t;
-                else return Finish(D.Outcome.UnknownCapability,"tracking: "+d.Reason);
+                else return Finish(D.Outcome.UnknownCapability,"tracking: "+d.Reason+" at UT "+state.UT+
+                    " clearance="+clearance+" positionError="+d.PositionError+" velocityError="+d.VelocityError+" massError="+d.MassError);
                 // Re-evaluate feedback at <=0.2s intervals, split at
                 // every command boundary and integrate with <=half step.
                 double boundary=Math.Min(end,state.UT+.2);
@@ -149,6 +186,9 @@ namespace MuMech.Landing
                 Trial t=Run(env,propulsion,limits,tracker,scenario,budget-steps,token);
                 trials.Add(t);steps+=t.Steps;
                 if(!t.Passed)return new Report(trials,false,t.Name+": "+t.Reason,steps);
+                if(trials.Count==1&&tracker.TargetMiss<=tracker.Settings.Common.TargetTolerance&&
+                    t.Miss>tracker.Settings.Common.TargetTolerance)
+                    return new Report(trials,false,"nominal closed-loop target miss exceeds tolerance",steps);
             }
             return new Report(trials,true,"all sampled scenarios reached model contact within limits",steps);
         }

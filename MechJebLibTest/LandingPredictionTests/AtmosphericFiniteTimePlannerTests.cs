@@ -649,6 +649,21 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
+        public void StrategicBurnRetainsThrottleHeadroomAndPreservesImpulse()
+        {
+            var env=Env(301363211975.0978);var state=Circular(env);
+            var settings=new Strategic.Settings(Settings(cap:1),preparation:1,maxWait:10,maxBurn:40);
+            var lim=Limits(step:.125);
+            var prefix=Strategic.EvaluatePrefix(env,Engine(),lim,state,settings,
+                new Strategic.Burn(1,25/.85,0,.85),10000,true);
+            Assert.Equal(D.Outcome.Advanced,prefix.Outcome);
+            Assert.Equal(975,prefix.End.Mass,7);
+            Assert.All(prefix.Points.Where(p=>p.Command.Throttle>0),p=>Assert.Equal(.85,p.Command.Throttle,10));
+            Assert.Equal(D.Outcome.InvalidInput,Strategic.EvaluatePrefix(env,Engine(),lim,state,settings,
+                new Strategic.Burn(1,25,0,1.1),10000).Outcome);
+        }
+
+        [Fact]
         public void StrategicEngagementLeadIsAnUnpoweredUnturnedInterval()
         {
             var env=Env(301363211975.0978);var state=Circular(env);

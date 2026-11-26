@@ -53,9 +53,9 @@ namespace MuMech.Landing
         }
         internal readonly struct Burn
         {
-            internal readonly double Delay,Duration,NormalFraction;
-            internal Burn(double delay,double duration,double normal)
-            {Delay=delay;Duration=duration;NormalFraction=normal;}
+            internal readonly double Delay,Duration,NormalFraction,ThrottleFraction;
+            internal Burn(double delay,double duration,double normal,double throttleFraction=1)
+            {Delay=delay;Duration=duration;NormalFraction=normal;ThrottleFraction=throttleFraction;}
         }
         internal sealed class Prefix
         {
@@ -117,7 +117,8 @@ namespace MuMech.Landing
                 !initial.Valid||initial.Mass<=limits.ReserveMass||initial.Throttle>.01||budget<1||budget>1000000||
                 !D.Finite(burn.Delay)||burn.Delay<settings.Preparation+settings.EngagementLead||burn.Delay>settings.MaxWait||
                 !D.Finite(burn.Duration)||burn.Duration<=0||burn.Duration>settings.MaxBurn||
-                !D.Finite(burn.NormalFraction)||Math.Abs(burn.NormalFraction)>.75)return Finish(D.Outcome.InvalidInput);
+                !D.Finite(burn.NormalFraction)||Math.Abs(burn.NormalFraction)>.75||
+                !D.Finite(burn.ThrottleFraction)||burn.ThrottleFraction<=0||burn.ThrottleFraction>1)return Finish(D.Outcome.InvalidInput);
             var common=settings.Approach.Common;
             double begin=initial.UT+burn.Delay,prep=begin-settings.Preparation;
             burnEnd=begin+burn.Duration;
@@ -143,7 +144,7 @@ namespace MuMech.Landing
                 bool powered=s.UT>=begin&&s.UT<burnEnd;
                 if(powered&&D.V.Dot(s.Forward,pointing)<.995)
                     return Finish(D.Outcome.UnknownCapability);
-                D.Command command=new D.Command(powered?common.CommandCap:0,pointing);
+                D.Command command=new D.Command(powered?common.CommandCap*burn.ThrottleFraction:0,pointing);
                 double boundary=Math.Min(end,s.UT+Math.Min(1,limits.Step));
                 if(s.UT<prep)boundary=Math.Min(boundary,prep);
                 else if(s.UT<begin)boundary=Math.Min(boundary,begin);
@@ -215,12 +216,27 @@ namespace MuMech.Landing
             var replay=R.Run(env,propulsion,fine,initial,commands.ToArray(),Array.Empty<R.Observation>(),
                 common.SafeVertical,common.SafeHorizontal,common.SafeAngle,common.SafeRate,budget,token,
                 D.Finite(approach.Result.TerminalStartUT)&&commands[commands.Count-1].StartUT>=approach.Result.TerminalStartUT ? .5 : 0);
+            bool continued=false;
+            if(replay.Outcome==D.Outcome.Advanced&&replay.HistoryCompleted&&
+                D.Finite(approach.Result.TerminalStartUT)&&commands[commands.Count-1].StartUT>=approach.Result.TerminalStartUT&&
+                replay.Steps<budget)
+            {
+                // The actual controller already has a bounded terminal
+                // extension. Prove this SAME feedback policy reaches
+                // contact instead of demanding sub-metre open-loop
+                // coincidence after a long orbital history.
+                var terminalTracker=new AtmosphericPlanTracker(env,propulsion,limits,approachSettings,approach);
+                var extended=AtmosphericUncertaintyReplay.CompleteTerminalReplay(env,propulsion,fine,
+                    terminalTracker,replay,budget,token);
+                continued=extended.Steps>replay.Steps;
+                replay=extended;
+            }
             replaySteps=replay.Steps;
             bool passed=replay.Outcome==D.Outcome.ContactWithinLimits&&
                 (miss>common.TargetTolerance||P.Miss(env,initial,replay.End,common.TargetAtInitialUT)<=common.TargetTolerance)&&
                 (replay.End.R-approach.Result.End.R).Length<=20&&
                 Math.Abs(replay.End.Mass-approach.Result.End.Mass)<=Math.Max(.5,initial.Mass*.0005)&&
-                Math.Abs(replay.End.UT-approach.Result.End.UT)<=1;
+                Math.Abs(replay.End.UT-approach.Result.End.UT)<=(continued?5:1);
             if(!passed)
             {
                 diagnostic?.Invoke("join replay="+replay.Outcome+" miss="+miss+
@@ -315,8 +331,12 @@ namespace MuMech.Landing
                         if(prefixes>=settings.MaxPrefixes||steps>=settings.MaxSteps){exhausted=true;break;}
                         // Allow extra normal impulse while retaining a
                         // retrograde component; finite burn still determines entry.
-                        double duration=Math.Min(settings.MaxBurn,Math.Max(.5,dv/accel/Math.Sqrt(1-fraction*fraction)));
-                        var burn=new Burn(epoch.delay,duration,fraction);
+                        // Reserve throttle headroom so the feedback law
+                        // can match planned impulse even under the 5%
+                        // adverse authority case and engine response lag.
+                        const double burnFraction=.85;
+                        double duration=Math.Min(settings.MaxBurn,Math.Max(.5,dv/(accel*burnFraction)/Math.Sqrt(1-fraction*fraction)));
+                        var burn=new Burn(epoch.delay,duration,fraction,burnFraction);
                         var prefix=EvaluatePrefix(env,propulsion,limits,initial,settings,burn,
                             settings.MaxSteps-steps,false,token);
                         prefixes++;steps+=prefix.Steps;
