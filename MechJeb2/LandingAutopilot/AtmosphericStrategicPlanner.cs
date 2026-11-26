@@ -323,7 +323,11 @@ namespace MuMech.Landing
                 double normal=D.V.Dot(orbit.Normal,P.RotateTarget(settings.Approach.Common.TargetAtInitialUT,
                     env.Omega,epoch.delay+orbit.Period*.325));
                 double tilt=Math.Max(-.65,Math.Min(.65,normal*2));
-                var tilts=Math.Abs(tilt)<.02?new[]{0.0,-.25,.25}:new[]{tilt,0.0,tilt*.5};
+                // A coplanar target needs no plane-change seed.
+                // Do not spend most of the shared replay/scenario budget
+                // on mirrored, physically equivalent out-of-plane burns.
+                var tilts=Math.Abs(tilt)<.002?new[]{0.0}:
+                    Math.Abs(tilt)<.02?new[]{0.0,tilt}:new[]{tilt,0.0,tilt*.5};
                 foreach(double depth in new[]{env.Radius+env.AtmosphereTop*.35,env.Radius*.97})
                 {
                     double dv=SeedDeltaV(env,initial,Math.Min(r-1,depth));

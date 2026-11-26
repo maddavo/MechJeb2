@@ -239,6 +239,17 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
+        public void TrackerFeedbackRespondsToDragUncertaintyWithoutExpandingEnvelope()
+        {
+            double vacuum=Tracker.FeedbackTimeConstant(2000,40,0);
+            double drag=Tracker.FeedbackTimeConstant(2000,40,6);
+            Assert.Equal(8,vacuum,8);
+            Assert.InRange(drag,4.08,4.09);
+            Assert.InRange(.1*6*drag*drag,9.99,10.01);
+            Assert.Equal(1.5,Tracker.FeedbackTimeConstant(5,3,100),8);
+        }
+
+        [Fact]
         public void TrackerRejectsMalformedPlanHistory()
         {
             var t=PoweredTracker();

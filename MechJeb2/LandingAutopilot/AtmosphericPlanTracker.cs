@@ -93,6 +93,20 @@ namespace MuMech.Landing
         // Do not use a stale solution or "catch up" by skipping a burn.
         // Interpolated reference is checked at the actual UT; a small
         // command interval must not be treated as a fresh complete plan.
+        // For a proportional position term 1/tau², a steady
+        // acceleration disturbance produces approximately a*tau²
+        // position offset. Choose tau so the modelled 10% drag error
+        // uses no more than a quarter of the existing tracking envelope.
+        // Keep the same bounded correction acceleration and minimum
+        // response time; do not expand positional acceptance.
+        internal static double FeedbackTimeConstant(double clearance,double positionLimit,double dragAcceleration)
+        {
+            double tau=Math.Max(1.5,Math.Min(8,Math.Sqrt(Math.Max(1,clearance))*.35));
+            if(D.Finite(dragAcceleration)&&dragAcceleration>0)
+                tau=Math.Max(1.5,Math.Min(tau,Math.Sqrt(.25*positionLimit/(.1*dragAcceleration))));
+            return tau;
+        }
+
         internal Decision Track(D.State actual,double clearance,double liveMaxAcceleration,double cap,
             double localGravity,double liveResponse)
         {
@@ -141,14 +155,16 @@ namespace MuMech.Landing
                 return Reject("insufficient radial stopping distance");
             if(feed.Throttle==0)
                 return new Decision(new D.Command(0,feed.Direction.Unit),pe,ve,me,refClearance);
-            if(!environment.Air(reference.UT,reference.R,out double pressure,out _))
+            if(!environment.Air(reference.UT,reference.R,out double pressure,out double density))
                 return Reject("unknown reference atmosphere");
             var authority=propulsion.At(pressure);
             if(!authority.Known||authority.Force<=0)return Reject("unknown reference thrust");
             D.V acceleration=feed.Direction.Unit*(feed.Throttle*authority.Force/reference.Mass);
             // Position/velocity correction has limited authority. Preserve
             // scheduled unpowered intervals and use no integral windup.
-            double tau=Math.Max(1.5,Math.Min(8,Math.Sqrt(Math.Max(1,refClearance))*.35));
+            double airSpeed=environment.Surface(reference.R,reference.Velocity).Length;
+            double dragAcceleration=.5*density*environment.DragArea*airSpeed*airSpeed/reference.Mass;
+            double tau=FeedbackTimeConstant(refClearance,positionLimit,dragAcceleration);
             D.V correction=dr*(1/(tau*tau))+dv*(2/tau);
             double correctionCap=.25*liveMaxAcceleration*cap;
             if(correction.Length>correctionCap)correction=correction.Unit*correctionCap;
