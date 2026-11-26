@@ -222,3 +222,5 @@ Current integrated landing research increment: `2.16.0-landing.20261126.duna-dyn
 Current integrated landing research increment: `2.16.0-landing.20261126.duna-dynamics-m1.7` (normal CKAN launch, one-shot diagnostic request file; see [M1.7 contract](docs/Integrated-Landing-Dynamics-M1.md)).
 
 Current integrated landing research increment: `2.16.0-landing.20261126.duna-planner-m2.0` — reference joint finite correction and braking timing planner, offline and non-actuating. See DEVELOPMENT.md for implementation and limitations.
+
+Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m3.0`. Duna Landing Guidance: **Evaluate integrated descent (preview)** on an unpacked descending vessel at 1× with a selected target. Preview only; normal CKAN launch; no new live guidance enabled.

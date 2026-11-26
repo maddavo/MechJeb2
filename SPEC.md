@@ -33,3 +33,5 @@ M1.6: optional bounded passive callback calibration probe; no MFI override or fo
 M1.7 diagnostic activation uses an explicit one-shot bounded request file in existing PluginData, fail-closed parsing and persistent consumption before capture. No environment dependency; initial ineligibility retries only during the requested targeted landing; readiness and failure reasons logged. Existing guidance and acceptance gates unchanged.
 
 M2.0 adds offline reference finite correction/ignition/terminal candidate search with sampled feasible outcomes, rotating target residual, budget/cancellation and explicit model/capability inputs. No claim of actual reachability or new live controller. Original integrated plan remains authoritative; M2 validation and later milestones open.
+
+M3.0 adds finite-time vector-guided shooting and clearance-dependent terminal feedback, command history and finer replay, plus explicit reduced-order KSP snapshot preview comparing reference timing search with direct trajectories. No actuation; snapshot fidelity and solver-selection acceptance remain open.

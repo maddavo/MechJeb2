@@ -59,17 +59,17 @@ jobs:
       - name: Run focused Duna diagnostic, handoff and dynamics tests
         id: duna
         run: |
-          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release --no-build "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~DunaM1DiagnosticsTests|FullyQualifiedName~DunaBrakingHandoffTests|FullyQualifiedName~AtmosphericLandingDynamicsTests|FullyQualifiedName~AtmosphericFeasibleRangePlannerTests' --logger 'console;verbosity=normal' --logger 'trx;LogFileName=duna.trx' --results-directory TestResults
+          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release --no-build "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~DunaM1DiagnosticsTests|FullyQualifiedName~DunaBrakingHandoffTests|FullyQualifiedName~AtmosphericLandingDynamicsTests|FullyQualifiedName~AtmosphericFeasibleRangePlannerTests|FullyQualifiedName~AtmosphericFiniteTimePlannerTests' --logger 'console;verbosity=normal' --logger 'trx;LogFileName=duna.trx' --results-directory TestResults
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           [xml]$trx = Get-Content TestResults/duna.trx -Raw
           $tests = @($trx.TestRun.Results.UnitTestResult)
-          if ($tests.Count -lt 63 -or @($tests | Where-Object { $_.outcome -ne 'Passed' }).Count -gt 0) { throw 'Expected at least 63 passing focused tests' }
+          if ($tests.Count -lt 71 -or @($tests | Where-Object { $_.outcome -ne 'Passed' }).Count -gt 0) { throw 'Expected at least 71 passing focused tests' }
 
       - name: Run broader landing regression suite
         id: landing
         continue-on-error: true
         run: |
-          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release --no-build "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~LandingPredictionTests&FullyQualifiedName!~DunaM1DiagnosticsTests&FullyQualifiedName!~DunaBrakingHandoffTests&FullyQualifiedName!~AtmosphericLandingDynamicsTests&FullyQualifiedName!~AtmosphericFeasibleRangePlannerTests' --logger 'trx;LogFileName=landing.trx' --results-directory TestResults
+          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release --no-build "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~LandingPredictionTests&FullyQualifiedName!~DunaM1DiagnosticsTests&FullyQualifiedName!~DunaBrakingHandoffTests&FullyQualifiedName!~AtmosphericLandingDynamicsTests&FullyQualifiedName!~AtmosphericFeasibleRangePlannerTests&FullyQualifiedName!~AtmosphericFiniteTimePlannerTests' --logger 'trx;LogFileName=landing.trx' --results-directory TestResults
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Checkout exact installed M1 baseline for comparison
@@ -86,7 +86,7 @@ jobs:
         continue-on-error: true
         working-directory: baseline-v1
         run: |
-          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~LandingPredictionTests&FullyQualifiedName!~DunaM1DiagnosticsTests&FullyQualifiedName!~DunaBrakingHandoffTests&FullyQualifiedName!~AtmosphericLandingDynamicsTests&FullyQualifiedName!~AtmosphericFeasibleRangePlannerTests' --logger 'trx;LogFileName=baseline.trx' --results-directory ../TestResults
+          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~LandingPredictionTests&FullyQualifiedName!~DunaM1DiagnosticsTests&FullyQualifiedName!~DunaBrakingHandoffTests&FullyQualifiedName!~AtmosphericLandingDynamicsTests&FullyQualifiedName!~AtmosphericFeasibleRangePlannerTests&FullyQualifiedName!~AtmosphericFiniteTimePlannerTests' --logger 'trx;LogFileName=baseline.trx' --results-directory ../TestResults
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Compare baseline and task regression outcomes

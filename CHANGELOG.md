@@ -57,3 +57,8 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 ## 2.16.0-landing.20261126.duna-planner-m2.0
 
 - Implement bounded nonlinear feasible-range reference search for finite corrections, alternative braking times and terminal contact replay; rotating target miss, lexicographic fuel/accuracy ranking, generated correction seeds, sampled outcome and budget reporting. No changes to live landing control.
+
+## 2.16.0-landing.20261126.duna-integrated-m3.0
+
+- Implement nonlinear finite-time vector-guidance candidate search, clearance-dependent terminal velocity feedback, complete command history and independent finer-step replay.
+- Add opt-in Duna snapshot solver preview to Landing Guidance, comparing A/B results without commanding the vessel. Approximate model only; existing live controllers unchanged.

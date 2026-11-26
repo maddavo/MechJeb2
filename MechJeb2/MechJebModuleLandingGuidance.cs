@@ -13,6 +13,7 @@ namespace MuMech
     public class MechJebModuleLandingGuidance : DisplayModule
     {
         private MechJebModuleLandingPredictions _predictor;
+        private readonly DunaIntegratedPreview _integratedPreview = new DunaIntegratedPreview();
         public static List<LandingSite> LandingSites;
 
         [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
@@ -32,6 +33,18 @@ namespace MuMech
 
             if (LandingSites == null && HighLogic.LoadedSceneIsFlight)
                 InitLandingSitesList();
+        }
+
+        protected override void OnModuleDisabled()
+        {
+            _integratedPreview.Cancel();
+            base.OnModuleDisabled();
+        }
+
+        public override void OnDestroy()
+        {
+            _integratedPreview.Cancel();
+            base.OnDestroy();
         }
 
         protected override GUILayoutOption[] WindowOptions() => new[] { GuiUtils.LayoutWidth(200), GUILayout.Height(150) };
@@ -177,6 +190,18 @@ namespace MuMech
                 GUILayout.Space(4);
                 Core.Landing.LandingTraceEnabled = GUILayout.Toggle(Core.Landing.LandingTraceEnabled, "Log trace data");
                 GUILayout.Label("Build: " + Core.version);
+                if (MainBody != null && MainBody.bodyName == "Duna")
+                {
+                    string preview = _integratedPreview.Poll(Core);
+                    if (_integratedPreview.Running)
+                    {
+                        if (GUILayout.Button("Cancel descent preview")) _integratedPreview.Cancel();
+                    }
+                    else if (GUILayout.Button("Evaluate integrated descent (preview)"))
+                        _integratedPreview.Start(Core);
+                    GUILayout.Label(preview, new GUIStyle(GUI.skin.label) { wordWrap = true });
+                }
+                else _integratedPreview.Cancel();
             }
 
             GUILayout.EndVertical();
