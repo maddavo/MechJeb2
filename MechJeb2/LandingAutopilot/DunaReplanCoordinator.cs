@@ -2,7 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using D=MuMech.Landing.AtmosphericLandingDynamics;
-using A=MuMech.Landing.AtmosphericReplanning;
+using Replanning=MuMech.Landing.AtmosphericReplanning;
 
 namespace MuMech.Landing
 {
@@ -10,9 +10,9 @@ namespace MuMech.Landing
     // corridor queries; worker receives only numerical immutable inputs.
     internal sealed class DunaReplanCoordinator
     {
-        private Task<A.Result> job;
+        private Task<Replanning.Result> job;
         private CancellationTokenSource cancel;
-        private A.Result candidate;
+        private Replanning.Result candidate;
         private DunaPlanCorridor corridor;
         private int generation;
         private double switchUT,nextRequestUT;
@@ -65,7 +65,7 @@ namespace MuMech.Landing
                 if(now>=switchUT)
                 {
                     string reason=!corridor.Passed?"terrain screen incomplete":
-                        A.Admission(candidate,generation,actual,clearance,rawAccel,cap,gravity,response,
+                        Replanning.Admission(candidate,generation,actual,clearance,rawAccel,cap,gravity,response,
                             oldDecision.Valid,current.Settings.Common.TargetTolerance,current.ReserveMass);
                     if(reason==null&&oldDecision.Valid&&
                         candidate.Tracker.Plan.Result.End.Mass<current.Plan.Result.End.Mass-Math.Max(10,actual.Mass*.002)&&
@@ -95,11 +95,11 @@ namespace MuMech.Landing
                 // to a percentage of the fuel remaining at each replan.
                 nextRequestUT=now+10;
                 switchUT=now+5;
-                var request=new A.Request(++generation,actual,switchUT,cap,snapshot.Environment,
+                var request=new Replanning.Request(++generation,actual,switchUT,cap,snapshot.Environment,
                     snapshot.Propulsion,snapshot.Limits,current.Settings,current);
                 cancel=new CancellationTokenSource();cancel.CancelAfter(750);
                 CancellationToken token=cancel.Token;
-                job=Task.Run(()=>A.Solve(request,token));
+                job=Task.Run(()=>Replanning.Solve(request,token));
                 status="replanning to UT "+switchUT.ToString("F2");
                 UnityEngine.Debug.Log("[DunaReplan] requested generation="+generation+" UT="+now+
                     " switchUT="+switchUT+" positionError="+oldDecision.PositionError+
