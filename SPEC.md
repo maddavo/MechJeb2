@@ -49,3 +49,5 @@ M5.1 adds independent radial recoverability warning/hazard screening and explici
 M5.2 adds a non-actuating local convex minimum-energy acceleration prototype and common A/B/C benchmark with recorded command histories and shared replay/scenario validator. C is not a full SOCP/SCvx implementation. B remains finite-time nonlinear shooting. No production solver selection or live control changes.
 
 M5.3 corrects shared atmospheric integration: analytical first-order throttle moments, adaptive local-error step doubling, chronological surface/reserve event subdivision, endpoint angular rate and strict model domain; touchdown limits unchanged. Numerical validation remains mandatory.
+
+M5.4 numerical precision policy: use the coarsest validated practical resolution for gameplay; refine only when material to feasibility, safety or objective. Surface-event brackets target 100 mm and 10 ms, require a real propagated crossing and preserve contact limits and reserve/unknown-data gates. Adaptive error budgets are subject to replay and runtime verification. Do not quantise the actual geometry or exact lineage identifiers.

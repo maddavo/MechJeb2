@@ -95,3 +95,7 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 ## 2.16.0-landing.20261126.duna-integrated-m5.3
 
 - Integrate exponential engine response analytically for impulse and mass flow, estimate local numerical errors with adaptive step doubling, and resolve contact before undefined atmosphere evaluation. Use endpoint rather than interval-averaged pointing rate. Preserve contact and reserve gates.
+
+## 2.16.0-landing.20261126.duna-integrated-m5.4
+
+- Adopt engineering-scale contact brackets (100mm / 10ms), refine only where safety classification or reserve order requires it, and trial tenfold coarser adaptive error budgets. Preserve physical acceptance and strict atmosphere-domain checks.

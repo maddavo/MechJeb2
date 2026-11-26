@@ -51,7 +51,7 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.Equal(.6,r.Candidates.Max(c=>c.Profile.IgnitionDelay));
             Assert.All(r.Candidates,c=>{
                 Assert.Equal(D.Outcome.ContactWithinLimits,c.Outcome);
-                Assert.InRange(c.End.UT,.99999,1.00001);
+                Assert.InRange(c.End.UT,.99999,1+D.ContactResolutionSeconds);
                 Assert.Equal(1000,c.End.Mass,9);
             });
         }

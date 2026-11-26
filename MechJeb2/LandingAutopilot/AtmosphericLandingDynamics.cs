@@ -8,6 +8,14 @@ namespace MuMech.Landing
     // Explicit terrain support/corridor adapter, or synthetic sphere. No KSP APIs.
     internal static class AtmosphericLandingDynamics
     {
+        // Numerical resolution is not physical landing accuracy. These
+        // budgets are deliberately engineering-scale, and must be checked
+        // against independent replay and real-time performance.
+        internal const double ContactResolutionMetres=.1;
+        internal const double ContactResolutionSeconds=.01;
+        private const double PositionErrorPerSecond=.002;
+        private const double VelocityErrorPerSecond=.0002;
+        private const double RelativeMassErrorPerSecond=1e-7;
         internal readonly struct V
         {
             internal readonly double X, Y, Z;
@@ -452,7 +460,8 @@ namespace MuMech.Landing
             right=new State(s.UT+dt,right.R,right.Velocity,right.Mass,right.Forward,right.Throttle,right.PointingRate);
             double pos=(right.R-full.R).Length,vel=(right.Velocity-full.Velocity).Length;
             double mass=Math.Abs(right.Mass-full.Mass);
-            if(pos<=2e-4*dt+1e-8&&vel<=2e-5*dt+1e-9&&mass<=1e-8*s.Mass*dt+1e-9)
+            if(pos<=PositionErrorPerSecond*dt+1e-8&&vel<=VelocityErrorPerSecond*dt+1e-9&&
+                mass<=RelativeMassErrorPerSecond*s.Mass*dt+1e-9)
             {end=right;return true;}
             if(!AccurateStep(env,propulsion,lim,s,c,half,out left,ref budget))return false;
             if(!AccurateStep(env,propulsion,lim,left,c,(s.UT+dt)-left.UT,out right,ref budget))return false;
@@ -478,18 +487,16 @@ namespace MuMech.Landing
             return AdvanceSphere(env,propulsion,lim,s,c,dt,safeVertical,safeHorizontal,safeAngle,safeRate,ref work);
         }
 
-        // The integration floor is NOT an event localisation floor.
-        // Near a dyadic crossing, rounded position can remain one ULP
-        // above ground while every ordinary midpoint is below the
-        // atmosphere domain. Search trial durations from the last known
-        // state. An undefined force sample is only a search upper bound,
-        // never evidence of contact. Require a valid propagated crossing
-        // on the final upper side of the bracket.
+        // Ordinary contact needs centimetre/millisecond-scale localisation,
+        // not nanometre precision. Refine further only to distinguish an
+        // ambiguous safety gate, a reserve event or an undefined sample.
+        // A valid crossing must be observed; a merely nearby ascending or
+        // hovering state cannot count as a touchdown.
         private static Result LocateSphereEvent(Environment env,Propulsion propulsion,Limits lim,State s,Command c,
             double dt,double maxV,double maxH,double maxAngle,double maxRate,ref int work)
         {
             double initial=env.Clearance(s.R),lo=0,hi=dt,hitTime=double.NaN;
-            State hit=s;
+            State hit=s,before=s;
             for(int i=0;i<48&&work>0;i++)
             {
                 double trialTime=i==0?hi:lo+(hi-lo)*.5;
@@ -498,7 +505,7 @@ namespace MuMech.Landing
                 if(!RawStep(env,propulsion,lim,s,c,trialTime,out State trial))
                 {
                     hi=trialTime;
-                    continue;
+                    continue; // unknown is NOT evidence of contact
                 }
                 double clearance=env.Clearance(trial.R);
                 if(clearance<=0||trial.Mass<lim.ReserveMass)
@@ -507,23 +514,33 @@ namespace MuMech.Landing
                 }
                 else
                 {
-                    lo=trialTime;
-                    if(i==0)break; // no crossing in this valid full trial
+                    lo=trialTime;before=trial;
+                    if(i==0)break;
                 }
-                // Do not stop merely because the bracket is tiny if no
-                // valid crossing has yet been found. It can be smaller
-                // than one absolute-UT ULP. A terminal event may round
-                // to the starting epoch; an Advanced result never does.
-                if(hitTime==hi&&hi-lo<=1e-10)break;
+                if(hitTime!=hi)continue;
+                double z=env.Clearance(hit.R);
+                if(hit.Mass>=lim.ReserveMass&&z<=0&&
+                    hi-lo<=ContactResolutionSeconds&&env.Clearance(before.R)-z<=ContactResolutionMetres)
+                {
+                    var afterContact=Contact(env,hit,z,maxV,maxH,maxAngle,maxRate,ContactResolutionMetres);
+                    // Do not hide a speed/attitude threshold crossing by
+                    // taking the later side of an intentionally coarse bracket.
+                    var beforeContact=Contact(env,before,env.Clearance(before.R),maxV,maxH,maxAngle,maxRate);
+                    if(afterContact.Status==beforeContact.Status)
+                        return afterContact;
+                }
+                if(hi-lo<=1e-10)break;
             }
+            // Fine localisation is retained ONLY for unresolved gate or
+            // reserve ordering. It is not the usual contact path.
             if(hitTime!=hi||hi-lo>1e-10)
                 return new Result(Outcome.UnknownCapability,s,initial);
-            double z=env.Clearance(hit.R);
-            double minimum=Math.Min(initial,z);
+            double finalClearance=env.Clearance(hit.R);
+            double minimum=Math.Min(initial,finalClearance);
             if(hit.Mass<lim.ReserveMass)
-                return z<=0?new Result(Outcome.UnknownCapability,s,minimum):
+                return finalClearance<=0?new Result(Outcome.UnknownCapability,s,minimum):
                     new Result(Outcome.ReserveExhausted,hit,minimum);
-            if(z<=0)return Contact(env,hit,z,maxV,maxH,maxAngle,maxRate);
+            if(finalClearance<=0)return Contact(env,hit,finalClearance,maxV,maxH,maxAngle,maxRate);
             return new Result(Outcome.UnknownCapability,s,initial);
         }
 
@@ -550,10 +567,15 @@ namespace MuMech.Landing
                 if(minimum>0&&end.Mass>=lim.ReserveMass)return new Result(Outcome.Advanced,end,minimum);
             }
             double half=dt*.5;
-            if(dt<=1e-7||s.UT+half<=s.UT||work<=0)
+            if(dt<=ContactResolutionSeconds||s.UT+half<=s.UT||work<=0)
             {
-                return LocateSphereEvent(env,propulsion,lim,s,c,dt,
+                // Try the event bracket at the engineering resolution.
+                // If not demonstrably a crossing, continue splitting
+                // until a valid ordinary interval or a real event is found.
+                var located=LocateSphereEvent(env,propulsion,lim,s,c,dt,
                     maxV,maxH,maxAngle,maxRate,ref work);
+                if(located.Status!=Outcome.UnknownCapability||dt<=1e-7||
+                    s.UT+half<=s.UT||work<=0)return located;
             }
             Result left=AdvanceSphere(env,propulsion,lim,s,c,half,maxV,maxH,maxAngle,maxRate,ref work);
             if(left.Status!=Outcome.Advanced)return left;
@@ -597,6 +619,17 @@ namespace MuMech.Landing
             bool bounded=z.Valid&&Finite(lower);
             if(bounded&&lower>0&&end.Mass>=lim.ReserveMass)
                 return new Result(Outcome.Advanced,end,lower);
+            // The adapter still has to establish a valid conservative
+            // corridor bound. Coarser localisation never substitutes for
+            // unknown terrain, landability or an ambiguous reserve event.
+            if(bounded&&z.Clearance<=0&&end.Mass>=lim.ReserveMass&&
+                dt<=ContactResolutionSeconds&&a.Clearance-z.Clearance<=ContactResolutionMetres&&
+                a.Landable==z.Landable)
+            {
+                var before=TerrainContact(env,s,a,maxV,maxH,maxAngle,maxRate);
+                var after=TerrainContact(env,end,z,maxV,maxH,maxAngle,maxRate,ContactResolutionMetres);
+                if(before.Status==after.Status)return after;
+            }
             if(dt<=1e-7||s.UT+dt*.5==s.UT)
             {
                 // Earliest event resolved only to this bracket; if ambiguous
@@ -623,20 +656,22 @@ namespace MuMech.Landing
             Result right=AdvanceTerrain(env,propulsion,lim,left.End,c,remaining,maxV,maxH,maxAngle,maxRate,ref budget);
             return new Result(right.Status,right.End,Math.Min(left.MinimumClearance,right.MinimumClearance));
         }
-        private static Result TerrainContact(Environment env,State s,SurfaceSample surface,double maxV,double maxH,double maxAngle,double maxRate)
+        private static Result TerrainContact(Environment env,State s,SurfaceSample surface,double maxV,double maxH,double maxAngle,double maxRate,
+            double penetrationTolerance=1e-5)
         {
             V w=env.Surface(s.R,s.Velocity);
             double normal=V.Dot(w,surface.Normal),tangent=(w-surface.Normal*normal).Length;
             bool valid=surface.Landable&&normal<=0&&normal>=-maxV&&tangent<=maxH&&
-                V.Dot(s.Forward,surface.Normal)>=Math.Cos(maxAngle)&&s.PointingRate<=maxRate&&surface.Clearance>=-1e-5;
+                V.Dot(s.Forward,surface.Normal)>=Math.Cos(maxAngle)&&s.PointingRate<=maxRate&&surface.Clearance>=-penetrationTolerance;
             return new Result(valid?Outcome.ContactWithinLimits:Outcome.ContactUnsafe,s,surface.Clearance);
         }
-        private static Result Contact(Environment env,State s,double clearance,double maxV,double maxH,double maxAngle,double maxRate)
+        private static Result Contact(Environment env,State s,double clearance,double maxV,double maxH,double maxAngle,double maxRate,
+            double penetrationTolerance=1e-5)
         {
             V up=s.R.Unit,w=env.Surface(s.R,s.Velocity);
             double radial=V.Dot(w,up),horizontal=(w-up*radial).Length;
             bool valid=radial<=0&&radial>=-maxV&&horizontal<=maxH&&
-                V.Dot(s.Forward,up)>=Math.Cos(maxAngle)&&s.PointingRate<=maxRate&&clearance>=-1e-5;
+                V.Dot(s.Forward,up)>=Math.Cos(maxAngle)&&s.PointingRate<=maxRate&&clearance>=-penetrationTolerance;
             return new Result(valid?Outcome.ContactWithinLimits:Outcome.ContactUnsafe,s,clearance);
         }
 

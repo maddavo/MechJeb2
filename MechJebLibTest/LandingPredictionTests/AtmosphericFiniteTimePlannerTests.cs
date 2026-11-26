@@ -65,7 +65,7 @@ namespace MechJebLibTest.LandingPredictionTests
             }
             Assert.True(F.Validate(env,p,lim,s,set,a,10000,.01,.01,out var reference,out var replay));
             Assert.Equal(D.Outcome.ContactWithinLimits,replay.Outcome);
-            Assert.InRange(reference.Result.End.UT,1.05999,1.06001);
+            Assert.InRange(reference.Result.End.UT,1.05999,1.06+D.ContactResolutionSeconds);
         }
         [Fact]
         public void BudgetAndCancellationNeverPromoteIncompleteTrajectory()

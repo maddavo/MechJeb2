@@ -148,12 +148,12 @@ namespace MechJebLibTest.LandingPredictionTests
             var lim=Limits(dt:.2);
             var a=D.Advance(env,Engines(),lim,State(.13,-1.6),new D.Command(0,X),.2);
             Assert.Equal(D.Outcome.ContactUnsafe,a.Status);
-            Assert.InRange(a.End.UT,.081249,.081251);
-            Assert.InRange(env.PhysicalClearance(a.End),-1e-5,0);
+            Assert.InRange(a.End.UT,.081249,.08125+D.ContactResolutionSeconds);
+            Assert.InRange(env.PhysicalClearance(a.End),-D.ContactResolutionMetres,0);
             Assert.Equal(-1.6,a.End.Velocity.X,9);
             var b=D.Advance(env,Engines(),lim,State(.02,-.5),new D.Command(0,X),.2);
             Assert.Equal(D.Outcome.ContactWithinLimits,b.Status);
-            Assert.InRange(b.End.UT,.039999,.040001);
+            Assert.InRange(b.End.UT,.039999,.04+D.ContactResolutionSeconds);
         }
 
         [Fact]
@@ -169,8 +169,8 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.True(env.PhysicalClearance(start)>0);
             var result=D.Advance(env,Engines(),Limits(dt:.2),start,new D.Command(0,X),.2);
             Assert.Equal(D.Outcome.ContactWithinLimits,result.Status);
-            Assert.InRange(result.End.UT,ut,ut+1e-7);
-            Assert.InRange(env.PhysicalClearance(result.End),-1e-5,0);
+            Assert.InRange(result.End.UT,ut,ut+D.ContactResolutionSeconds);
+            Assert.InRange(env.PhysicalClearance(result.End),-D.ContactResolutionMetres,0);
             Assert.Equal(-.5,result.End.Velocity.X,9);
         }
 
@@ -183,6 +183,23 @@ namespace MechJebLibTest.LandingPredictionTests
             var result=D.Advance(env,Engines(),Limits(dt:.2),start,new D.Command(0,X),.2);
             Assert.Equal(D.Outcome.UnknownCapability,result.Status);
             Assert.True(env.PhysicalClearance(result.End)>0);
+        }
+
+        [Fact]
+        public void EngineeringContactResolutionDoesNotInventContactOrExcusePenetration()
+        {
+            var env=Vacuum();var p=Engines();var lim=Limits(dt:.2);
+            var off=new D.Command(0,X);
+            // A near-surface hover and an ascending state are not contact.
+            Assert.Equal(D.Outcome.Advanced,D.Advance(env,p,lim,State(.05,0),off,.2).Status);
+            Assert.Equal(D.Outcome.Advanced,D.Advance(env,p,lim,State(.05,.5),off,.2).Status);
+            // Do not use the event bracket tolerance to accept an initially
+            // penetrating state without a known above-surface interval.
+            Assert.Equal(D.Outcome.ContactUnsafe,D.Advance(env,p,lim,State(-.05,-.5),off,.2).Status);
+            // A fast impact is still unsafe at coarse resolution.
+            var impact=D.Advance(env,p,lim,State(.13,-20),off,.2);
+            Assert.Equal(D.Outcome.ContactUnsafe,impact.Status);
+            Assert.InRange(env.PhysicalClearance(impact.End),-D.ContactResolutionMetres,0);
         }
 
         [Fact]
@@ -216,7 +233,7 @@ namespace MechJebLibTest.LandingPredictionTests
         {
             var a=D.Advance(Vacuum(),Engines(),Limits(dt:1),State(1,-10),new D.Command(0,X),1);
             Assert.Equal(D.Outcome.ContactUnsafe,a.Status);
-            Assert.InRange(a.End.UT,.099999,.100001);
+            Assert.InRange(a.End.UT,.099999,.1+D.ContactResolutionSeconds);
             var b=D.Advance(Vacuum(),Engines(),Limits(999.95,dt:1),State(10000,0),new D.Command(1,X),1);
             Assert.Equal(D.Outcome.ReserveExhausted,b.Status);
             Assert.InRange(b.End.UT,.049999,.050001);
@@ -457,7 +474,7 @@ namespace MechJebLibTest.LandingPredictionTests
             var result=R.Run(Vacuum(),Engines(),Limits(dt:.5),s,history,Array.Empty<R.Observation>());
             Assert.Equal(D.Outcome.ContactUnsafe,result.Outcome);
             Assert.False(result.HistoryCompleted);
-            Assert.InRange(result.End.UT,.099999,.100001);
+            Assert.InRange(result.End.UT,.099999,.1+D.ContactResolutionSeconds);
             var high=R.Run(Vacuum(),Engines(),Limits(dt:.5),State(1000,0),history,Array.Empty<R.Observation>());
             Assert.True(high.HistoryCompleted);
             Assert.Equal(D.Outcome.Advanced,high.Outcome);
@@ -499,8 +516,8 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.Equal(-1.5,env.SurfaceAt(start).ControllerClearance,10);
             var result=D.Advance(env,Engines(),Limits(dt:1),start,new D.Command(0,X),1);
             Assert.Equal(D.Outcome.ContactWithinLimits,result.Status);
-            Assert.InRange(result.End.UT,.999999,1.000001);
-            Assert.InRange(result.End.R.X,320004.999999,320005.000001);
+            Assert.InRange(result.End.UT,.999999,1+D.ContactResolutionSeconds);
+            Assert.InRange(result.End.R.X,320005-D.ContactResolutionMetres,320005.000001);
         }
 
         [Fact]
@@ -544,7 +561,7 @@ namespace MechJebLibTest.LandingPredictionTests
             var s=new D.State(0,new D.V(320001,-2,0),new D.V(0,4,0),1000,X);
             var step=D.Advance(env,Engines(),Limits(dt:1),s,new D.Command(0,X),1);
             Assert.Equal(D.Outcome.ContactUnsafe,step.Status);
-            Assert.InRange(step.End.UT,.374999,.375001);
+            Assert.InRange(step.End.UT,.374999,.375+D.ContactResolutionSeconds);
         }
 
         [Fact]
@@ -643,8 +660,8 @@ namespace MechJebLibTest.LandingPredictionTests
             var fine=T.Run(Vacuum(),Engines(),Limits(dt:.05),settings,s,m,10,1,1,.1,.1);
             Assert.Equal(D.Outcome.ContactWithinLimits,coarse.Outcome);
             Assert.Equal(D.Outcome.ContactWithinLimits,fine.Outcome);
-            Assert.InRange(coarse.End.UT,.999999,1.000001);
-            Assert.InRange(fine.End.UT,.999999,1.000001);
+            Assert.InRange(coarse.End.UT,.999999,1+D.ContactResolutionSeconds);
+            Assert.InRange(fine.End.UT,.999999,1+D.ContactResolutionSeconds);
             Assert.InRange(Math.Abs(coarse.Memory.Integral-fine.Memory.Integral),0,.011);
         }
 
