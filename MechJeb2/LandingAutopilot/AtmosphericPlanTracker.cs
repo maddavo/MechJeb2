@@ -123,7 +123,12 @@ namespace MuMech.Landing
             double stopDistance=available>0?Math.Max(0,down*down-touch*touch)/(2*available):double.PositiveInfinity;
             // Optimistic axial stopping bound, not a certified safety model.
             // Failing even this bound is a reason to reject tracking.
-            if(down>touch+1&&(!D.Finite(stopDistance)||stopDistance+down*liveResponse>clearance))
+            // A no-drag bound is not an atmospheric reachability proof.
+            // Do not discard a fully propagated trajectory far from contact
+            // solely for failing this local bound. Near contact it protects
+            // against an imminent downward-speed hazard.
+            if(down>touch+1&&clearance/Math.Max(.1,down)<=8&&
+                (!D.Finite(stopDistance)||stopDistance+down*liveResponse>clearance))
                 return Reject("insufficient radial stopping distance");
             if(feed.Throttle==0)
                 return new Decision(new D.Command(0,feed.Direction.Unit),pe,ve,me,refClearance);

@@ -43,6 +43,17 @@ namespace MuMech.Landing
                     if(!Finite(_keys[i].X)||!Finite(_keys[i].Y)||_keys[i].Y<0 ||
                         i>0&&_keys[i].X<=_keys[i-1].X) throw new ArgumentException("invalid curve");
             }
+            internal Curve Scaled(double factor)
+            {
+                if(!Finite(factor)||factor<=0)throw new ArgumentException("invalid curve scale");
+                var keys=new Knot[_keys.Length];
+                for(int i=0;i<keys.Length;i++)
+                {
+                    var k=_keys[i];
+                    keys[i]=new Knot(k.X,k.Y*factor,k.In*factor,k.Out*factor);
+                }
+                return new Curve(keys);
+            }
             internal double At(double x)
             {
                 if(!Finite(x)||x<_keys[0].X||x>_keys[_keys.Length-1].X) return double.NaN;
@@ -88,6 +99,19 @@ namespace MuMech.Landing
             private readonly bool _geometryVerified;
             internal Propulsion(bool geometryVerified,params Engine[] engines)
             { _geometryVerified=geometryVerified;_engines=engines==null?Array.Empty<Engine>():(Engine[])engines.Clone(); }
+            // Uniform thrust-per-flow perturbation preserves the original
+            // torque allocation, geometry and commanded propellant rate.
+            internal Propulsion WithImpulseScale(double factor)
+            {
+                var engines=new Engine[_engines.Length];
+                for(int i=0;i<engines.Length;i++)
+                {
+                    var e=_engines[i];
+                    if(e==null||e.Isp==null)return new Propulsion(false);
+                    engines[i]=new Engine(e.MaxFlow,e.Limit,e.G0,e.Lever,e.Isp.Scaled(factor));
+                }
+                return new Propulsion(_geometryVerified,engines);
+            }
             internal Authority At(double pressurePa)
             {
                 if(!_geometryVerified||_engines.Length<1||_engines.Length>2||

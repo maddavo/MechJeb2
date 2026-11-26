@@ -10,6 +10,8 @@ using Tracker=MuMech.Landing.AtmosphericPlanTracker;
 using Replanning=MuMech.Landing.AtmosphericReplanning;
 using Fallback=MuMech.Landing.AtmosphericFallbackPlanner;
 using Strategic=MuMech.Landing.AtmosphericStrategicPlanner;
+using Recovery=MuMech.Landing.AtmosphericRecoverability;
+using Uncertainty=MuMech.Landing.AtmosphericUncertaintyReplay;
 using R=MuMech.Landing.AtmosphericLandingReplay;
 
 namespace MechJebLibTest.LandingPredictionTests
@@ -209,7 +211,9 @@ namespace MechJebLibTest.LandingPredictionTests
             var t=PoweredTracker();
             Assert.True(t.ReferenceAt(0,out var s,out _));
             Assert.Equal("terrain clearance below trajectory",t.Track(s,800,8,1,0,0).Reason);
-            Assert.Equal("insufficient radial stopping distance",t.Track(s,1000,3.01,1,3,0).Reason);
+            // A high-altitude no-drag radial bound is not an independent
+            // proof of imminent impact. Keep the validated plan here.
+            Assert.True(t.Track(s,1000,3.01,1,3,0).Valid);
         }
 
         [Fact]
@@ -595,6 +599,96 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.Equal(Math.Cos(.01),approach.Common.TargetAtInitialUT.X,10);
             Assert.Equal(Math.Sin(.01),approach.Common.TargetAtInitialUT.Y,10);
             Assert.Equal(0,approach.MinCoast);
+        }
+
+        [Fact]
+        public void IndependentRadialScreenDistinguishesWarningFromImminentHazard()
+        {
+            var state=new D.State(0,X*326080,X*(-15),1000,X);
+            var clear=Recovery.Assess(state,state.Velocity,6080,6,1,2.94,.1,.2,1,100,.5);
+            Assert.Equal(Recovery.Level.Clear,clear.Status);
+            var warning=Recovery.Assess(state,state.Velocity,6080,2.95,1,2.94,.1,.2,1,100,.5);
+            Assert.Equal(Recovery.Level.Warning,warning.Status);
+            var hazard=Recovery.Assess(state,state.Velocity,40,3.1,1,2.94,.1,.2,1,100,.5);
+            Assert.Equal(Recovery.Level.Hazard,hazard.Status);
+            Assert.True(hazard.OptimisticDistance>40);
+            Assert.Equal(Recovery.Level.Unknown,Recovery.Assess(state,state.Velocity,double.NaN,
+                6,1,2.94,.1,.2,1,100,.5).Status);
+        }
+
+        [Fact]
+        public void IndependentFuelAndTurnMarginsRemainExplicit()
+        {
+            var state=new D.State(0,X*321000,X*(-20),1000,Y);
+            var a=Recovery.Assess(state,state.Velocity,1000,6,1,2.94,.1,1,1,999,.5);
+            Assert.Equal(Recovery.Level.Warning,a.Status);
+            Assert.True(a.FuelMargin<0);
+            Assert.True(a.DelayedDistance>a.OptimisticDistance);
+            var b=Recovery.Assess(state,state.Velocity,1000,6,1,2.94,.1,1,1,1000,.5);
+            Assert.Equal(Recovery.Level.Hazard,b.Status);
+        }
+
+        [Fact]
+        public void BestEffortAllowsFastDescentAtAltitudeAndBrakesImminentHazard()
+        {
+            var state=new D.State(0,X*326080,X*(-15),1000,X);
+            Assert.True(Recovery.TryBestEffort(state,state.Velocity,6080,6,1,2.94,.2,1,100,.5,
+                false,out var coast));
+            Assert.Equal(0,coast.Throttle);
+            Assert.True(Recovery.TryBestEffort(state,state.Velocity,40,6,1,2.94,.2,1,100,.5,
+                true,out var brake));
+            Assert.Equal(1,brake.Throttle);
+            Assert.Equal(1,brake.Direction.X,9);
+            var turned=new D.State(0,state.R,state.Velocity,1000,Y);
+            Assert.True(Recovery.TryBestEffort(turned,turned.Velocity,40,6,1,2.94,.2,1,100,.5,
+                true,out var align));
+            Assert.Equal(0,align.Throttle);
+            Assert.Equal(1,align.Direction.X,9);
+        }
+
+        [Fact]
+        public void BestEffortPreservesReserveAndRejectsUnknownFlow()
+        {
+            var state=new D.State(0,X*320100,X*(-20),1000,X);
+            Assert.True(Recovery.TryBestEffort(state,state.Velocity,20,6,1,2.94,1,10,999,.5,
+                true,out var command));
+            Assert.InRange(command.Throttle,0,1.0/12);
+            Assert.False(Recovery.TryBestEffort(state,state.Velocity,20,6,1,2.94,1,10,1000,.5,
+                true,out _));
+            Assert.False(Recovery.TryBestEffort(state,state.Velocity,20,6,1,2.94,1,double.NaN,100,.5,
+                true,out _));
+        }
+
+        [Fact]
+        public void ScenarioScreenReportsAllSampledContactsAndBudgets()
+        {
+            var tracker=ContactTracker();var env=Env();var engine=Engine();var limits=Limits();
+            var report=Uncertainty.Validate(env,engine,limits,tracker,10000);
+            Assert.True(report.Passed,report.Reason);
+            Assert.Equal(4,report.Trials.Count);
+            Assert.All(report.Trials,t=>Assert.Equal(D.Outcome.ContactWithinLimits,t.Outcome));
+            Assert.InRange(report.WorstMiss,0,.001);
+            Assert.Equal(1000,report.MinimumEndMass,8);
+            var limited=Uncertainty.Validate(env,engine,limits,tracker,1);
+            Assert.False(limited.Passed);
+            Assert.Equal(1,limited.Steps);
+            Assert.False(Uncertainty.Validate(env,engine,limits,tracker,10000,new CancellationToken(true)).Passed);
+        }
+
+        [Fact]
+        public void ScenarioImpulseScalingPreservesFlowAndExposesUnrecoverableHistory()
+        {
+            var engine=Engine();
+            var original=engine.At(0);var weaker=engine.WithImpulseScale(.95).At(0);
+            Assert.True(weaker.Known);
+            Assert.Equal(original.Flow,weaker.Flow,12);
+            Assert.Equal(original.Force*.95,weaker.Force,9);
+            // Malformed physical trajectory is intentionally used to show
+            // the independent closed-loop screen rejects a nominal metadata
+            // contact claim rather than trusting it.
+            var trial=Uncertainty.Run(Env(),engine,Limits(),PoweredTracker(),
+                new Uncertainty.Scenario("severe force loss",.01,1,1,1),10000);
+            Assert.False(trial.Passed);
         }
 
         [Fact]

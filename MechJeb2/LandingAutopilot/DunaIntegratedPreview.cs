@@ -45,6 +45,7 @@ namespace MuMech.Landing
             internal AtmosphericStrategicPlanner.Report Strategic;
             internal F.Candidate Validated;
             internal bool ReplayPassed;
+            internal AtmosphericUncertaintyReplay.Report Scenarios;
             internal double ReferenceMs,ReplayMs;
             internal string Error;
         }
@@ -310,7 +311,13 @@ namespace MuMech.Landing
                     var settings=new AtmosphericStrategicPlanner.Settings(s.Settings,preparation:45,engagementLead:45);
                     a.Strategic=AtmosphericStrategicPlanner.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,settings,token);
                     a.ReplayPassed=a.Strategic.Best?.ReplayPassed==true;
-                    if(a.ReplayPassed&&!token.IsCancellationRequested)a.Validated=a.Strategic.Best.Combined;
+                    if(a.ReplayPassed&&!token.IsCancellationRequested)
+                    {
+                        var candidate=a.Strategic.Best.Combined;
+                        var t=new AtmosphericPlanTracker(s.Environment,s.Propulsion,s.Limits,s.Settings,candidate);
+                        a.Scenarios=AtmosphericUncertaintyReplay.Validate(s.Environment,s.Propulsion,s.Limits,t,240000,token);
+                        if(a.Scenarios.Passed)a.Validated=candidate;
+                    }
                     return a;
                 }
                 a.Reference=P.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,s.Settings.Common,
@@ -323,7 +330,12 @@ namespace MuMech.Landing
                 a.ReplayPassed=F.Validate(s.Environment,s.Propulsion,s.Limits,s.Initial,s.Settings,a.Direct.Best,
                     30000,20,Math.Max(.5,s.Mass*.0005),out var reconstructed,out _,token);
                 a.ReplayMs=clock.Elapsed.TotalMilliseconds;
-                if(a.ReplayPassed)a.Validated=reconstructed;
+                if(a.ReplayPassed&&!token.IsCancellationRequested)
+                {
+                    var t=new AtmosphericPlanTracker(s.Environment,s.Propulsion,s.Limits,s.Settings,reconstructed);
+                    a.Scenarios=AtmosphericUncertaintyReplay.Validate(s.Environment,s.Propulsion,s.Limits,t,120000,token);
+                    if(a.Scenarios.Passed)a.Validated=reconstructed;
+                }
             }
             catch(Exception ex){a.Error=ex.GetType().Name+": "+ex.Message;}
             return a;
@@ -496,6 +508,14 @@ namespace MuMech.Landing
                     " ("+answer.Direct.Attempts+" tests, "+Num(answer.Direct.ElapsedMilliseconds,"F0")+" ms; min prep "+Num(snapshot.Settings.MinCoast)+" s)\n";
             lines+=(snapshot.Strategic?"Whole-history finer-step replay: ":"B finer-step replay: ")+(answer.ReplayPassed?"PASS (model only)":"not demonstrated")+
                 "; approximate terrain/aero/actuators.";
+            if(answer.Scenarios!=null)
+            {
+                var scenarios=answer.Scenarios;
+                lines+="\nClosed-loop scenarios: "+(scenarios.Passed?"PASS (model only)":"REJECTED: "+scenarios.Reason)+
+                    "; "+scenarios.Trials.Count+" trials; max sampled miss "+Num(scenarios.WorstMiss/1000,"F2")+
+                    " km; min contact mass "+Num(scenarios.MinimumEndMass,"F0")+" kg";
+            }
+            else lines+="\nClosed-loop scenario screen not demonstrated.";
             if(corridorStatus!=null)lines+="\n"+corridorStatus;
             if(executionStatus!=null)lines+="\n"+executionStatus;
             if(!logged){logged=true;Debug.Log("[DunaIntegratedPreview] "+lines.Replace('\n',' '));}

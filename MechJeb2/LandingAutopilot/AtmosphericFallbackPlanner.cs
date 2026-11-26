@@ -117,6 +117,10 @@ namespace MuMech.Landing
                     if(!F.Validate(env,request.Propulsion,request.Limits,anchor,f,report.Best,16000,10,
                         Math.Max(.5,anchor.Mass*.00025),out var replayed,out var replay,token))continue;
                     steps+=replayed.Result.Steps+replay.Steps;
+                    var tested=new AtmosphericPlanTracker(env,request.Propulsion,request.Limits,f,replayed);
+                    var scenarios=AtmosphericUncertaintyReplay.Validate(env,request.Propulsion,request.Limits,tested,40000,token);
+                    steps+=scenarios.Steps;
+                    if(!scenarios.Passed)continue;
                     double miss=P.Miss(env,anchor,replayed.Result.End,original);
                     if(!D.Finite(miss))continue;
                     if(best==null||replayed.Result.End.Mass>best.Result.End.Mass||

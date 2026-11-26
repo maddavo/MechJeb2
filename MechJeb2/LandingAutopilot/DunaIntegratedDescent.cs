@@ -14,7 +14,8 @@ namespace MuMech.Landing
         private readonly DunaReplanCoordinator replanner=new DunaReplanCoordinator();
         private readonly DunaFallbackCoordinator fallback=new DunaFallbackCoordinator();
         private D.Environment activeEnvironment;
-        private bool emergency;
+        private bool emergency,hazardMode,orbitalBurnRequested;
+        private string hazardReason;
         internal void CancelReplanning(){replanner.Cancel();fallback.Cancel();}
         private double nextEngineUT=double.NegativeInfinity,nextLogUT=double.NegativeInfinity,lastUT=double.NegativeInfinity;
         private bool terminalExtension;
@@ -71,7 +72,7 @@ namespace MuMech.Landing
                 var decision=tracker.Track(actual,clearance,s.MaxThrustAcceleration,cap,
                     s.LocalGravity,s.MaxEngineResponseTime);
                 bool orbitalPrefix=snapshot.Strategic&&s.Time<snapshot.ApproachStartUT;
-                if(!emergency&&!orbitalPrefix)
+                if(!hazardMode&&!emergency&&!orbitalPrefix)
                 {
                     // Alternate background work. A ready contingency is not
                     // busy; a pending local terrain screen and nominal solve
@@ -97,32 +98,46 @@ namespace MuMech.Landing
                             s.LocalGravity,s.MaxEngineResponseTime);
                     }
                 }
-                D.Command command;
-                if(decision.Valid)command=decision.Command;
-                else
+                var velocity=DunaIntegratedPreview.V(s.SurfaceVelocity);
+                // Before an irreversible orbital burn, retain the existing
+                // abort policy. In descent, the independent supervisor may
+                // invalidate even a nominally valid tracker.
+                bool safeOrbitalCoast=snapshot.Strategic&&
+                    AtmosphericStrategicPlanner.TryOrbit(activeEnvironment,actual,out var orbit)&&
+                    orbit.Periapsis>activeEnvironment.Radius+activeEnvironment.AtmosphereTop;
+                bool preburn=snapshot.Strategic&&(!orbitalBurnRequested||safeOrbitalCoast);
+                double maxFlow=double.NaN;
+                if(activeEnvironment.Air(actual.UT,actual.R,out double p,out _))
                 {
-                    // Small, bounded contact-time tolerance ONLY for an
-                    // already slow, near-upright terminal state. No general
-                    // emergency controller or legacy handover is implied.
-                    if(decision.Reason!="plan epoch expired"||s.Time<tracker.EndUT||
-                        s.Time>tracker.EndUT+5||!actual.Valid||actual.Mass<=tracker.ReserveMass||
-                        !D.Finite(clearance)||clearance<0||clearance>5||
-                        s.SpeedVertical>0||s.SpeedVertical< -2||s.SpeedSurfaceHorizontal>1||
-                        D.V.Dot(actual.Forward,actual.R.Unit)<Math.Cos(Math.PI/6)||
-                        s.MaxThrustAcceleration*cap<=s.LocalGravity)
-                        return Finish(decision.Reason+"; "+(emergency?"local contingency lost":fallback.Status)+"; manual control required");
-                    terminalExtension=true;
-                    var surface=new D.SurfaceSample(clearance,clearance,clearance,actual.R.Unit,true);
-                    var t=AtmosphericFiniteTimePlanner.TerminalCommand(activeEnvironment,snapshot.Propulsion,
-                        actual,tracker.Settings,surface);
-                    if(!t.Valid||!activeEnvironment.Air(actual.UT,actual.R,out double pressure,out _))
-                        return Finish("terminal extension capability unknown");
-                    var a=snapshot.Propulsion.At(pressure);
-                    if(!a.Known||a.Force<=0)return Finish("terminal extension authority unknown");
-                    double throttle=t.Throttle*a.Force/(actual.Mass*s.MaxThrustAcceleration);
-                    command=new D.Command(Math.Min(cap,throttle),t.Direction.Unit);
+                    var authority=snapshot.Propulsion.At(p);
+                    if(authority.Known)maxFlow=authority.Flow;
                 }
-                if(orbitalPrefix&&s.Time>=snapshot.DeorbitStartUT&&s.Time<snapshot.DeorbitEndUT&&
+                double touch=tracker.Settings.Common.Terminal.TouchdownSpeed;
+                var safety=AtmosphericRecoverability.Assess(actual,velocity,clearance,s.MaxThrustAcceleration,
+                    cap,s.LocalGravity,snapshot.Limits.TurnRate,s.MaxEngineResponseTime,maxFlow,tracker.ReserveMass,touch);
+                D.Command command=default;
+                bool extension=!hazardMode&&!decision.Valid&&decision.Reason=="plan epoch expired"&&
+                    AtmosphericUncertaintyReplay.TryTerminalExtension(tracker,activeEnvironment,snapshot.Propulsion,
+                        actual,velocity,clearance,s.MaxThrustAcceleration,cap,s.LocalGravity,out command);
+                if(extension)terminalExtension=true;
+                bool imminent=!preburn&&safety.Status==AtmosphericRecoverability.Level.Hazard;
+                if(!hazardMode&&(imminent||!decision.Valid&&!extension))
+                {
+                    if(preburn)return Finish(decision.Reason+"; preburn abort");
+                    hazardReason=imminent?safety.Reason:decision.Reason;
+                    hazardMode=true;terminalExtension=false;
+                    CancelReplanning();
+                    UnityEngine.Debug.Log("[DunaIntegratedDescent] independent supervisor invalidated plan: "+hazardReason+
+                        "; best-effort hazard control, targeting no longer valid");
+                }
+                if(hazardMode)
+                {
+                    if(!AtmosphericRecoverability.TryBestEffort(actual,velocity,clearance,s.MaxThrustAcceleration,
+                        cap,s.LocalGravity,s.MaxEngineResponseTime,maxFlow,tracker.ReserveMass,touch,imminent,out command))
+                        return Finish("hazard control unavailable: "+hazardReason+"; manual control required");
+                }
+                else if(decision.Valid)command=decision.Command;
+                if(!hazardMode&&orbitalPrefix&&s.Time>=snapshot.DeorbitStartUT&&s.Time<snapshot.DeorbitEndUT&&
                     (!tracker.ReferenceAt(actual.UT,out _,out var plannedBurn)||
                      D.V.Dot(actual.Forward,plannedBurn.Direction.Unit)<.995))
                     return Finish("orbital burn alignment not demonstrated; manual control required");
@@ -136,19 +151,25 @@ namespace MuMech.Landing
                 Core.Attitude.attitudeTo(DunaIntegratedPreview.World(command.Direction.Unit),
                     AttitudeReference.INERTIAL,Core.Landing);
                 Core.Thrust.RequestActiveThrottle((float)command.Throttle,false,true);
+                if(orbitalPrefix&&command.Throttle>0)orbitalBurnRequested=true;
                 double originalMiss=AtmosphericFeasibleRangePlanner.Miss(snapshot.Environment,snapshot.Initial,
                     tracker.Plan.Result.End,snapshot.Settings.Common.TargetAtInitialUT);
                 bool degraded=emergency||originalMiss>snapshot.Settings.Common.TargetTolerance;
-                Status=(orbitalPrefix?(s.Time<snapshot.DeorbitStartUT?"Strategic orbital preparation ":s.Time<snapshot.DeorbitEndUT?"Strategic finite deorbit ":"Strategic engine tail "):emergency?"Emergency local-site ":terminalExtension?"Integrated terminal extension ":
+                if(hazardMode)originalMiss=double.NaN;
+                Status=hazardMode?"Best-effort hazard control; NO VALID LANDING FORECAST\n"+hazardReason:
+                    (orbitalPrefix?(s.Time<snapshot.DeorbitStartUT?"Strategic orbital preparation ":s.Time<snapshot.DeorbitEndUT?"Strategic finite deorbit ":"Strategic engine tail "):emergency?"Emergency local-site ":terminalExtension?"Integrated terminal extension ":
                     "Integrated "+(degraded?"degraded ":""))+(command.Throttle>0?"powered":"coast")+
                     "; original target model miss "+(originalMiss/1000).ToString("F2",CultureInfo.InvariantCulture)+" km"+
                     (emergency?"\nFallback site model miss "+(tracker.TargetMiss/1000).ToString("F2",CultureInfo.InvariantCulture)+" km":
-                    "\n"+replanner.Status+"; "+fallback.Status);
+                    "\n"+replanner.Status+"; "+fallback.Status)+
+                    "\nRadial recoverability: "+safety.Status;
                 detail=" planEndUT="+Num(tracker.EndUT)+" clearance="+Num(clearance)+
                     " positionError="+Num(decision.PositionError)+" velocityError="+Num(decision.VelocityError)+
                     " massErrorKg="+Num(decision.MassError)+" throttle="+Num(command.Throttle)+
                     " acceptedReplans="+replanner.Accepted+" rejectedReplans="+replanner.Rejected+
-                    " preparedFallbacks="+fallback.Prepared+" emergency="+emergency+" originalMiss="+Num(originalMiss);
+                    " preparedFallbacks="+fallback.Prepared+" emergency="+emergency+" originalMiss="+Num(originalMiss)+
+                    " hazardMode="+hazardMode+" recoverability="+safety.Status+
+                    " delayedRadialMargin="+Num(safety.Margin)+" radialFuelMarginKg="+Num(safety.FuelMargin);
                 if(s.Time>=nextLogUT)
                 {
                     nextLogUT=s.Time+1;

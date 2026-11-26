@@ -232,3 +232,5 @@ Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m
 Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m4.2`. Experimental descent now prepares bounded local-site contingencies; adoption requires a failed nominal tracker and current replayed/corridor-screened contingency. Coverage and real-game parity remain unverified; ordinary landing unchanged.
 
 Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m5.0`. The explicit Duna orbital preview searches finite vector deorbit and approach trajectories jointly; only a replayed, target-tolerance, sampled-corridor model plan can enter experimental execution. No auto warp; actual orbit-to-contact acceptance remains open.
+
+Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m5.1`. Experimental plan admission includes closed-loop model uncertainty screening; descent supervisor reports radial margins and invalidates targeting on best-effort hazard response. Actual flight validation remains outstanding.

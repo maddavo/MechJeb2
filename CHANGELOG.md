@@ -81,3 +81,8 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Add bounded orbital epoch, retrograde/normal finite burn and powered descent search with continuous fuel accounting, rotating target handoff and whole-history finer-step replay.
 - Add explicit experimental orbital preview/execution, preburn alignment and deadline checks, phase-specific tracking, and altitude-scaled terrain mismatch screening. No default landing dispatch change.
+
+## 2.16.0-landing.20261126.duna-integrated-m5.1
+
+- Add independent radial stopping/delay/fuel screening, distinguish high-altitude warning from imminent hazard, latch explicit best-effort non-targeting response after loss of admitted trajectory.
+- Add four closed-loop uncertainty scenarios, require sampled contact within limits before initial/replacement/contingency publication; share bounded terminal extension with flight control.

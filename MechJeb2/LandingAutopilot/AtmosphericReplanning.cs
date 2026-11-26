@@ -126,6 +126,9 @@ namespace MuMech.Landing
                     20000,10,Math.Max(.5,anchor.Mass*.00025),out var reference,out _,token))
                     return Finish(null,"independent replay not demonstrated");
                 var tracker=new AtmosphericPlanTracker(r.Environment,r.Propulsion,r.Limits,settings,reference);
+                var scenarios=AtmosphericUncertaintyReplay.Validate(r.Environment,r.Propulsion,r.Limits,tracker,60000,token);
+                steps+=scenarios.Steps;
+                if(!scenarios.Passed)return Finish(null,"scenario: "+scenarios.Reason);
                 return Finish(tracker,tracker.TargetMiss<=settings.Common.TargetTolerance?"target candidate":"degraded candidate");
             }
             catch(Exception ex){return Finish(null,ex.GetType().Name+": "+ex.Message);}
