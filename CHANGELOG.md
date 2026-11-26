@@ -76,3 +76,8 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 ## 2.16.0-landing.20261126.duna-integrated-m4.2
 
 - Add independent alternative local-site search, per-site terrain model, reserve-preserving ranking, finer-step replay, sampled corridor and footprint screen, bounded precomputation and strict current-state fallback admission. Preserve original target separately; no legacy fallback or claimed guaranteed recovery.
+
+## 2.16.0-landing.20261126.duna-integrated-m5.0
+
+- Add bounded orbital epoch, retrograde/normal finite burn and powered descent search with continuous fuel accounting, rotating target handoff and whole-history finer-step replay.
+- Add explicit experimental orbital preview/execution, preburn alignment and deadline checks, phase-specific tracking, and altitude-scaled terrain mismatch screening. No default landing dispatch change.

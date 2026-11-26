@@ -85,6 +85,11 @@ namespace MuMech.Landing
             return state.Valid;
         }
 
+        // At altitude, differences between the target sphere and local
+        // terrain are not necessarily tracking deviations. The actual
+        // clearance and stopping bound remain separate admission checks.
+        internal static double TerrainTolerance(double clearance)=>Math.Min(10000,Math.Max(2,clearance*.1));
+
         // Do not use a stale solution or "catch up" by skipping a burn.
         // Interpolated reference is checked at the actual UT; a small
         // command interval must not be treated as a fresh complete plan.
@@ -110,7 +115,7 @@ namespace MuMech.Landing
             double velocityLimit=Math.Min(15,Math.Max(.75,refClearance*.005));
             double massLimit=Math.Max(10,plan.Reference[0].State.Mass*.01);
             if(pe>positionLimit||ve>velocityLimit||me>massLimit)return Reject("trajectory deviation");
-            if(clearance<refClearance-Math.Min(100,Math.Max(2,refClearance*.1)))
+            if(clearance<refClearance-TerrainTolerance(refClearance))
                 return Reject("terrain clearance below trajectory");
             double vertical=D.V.Dot(environment.Surface(actual.R,actual.Velocity),actual.R.Unit);
             double down=Math.Max(0,-vertical),available=liveMaxAcceleration*cap-localGravity;

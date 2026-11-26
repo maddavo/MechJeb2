@@ -18,5 +18,6 @@
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericPlanTracker.cs" Link="AtmosphericPlanTracker.cs"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericReplanning.cs" Link="AtmosphericReplanning.cs"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericFallbackPlanner.cs" Link="AtmosphericFallbackPlanner.cs"/>
+    <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericStrategicPlanner.cs" Link="AtmosphericStrategicPlanner.cs"/>
   </ItemGroup>
 </Project>

@@ -197,8 +197,13 @@ namespace MuMech
                     {
                         if (GUILayout.Button("Cancel descent preview")) _integratedPreview.Cancel();
                     }
-                    else if (GUILayout.Button("Evaluate integrated descent (preview)"))
-                        _integratedPreview.Start(Core);
+                    else
+                    {
+                        if (GUILayout.Button("Evaluate integrated descent (preview)"))
+                            _integratedPreview.Start(Core);
+                        if (GUILayout.Button("Evaluate integrated landing from orbit (preview)"))
+                            _integratedPreview.Start(Core,true);
+                    }
                     GUILayout.Label(preview, new GUIStyle(GUI.skin.label) { wordWrap = true });
                     if(!Core.Landing.Enabled&&_integratedPreview.ExecutionAvailable)
                     {

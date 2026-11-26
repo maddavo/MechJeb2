@@ -70,7 +70,8 @@ namespace MuMech.Landing
                 var actual=DunaIntegratedPreview.LiveState(Core);
                 var decision=tracker.Track(actual,clearance,s.MaxThrustAcceleration,cap,
                     s.LocalGravity,s.MaxEngineResponseTime);
-                if(!emergency)
+                bool orbitalPrefix=snapshot.Strategic&&s.Time<snapshot.ApproachStartUT;
+                if(!emergency&&!orbitalPrefix)
                 {
                     // Alternate background work. A ready contingency is not
                     // busy; a pending local terrain screen and nominal solve
@@ -121,6 +122,10 @@ namespace MuMech.Landing
                     double throttle=t.Throttle*a.Force/(actual.Mass*s.MaxThrustAcceleration);
                     command=new D.Command(Math.Min(cap,throttle),t.Direction.Unit);
                 }
+                if(orbitalPrefix&&s.Time>=snapshot.DeorbitStartUT&&s.Time<snapshot.DeorbitEndUT&&
+                    (!tracker.ReferenceAt(actual.UT,out _,out var plannedBurn)||
+                     D.V.Dot(actual.Forward,plannedBurn.Direction.Unit)<.995))
+                    return Finish("orbital burn alignment not demonstrated; manual control required");
                 if(!command.Valid||!D.Finite(cap)||command.Throttle>cap+1e-8)
                     return Finish("invalid live command");
                 // Exclusive ownership of the existing actuator interfaces.
@@ -134,7 +139,7 @@ namespace MuMech.Landing
                 double originalMiss=AtmosphericFeasibleRangePlanner.Miss(snapshot.Environment,snapshot.Initial,
                     tracker.Plan.Result.End,snapshot.Settings.Common.TargetAtInitialUT);
                 bool degraded=emergency||originalMiss>snapshot.Settings.Common.TargetTolerance;
-                Status=(emergency?"Emergency local-site ":terminalExtension?"Integrated terminal extension ":
+                Status=(orbitalPrefix?(s.Time<snapshot.DeorbitStartUT?"Strategic orbital preparation ":s.Time<snapshot.DeorbitEndUT?"Strategic finite deorbit ":"Strategic engine tail "):emergency?"Emergency local-site ":terminalExtension?"Integrated terminal extension ":
                     "Integrated "+(degraded?"degraded ":""))+(command.Throttle>0?"powered":"coast")+
                     "; original target model miss "+(originalMiss/1000).ToString("F2",CultureInfo.InvariantCulture)+" km"+
                     (emergency?"\nFallback site model miss "+(tracker.TargetMiss/1000).ToString("F2",CultureInfo.InvariantCulture)+" km":

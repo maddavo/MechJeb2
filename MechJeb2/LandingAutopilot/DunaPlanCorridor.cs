@@ -63,7 +63,7 @@ namespace MuMech.Landing
                         if(Math.Abs(sampledClearance-modelClearance)>2)
                         {Reject("near-ground terrain differs from model");return;}
                     }
-                    else if(sampledClearance<modelClearance-Math.Min(100,Math.Max(2,modelClearance*.1)))
+                    else if(sampledClearance<modelClearance-AtmosphericPlanTracker.TerrainTolerance(modelClearance))
                     {Reject("terrain rises into model corridor");return;}
                 }
                 // Additional local footprint samples for a fallback site.

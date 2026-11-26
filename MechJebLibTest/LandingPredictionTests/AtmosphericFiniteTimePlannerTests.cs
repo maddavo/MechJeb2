@@ -9,6 +9,7 @@ using F=MuMech.Landing.AtmosphericFiniteTimePlanner;
 using Tracker=MuMech.Landing.AtmosphericPlanTracker;
 using Replanning=MuMech.Landing.AtmosphericReplanning;
 using Fallback=MuMech.Landing.AtmosphericFallbackPlanner;
+using Strategic=MuMech.Landing.AtmosphericStrategicPlanner;
 using R=MuMech.Landing.AtmosphericLandingReplay;
 
 namespace MechJebLibTest.LandingPredictionTests
@@ -452,6 +453,130 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.Equal("fallback reserve or epoch mismatch",Check(request.Generation,state,101));
             Assert.True(result.Tracker.ReferenceAt(result.SwitchUT+.1,out var later,out _));
             Assert.Null(Check(request.Generation,later));
+        }
+
+        private static D.State Circular(D.Environment env,double altitude=100000)
+        {
+            double radius=env.Radius+altitude;
+            return new D.State(0,X*radius,Y*Math.Sqrt(env.Mu/radius),1000,Y*(-1));
+        }
+
+        [Fact]
+        public void StrategicCircularOrbitAndPeriapsisSeedMatchAnalyticGeometry()
+        {
+            var env=Env(301363211975.0978);
+            var state=Circular(env);
+            Assert.True(Strategic.TryOrbit(env,state,out var orbit));
+            Assert.Equal(420000,orbit.SemiMajor,6);
+            Assert.InRange(orbit.Eccentricity,0,1e-10);
+            Assert.Equal(420000,orbit.Periapsis,6);
+            Assert.Equal(2*Math.PI*Math.Sqrt(Math.Pow(420000.0,3)/env.Mu),orbit.Period,8);
+            double delta=Strategic.SeedDeltaV(env,state,300000);
+            var changed=new D.State(0,state.R,state.Velocity-Y*delta,state.Mass,state.Forward);
+            Assert.True(Strategic.TryOrbit(env,changed,out var transfer));
+            Assert.Equal(300000,transfer.Periapsis,6);
+            Assert.False(Strategic.TryOrbit(env,new D.State(0,state.R,Y*2000,1000,X),out _));
+        }
+
+        [Fact]
+        public void FiniteDeorbitBurnChangesPlaneAndConsumesMassBeforeHandoff()
+        {
+            var env=Env(301363211975.0978);var state=Circular(env);
+            var limits=Limits(step:.125);
+            var settings=new Strategic.Settings(Settings(cap:1),preparation:1,maxWait:10,maxBurn:40);
+            var retro=Strategic.EvaluatePrefix(env,Engine(),limits,state,settings,
+                new Strategic.Burn(1,25,0),10000,true);
+            var tilted=Strategic.EvaluatePrefix(env,Engine(),limits,state,settings,
+                new Strategic.Burn(1,25,.2),10000,true);
+            Assert.Equal(D.Outcome.Advanced,retro.Outcome);
+            Assert.Equal(D.Outcome.Advanced,tilted.Outcome);
+            Assert.True(Strategic.TryOrbit(env,tilted.End,out var orbit));
+            Assert.True(orbit.Periapsis<env.Radius);
+            Assert.True(Math.Abs(tilted.End.Velocity.Z)>10);
+            Assert.InRange(Math.Abs(retro.End.Velocity.Z),0,1e-8);
+            Assert.Equal(975,tilted.End.Mass,7);
+            Assert.Equal(26.5,tilted.End.UT,8);
+            Assert.Equal(1,tilted.FirstPoweredUT,8);
+            Assert.Equal(tilted.Points.Count,tilted.Commands.Count);
+            Assert.Equal(tilted.End.UT,tilted.Commands.Last().EndUT);
+            for(int i=1;i<tilted.Commands.Count;i++)
+                Assert.Equal(tilted.Commands[i-1].EndUT,tilted.Commands[i].StartUT);
+        }
+
+        [Fact]
+        public void StrategicPrefixRejectsReserveExhaustionAndBudgetOrCancellation()
+        {
+            var env=Env(301363211975.0978);var state=Circular(env);
+            var settings=new Strategic.Settings(Settings(cap:1),preparation:1,maxWait:10,maxBurn:40);
+            var burn=new Strategic.Burn(1,25,0);
+            Assert.Equal(D.Outcome.ReserveExhausted,Strategic.EvaluatePrefix(env,Engine(),
+                Limits(reserve:990,step:.125),state,settings,burn,10000).Outcome);
+            Assert.Equal(D.Outcome.Horizon,Strategic.EvaluatePrefix(env,Engine(),
+                Limits(step:.125),state,settings,burn,1).Outcome);
+            Assert.Equal(D.Outcome.Cancelled,Strategic.EvaluatePrefix(env,Engine(),
+                Limits(step:.125),state,settings,burn,10000,token:new CancellationToken(true)).Outcome);
+            Assert.Equal(D.Outcome.InvalidInput,Strategic.EvaluatePrefix(env,Engine(),
+                Limits(step:.125),state,settings,new Strategic.Burn(0,25,0),10000).Outcome);
+        }
+
+        [Fact]
+        public void CombinedHistoryReplaysFromOriginalStateAndRejectsDiscontinuousJoin()
+        {
+            // Small deterministic prefix/terminal fixture tests the whole
+            // history contract independently of orbital seed selection.
+            var env=Env();var engine=Engine();var limits=Limits(step:.125);
+            var initial=Initial();var command=new D.Command(0,X);
+            var step=D.Advance(env,engine,limits,initial,command,.125);
+            Assert.Equal(D.Outcome.Advanced,step.Status);
+            var prefix=new Strategic.Prefix(new Strategic.Burn(0,.125,0),step.End,D.Outcome.Advanced,1,
+                step.MinimumClearance,double.NaN,.125,
+                new System.Collections.Generic.List<F.Point>{new F.Point(initial,command,.125)},
+                new System.Collections.Generic.List<R.Segment>{new R.Segment(0,.125,command)});
+            var set=Settings(cap:1);
+            var approach=F.Evaluate(env,engine,limits,step.End,set,new F.Profile(0,.5),10000,true);
+            Assert.True(approach.Result.Feasible);
+            var settings=new Strategic.Settings(set);
+            var combined=Strategic.Combine(env,engine,limits,initial,settings,prefix,set,approach,10000,out int replaySteps);
+            Assert.NotNull(combined);
+            Assert.True(combined.ReplayPassed);
+            Assert.True(replaySteps>1);
+            Assert.Equal(initial.UT,combined.Combined.Reference[0].State.UT);
+            Assert.Equal(step.End.UT,combined.HandoffUT);
+            Assert.Equal(approach.Result.End.Mass,combined.Combined.Result.End.Mass);
+            Assert.Equal(approach.Result.End.UT,combined.Combined.Result.End.UT);
+            Assert.Equal(0,combined.OriginalMiss,6);
+            Assert.NotNull(new Tracker(env,engine,limits,set,combined.Combined));
+            var wrong=F.Evaluate(env,engine,limits,Initial(.6),set,new F.Profile(0,.5),10000,true);
+            Assert.Null(Strategic.Combine(env,engine,limits,initial,settings,prefix,set,wrong,10000,out _));
+            Assert.Null(Strategic.Combine(env,engine,limits,initial,settings,prefix,set,approach,1,out _));
+        }
+
+        [Fact]
+        public void StrategicSearchDoesNotClaimInfeasibilityOnIncompleteSearch()
+        {
+            var env=Env(301363211975.0978);
+            var settings=new Strategic.Settings(Settings(cap:1),preparation:1,maxWait:10,maxSteps:1);
+            var report=Strategic.Search(env,Engine(),Limits(step:.125),Circular(env),settings);
+            Assert.Equal(P.SearchStatus.BudgetExhausted,report.Status);
+            Assert.Null(report.Best);
+            Assert.Equal(1,report.Steps);
+            Assert.Equal(P.SearchStatus.Cancelled,Strategic.Search(env,Engine(),Limits(),Circular(env),settings,
+                new CancellationToken(true)).Status);
+            Assert.Equal(P.SearchStatus.InvalidInput,Strategic.Search(env,Engine(),Limits(),Initial(),settings).Status);
+        }
+
+        [Fact]
+        public void StrategicHandoffRebasesRotatingTargetAndKeepsAbsoluteFuelAccounting()
+        {
+            var env=new D.Environment(320000,301363211975.0978,new D.V(0,0,.0001),0,null,null,0,320000,0);
+            var initial=Circular(env);var state=new D.State(100,initial.R,initial.Velocity,900,X);
+            var settings=new Strategic.Settings(Settings(cap:1));
+            var approach=Strategic.ApproachAt(env,Engine(),initial,state,settings);
+            Assert.NotNull(approach);
+            Assert.True(approach.Valid);
+            Assert.Equal(Math.Cos(.01),approach.Common.TargetAtInitialUT.X,10);
+            Assert.Equal(Math.Sin(.01),approach.Common.TargetAtInitialUT.Y,10);
+            Assert.Equal(0,approach.MinCoast);
         }
 
         [Fact]

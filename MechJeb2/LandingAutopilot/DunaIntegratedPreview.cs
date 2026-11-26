@@ -35,11 +35,14 @@ namespace MuMech.Landing
             internal D.Propulsion Propulsion;
             internal D.Limits Limits;
             internal F.Settings Settings;
+            internal bool Strategic;
+            internal double ApproachStartUT,DeorbitStartUT,DeorbitEndUT;
         }
         private sealed class Answer
         {
             internal P.Report Reference;
             internal F.Report Direct;
+            internal AtmosphericStrategicPlanner.Report Strategic;
             internal F.Candidate Validated;
             internal bool ReplayPassed;
             internal double ReferenceMs,ReplayMs;
@@ -93,13 +96,13 @@ namespace MuMech.Landing
         // spherical terrain at target ASL. These are explicitly NOT verified
         // real-engine, lift, crossfeed, attitude or swept terrain models.
         // Results are for comparing algorithms, never authorization to burn.
-        private static Snapshot Capture(MechJebCore core)
+        private static Snapshot Capture(MechJebCore core,bool strategic)
         {
             Vessel v=core.vessel;
             VesselState s=core.VesselState;
             CelestialBody body=v.mainBody;
             Require(body!=null&&body.bodyName=="Duna"&&body.atmosphere,"Duna atmosphere required");
-            Require(!v.packed&&!v.LandedOrSplashed&&TimeWarp.CurrentRate==1,"unpacked descending flight at 1x required");
+            Require(!v.packed&&!v.LandedOrSplashed&&TimeWarp.CurrentRate==1,"unpacked flight at 1x required");
             Require(core.Target.PositionTargetExists&&core.Target.targetBody==body,"select a Duna landing target");
             Require(!core.Landing.DeployChutes&&!s.ParachuteDeployed,"parachute dynamics unsupported");
             Require(!core.Thrust.LimiterMinThrottle,"minimum throttle floor unsupported");
@@ -107,7 +110,7 @@ namespace MuMech.Landing
             Require(!core.Thrust.SmoothThrottle,"throttle smoothing model not yet supported for preview");
             Require(!ReflectionUtils.IsLoadedFAR,"FAR aerodynamics unsupported by preview");
             Require(v.parts!=null&&v.parts.Count>0&&v.parts.Count<=512,"unsupported part count");
-            Require(D.Finite(s.Mass)&&s.Mass>0&&D.Finite(s.Time)&&s.SpeedVertical<0,"descending state required");
+            Require(D.Finite(s.Mass)&&s.Mass>0&&D.Finite(s.Time)&&(strategic||s.SpeedVertical<0),"descending state required for descent-only preview");
             double lat=core.Target.targetLatitude,lon=core.Target.targetLongitude;
             double asl=body.TerrainAltitude(lat,lon);
             double radius=body.Radius,mu=body.gravParameter,top=body.RealMaxAtmosphereAltitude();
@@ -252,7 +255,15 @@ namespace MuMech.Landing
             var initial=new D.State(s.Time,pos,vel,mass,forward,attained,v.angularVelocity.magnitude);
             Require(initial.Valid&&environment.Valid&&limits.Valid,"invalid numerical snapshot");
             double clearance=environment.PhysicalClearance(initial);
-            Require(clearance>0&&clearance<=200000,"outside descent preview domain");
+            Require(clearance>0&&clearance<=200000,"outside preview altitude domain");
+            if(strategic)
+            {
+                Require(initial.Throttle<=.01&&v.ctrlState.mainThrottle<1e-4,"orbital preview requires unpowered coast");
+                Require(AtmosphericStrategicPlanner.TryOrbit(environment,initial,out var orbit)&&
+                    orbit.Periapsis>radius+top&&orbit.Eccentricity<=.2&&orbit.Apoapsis-radius<=200000,
+                    "strategic preview requires low bound orbit above atmosphere (e <= 0.2)");
+                Require(area>0,"orbital aero area unavailable");
+            }
             double gravity=mu/(radius*radius);
             double acceleration=s.MaxThrustAcceleration*cap*derate;
             double scale=Math.Max(12,Math.Max(Math.Sqrt(2*clearance/gravity),s.SpeedSurface/Math.Max(.1,acceleration)));
@@ -285,6 +296,7 @@ namespace MuMech.Landing
             return new Snapshot{Vessel=v.id,Parts=partIds,Latitude=lat,Longitude=lon,UT=s.Time,Mass=mass,
                 Cap=cap,Warp=TimeWarp.CurrentRate,DragArea=area,UsableFuel=usable,Initial=initial,
                 Environment=environment,Propulsion=propulsion,Limits=limits,Settings=settings,
+                Strategic=strategic,ApproachStartUT=initial.UT,
                 ReferencePart=v.GetReferenceTransformPart().flightID,EngineConfiguration=EngineSignature(v)};
         }
         private static Answer Solve(Snapshot s,CancellationToken token)
@@ -293,6 +305,14 @@ namespace MuMech.Landing
             try
             {
                 var clock=Stopwatch.StartNew();
+                if(s.Strategic)
+                {
+                    var settings=new AtmosphericStrategicPlanner.Settings(s.Settings,preparation:45);
+                    a.Strategic=AtmosphericStrategicPlanner.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,settings,token);
+                    a.ReplayPassed=a.Strategic.Best?.ReplayPassed==true;
+                    if(a.ReplayPassed&&!token.IsCancellationRequested)a.Validated=a.Strategic.Best.Combined;
+                    return a;
+                }
                 a.Reference=P.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,s.Settings.Common,
                     0,new D.Command(0,s.Initial.Forward),token);
                 a.ReferenceMs=clock.Elapsed.TotalMilliseconds;
@@ -308,17 +328,17 @@ namespace MuMech.Landing
             catch(Exception ex){a.Error=ex.GetType().Name+": "+ex.Message;}
             return a;
         }
-        internal void Start(MechJebCore core)
+        internal void Start(MechJebCore core,bool strategic=false)
         {
             Cancel();
             try
             {
-                snapshot=Capture(core);answer=null;logged=false;
+                snapshot=Capture(core,strategic);answer=null;logged=false;
                 var copy=snapshot;
-                cancel=new CancellationTokenSource();cancel.CancelAfter(8000);
+                cancel=new CancellationTokenSource();cancel.CancelAfter(strategic?20000:8000);
                 CancellationToken token=cancel.Token;
                 job=Task.Run(()=>Solve(copy,token));
-                status="Computing snapshot preview";
+                status=strategic?"Computing orbital landing preview":"Computing snapshot preview";
                 Debug.Log("[DunaIntegratedPreview] snapshot UT="+Num(copy.UT,"R")+" vessel="+copy.Vessel+
                     " target="+Num(copy.Latitude,"R")+","+Num(copy.Longitude,"R")+" massKg="+Num(copy.Mass)+
                     " mixtureKg="+Num(copy.UsableFuel)+" cap="+Num(copy.Cap,"F3")+
@@ -385,6 +405,14 @@ namespace MuMech.Landing
             {
                 if(tracker==null)
                 {
+                    if(snapshot.Strategic)
+                    {
+                        var best=answer.Strategic?.Best;
+                        if(best==null){corridorStatus="Rejected: no replayed orbital trajectory";return;}
+                        snapshot.ApproachStartUT=best.HandoffUT;
+                        snapshot.DeorbitStartUT=snapshot.UT+best.Deorbit.Delay;
+                        snapshot.DeorbitEndUT=snapshot.DeorbitStartUT+best.Deorbit.Duration;
+                    }
                     tracker=new AtmosphericPlanTracker(snapshot.Environment,snapshot.Propulsion,snapshot.Limits,
                         snapshot.Settings,answer.Validated);
                     if(tracker.TargetMiss>snapshot.Settings.Common.TargetTolerance)
@@ -416,6 +444,14 @@ namespace MuMech.Landing
                 var decision=tracker.Track(LiveState(core),s.AltitudeBottom,s.MaxThrustAcceleration,
                     Math.Min(snapshot.Cap,Math.Min(s.ThrottleLimit,s.ThrottleFixedLimit)),s.LocalGravity,s.MaxEngineResponseTime);
                 if(!decision.Valid){reason=decision.Reason;return false;}
+                if(snapshot.Strategic)
+                {
+                    var actual=LiveState(core);
+                    if(!tracker.ReferenceAt(actual.UT,out var expected,out _)||
+                        D.V.Dot(actual.Forward,expected.Forward)<Math.Cos(8*Math.PI/180)||
+                        actual.UT>=snapshot.DeorbitStartUT)
+                    {reason="orbital preparation state or burn deadline missed; evaluate again";return false;}
+                }
                 // Refuse engagement after skipping a planned positive-thrust
                 // interval, even if the position tolerance is still met.
                 foreach(var p in tracker.Plan.Reference)
@@ -442,6 +478,15 @@ namespace MuMech.Landing
             AdvanceCorridor(core);
             double age=core.VesselState.Time-snapshot.UT;
             string lines=status+" (age "+Num(age)+" s; experimental model)\n";
+            if(answer.Strategic!=null)
+            {
+                var report=answer.Strategic;var best=report.Best;
+                lines+="Orbital search: "+report.Status+"; "+report.Prefixes+" prefixes, "+report.Approaches+" descent candidates\n";
+                if(best!=null)
+                    lines+="Deorbit in "+Num(best.Deorbit.Delay-age)+" s; burn "+Num(best.Deorbit.Duration)+
+                        " s; normal component "+Num(best.Deorbit.NormalFraction*100)+"%; deorbit fuel "+
+                        Num(best.DeorbitFuel,"F0")+" kg\nWhole landing: "+CandidateText(best.Combined.Result,snapshot.Mass)+"\n";
+            }
             if(answer.Reference!=null)
                 lines+="A: "+CandidateText(answer.Reference.Best,snapshot.Mass)+"; "+answer.Reference.Status+
                     " ("+answer.Reference.Candidates.Count+" tests, "+Num(answer.ReferenceMs,"F0")+" ms)\n";
@@ -449,7 +494,7 @@ namespace MuMech.Landing
                 lines+="B: "+CandidateText(answer.Direct.Best?.Result,snapshot.Mass)+"; "+answer.Direct.Status+
                     (answer.Direct.Best==null?"":"; powered "+Num(answer.Direct.Best.Profile.Duration)+" s")+
                     " ("+answer.Direct.Attempts+" tests, "+Num(answer.Direct.ElapsedMilliseconds,"F0")+" ms; min prep "+Num(snapshot.Settings.MinCoast)+" s)\n";
-            lines+="B finer-step replay: "+(answer.ReplayPassed?"PASS (model only)":"not demonstrated")+
+            lines+=(snapshot.Strategic?"Whole-history finer-step replay: ":"B finer-step replay: ")+(answer.ReplayPassed?"PASS (model only)":"not demonstrated")+
                 "; approximate terrain/aero/actuators.";
             if(corridorStatus!=null)lines+="\n"+corridorStatus;
             if(executionStatus!=null)lines+="\n"+executionStatus;
