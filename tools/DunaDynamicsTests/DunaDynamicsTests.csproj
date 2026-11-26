@@ -11,5 +11,7 @@
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericLandingReplay.cs" Link="AtmosphericLandingReplay.cs"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericTerminalReplay.cs" Link="AtmosphericTerminalReplay.cs"/>
     <Compile Include="../../MechJebLibTest/LandingPredictionTests/AtmosphericLandingDynamicsTests.cs" Link="AtmosphericLandingDynamicsTests.cs"/>
+    <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericFeasibleRangePlanner.cs" Link="AtmosphericFeasibleRangePlanner.cs"/>
+    <Compile Include="../../MechJebLibTest/LandingPredictionTests/AtmosphericFeasibleRangePlannerTests.cs" Link="AtmosphericFeasibleRangePlannerTests.cs"/>
   </ItemGroup>
 </Project>

@@ -220,3 +220,5 @@ Current integrated landing research increment: `2.16.0-landing.20261126.duna-dyn
 Current integrated landing research increment: `2.16.0-landing.20261126.duna-dynamics-m1.6` (optional bounded integrator callback calibration, not flight validated or authorized for installation).
 
 Current integrated landing research increment: `2.16.0-landing.20261126.duna-dynamics-m1.7` (normal CKAN launch, one-shot diagnostic request file; see [M1.7 contract](docs/Integrated-Landing-Dynamics-M1.md)).
+
+Current integrated landing research increment: `2.16.0-landing.20261126.duna-planner-m2.0` — reference joint finite correction and braking timing planner, offline and non-actuating. See DEVELOPMENT.md for implementation and limitations.

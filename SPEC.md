@@ -31,3 +31,5 @@ M1.5 extends explicitly armed passive capture of raw loaded model/controller and
 M1.6: optional bounded passive callback calibration probe; no MFI override or force mutation, no certified solver completion, no actual-vector force closure. Existing non-actuating plan and separate deployment gates retained. See [M1.6 contract](docs/Integrated-Landing-Dynamics-M1.md).
 
 M1.7 diagnostic activation uses an explicit one-shot bounded request file in existing PluginData, fail-closed parsing and persistent consumption before capture. No environment dependency; initial ineligibility retries only during the requested targeted landing; readiness and failure reasons logged. Existing guidance and acceptance gates unchanged.
+
+M2.0 adds offline reference finite correction/ignition/terminal candidate search with sampled feasible outcomes, rotating target residual, budget/cancellation and explicit model/capability inputs. No claim of actual reachability or new live controller. Original integrated plan remains authoritative; M2 validation and later milestones open.

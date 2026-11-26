@@ -53,3 +53,7 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 ## 2.16.0-landing.20261126.duna-dynamics-m1.7
 
 - Replace environment-variable diagnostic arming with a persistent one-shot request file for normal CKAN launches; explicit readiness/rejection logs, eligible landing retry, persistent receipt and immediate header flush. Correct probe state callback label; no change to guidance. Add request tests and MVID to CI manifest.
+
+## 2.16.0-landing.20261126.duna-planner-m2.0
+
+- Implement bounded nonlinear feasible-range reference search for finite corrections, alternative braking times and terminal contact replay; rotating target miss, lexicographic fuel/accuracy ranking, generated correction seeds, sampled outcome and budget reporting. No changes to live landing control.
