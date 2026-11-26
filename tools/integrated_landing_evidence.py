@@ -286,6 +286,66 @@ def force_closure(samples,radius,omega,mu,max_gap):
         if not n: p["maxVelocityResidual_m_s"]=p["maxPositionResidual_m"]=None
     return dict(d)
 
+def measurement_inventory(samples,max_gap):
+    """Describe actual M1 fields and derived observations; not a fitted model.
+
+    NEU forces in kN (thrust) and m/s² (drag/lift), mass tonnes.
+    Dynamic pressure recomputed from observed density and surface speed.
+    Effective area uses the observed force projection, not assumed Cd.
+    Mass differences include all mass changes, not just engine flow.
+    """
+    scalar=("latitude","longitude","altitudeASL","altitudeBottom","mass",
+        "density","pressureKPa","mach","dynamicPressurePa","commandedThrottle",
+        "appliedThrottle","thrustAcceleration","limitedMaxThrustAcceleration",
+        "engineResponseSeconds","maximumMassFlow","attitudeErrorDegrees","physicsDt")
+    vectors=("surfaceVelocityNEU","forwardNEU","thrustVectorNEU","dragAccelNEU","liftAccelNEU")
+    by_phase=collections.defaultdict(list)
+    for s in samples:by_phase[str(s.get("phase"))].append(s)
+    out={}
+    def stats(values):
+        v=[x for x in values if finite(x)]
+        return {"count":len(v),"min":min(v) if v else None,"max":max(v) if v else None,
+            "mean":sum(v)/len(v) if v else None}
+    for phase,rows in by_phase.items():
+        coverage={k:sum(finite(s.get(k)) for s in rows) for k in scalar}
+        coverage.update({k:sum(vec(s.get(k)) for s in rows) for k in vectors})
+        area=[];drag_along=[];lift_along=[];thrust_error=[];q_error=[];powered=0
+        for s in rows:
+            m=s.get("mass");w=s.get("surfaceVelocityNEU");rho=s.get("density")
+            f=s.get("forwardNEU");thrust=s.get("thrustVectorNEU")
+            d=s.get("dragAccelNEU");lift=s.get("liftAccelNEU")
+            if finite(m) and m>0 and vec(thrust) and vec(f) and unit(f) is not None:
+                if norm(thrust)>EPS:powered+=1
+                if finite(s.get("thrustAcceleration")):
+                    thrust_error.append(dot(thrust,unit(f))/m-s["thrustAcceleration"])
+            if not vec(w) or unit(w) is None:continue
+            u=unit(w)
+            if vec(d):drag_along.append(dot(d,u))
+            if vec(lift):lift_along.append(dot(lift,u))
+            if finite(rho) and rho>0:
+                q=.5*rho*dot(w,w)
+                if finite(s.get("dynamicPressurePa")):q_error.append(q-s["dynamicPressurePa"])
+                if q>1 and finite(m) and m>0 and vec(d):
+                    area.append(-dot(d,u)*m*1000/q)
+        rates=[]
+        for a,b in zip(rows,rows[1:]):
+            if interval_ok(a,b,max_gap) and finite(a.get("mass")) and finite(b.get("mass")):
+                rates.append((a["mass"]-b["mass"])*1000/(b["ut"]-a["ut"]))
+        out[phase]={"rows":len(rows),"coverage":coverage,"positiveMeasuredThrustRows":powered,
+            "effectiveDragArea_m2":stats(area),"dragAlongAir_m_s2":stats(drag_along),
+            "liftAlongAir_m_s2":stats(lift_along),"thrustProjectionResidual_m_s2":stats(thrust_error),
+            "dynamicPressureResidual_Pa":stats(q_error),"observedTotalMassLossRate_kg_s":stats(rates)}
+    return {"byPhase":out,"notRecordedByM1Schema":[
+        "full vessel attitude including roll and angular-rate vector",
+        "desired inertial thrust direction at each controller tick",
+        "per-engine attained throttle/force/flow and allocation at each epoch",
+        "actual engine-only mass flow and resource/crossfeed state",
+        "terrain support normal, swept corridor and attained-orientation collider offset",
+        "terminal PID previous error, integral, previous requested speed throttle and applied limiter state"],
+        "limitations":["Effective drag area is a measured projection at sampled conditions, not a validated aerodynamic model.",
+            "Total mass-loss rate is not engine mass flow; staging/RCS/other resource changes can contribute.",
+            "Do not assume fields absent from the schema are zero. Other matching local evidence may supply them."]}
+
 def m1_report(path,radius,omega,mu,max_gap):
     before=fingerprint(path)
     header,samples,terminal=load_m1(path)
@@ -296,6 +356,7 @@ def m1_report(path,radius,omega,mu,max_gap):
         "phaseImpulse":actual_impulse(samples,max_gap,"m1"),
         "bodyParameters":{"radius_m":radius,"signedOmega_rad_s":omega,"mu_m3_s2":mu,"origin":"caller_supplied"},
         "forceClosure":force_closure(samples,radius,omega,mu,max_gap),
+        "measurementInventory":measurement_inventory(samples,max_gap),
         "limitations":["Measured force closure only; NOT independent actuator/aerodynamic prediction parity.",
             "Verify signed rotation convention and CoM/NEU basis against matching runtime state.",
             "Per-step residuals at recorded cadence; no interpolation across warp/gaps.",
@@ -367,6 +428,28 @@ class Tests(unittest.TestCase):
         h={"recordType":"session_start","schemaVersion":1,"session":"s","vessel":"v","body":"Duna","targetLat":1,"targetLon":2}
         p=self.write([h,dict(h,recordType="session_end",reason=None),dict(h,recordType="live",ut=1)])
         with self.assertRaises(ValueError): load_m1(p)
+    def test_measurement_inventory_units_and_missing_fields(self):
+        a={"ut":1,"phase":"DecelerationBurn","warpRate":1,"mass":2,
+           "surfaceVelocityNEU":[0,10,0],"forwardNEU":[0,-1,0],"density":1,
+           "thrustVectorNEU":[0,-8,0],"thrustAcceleration":4,"dragAccelNEU":[0,-.5,0],
+           "liftAccelNEU":[1,0,0],"dynamicPressurePa":50}
+        b=dict(a,ut=2,mass=1.999)
+        report=measurement_inventory([a,b],1.25)
+        p=report["byPhase"]["DecelerationBurn"]
+        self.assertEqual(p["coverage"]["pressureKPa"],0)
+        self.assertEqual(p["positiveMeasuredThrustRows"],2)
+        self.assertAlmostEqual(p["effectiveDragArea_m2"]["max"],20)
+        self.assertEqual(p["liftAlongAir_m_s2"]["max"],0)
+        self.assertAlmostEqual(p["thrustProjectionResidual_m_s2"]["min"],0)
+        self.assertAlmostEqual(p["observedTotalMassLossRate_kg_s"]["mean"],1)
+        self.assertTrue(report["notRecordedByM1Schema"])
+    def test_measurement_inventory_does_not_invent_air_or_bridge_gap(self):
+        a={"ut":1,"phase":"CourseCorrection","warpRate":1,"mass":2}
+        b=dict(a,ut=100,mass=1)
+        p=measurement_inventory([a,b],1.25)["byPhase"]["CourseCorrection"]
+        self.assertEqual(p["effectiveDragArea_m2"]["count"],0)
+        self.assertIsNone(p["observedTotalMassLossRate_kg_s"]["mean"])
+        self.assertEqual(p["coverage"]["thrustVectorNEU"],0)
     def test_legacy_no_contact_claim(self):
         p=self.write([self.legacy_state(1),{"recordType":"predictor_result","processUT":1,
             "body":"Duna","targetLat":1,"targetLon":2,"outcome":"LANDED"}])
