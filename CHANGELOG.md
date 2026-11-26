@@ -37,3 +37,7 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 - Add explicit terrain/support geometry and corridor lower-bound adapter with ordered contact/reserve events and unknown rejection.
 - Add non-actuating KHV/FinalDescent reference replay, distinct PID/authority/engine states and bounded integration, twelve synthetic tests.
 - Extend existing local evidence report to identify missing actual model inputs without repeating established evidence. No live guidance change, installation or plan gate waiver.
+
+## 2.16.0-landing.20261126.duna-dynamics-m1.4
+
+- Extend explicitly armed capture with bounded raw engine/nozzle/frame and initial curve observations. Correct neutral thrust provenance and fail closed for actual-vector closure in schema 1. No new guidance commands. Verification pending.

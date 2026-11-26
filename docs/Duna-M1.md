@@ -23,3 +23,5 @@ Confirm the informational version, hash bin/Release/MechJeb2.dll, inspect actual
 
 ## Acceptance and limitations
 Run matched saves with capture disabled/enabled, compare phase sequence, steering, applied thrust, touchdown/impact and endpoint against normal run; instrumentation can affect timing so measure rather than assume binary-identical flight. Airless replay and unassisted Mun landing remain protected; test only equivalent conditions without RCS or minimum throttle. For Duna record full flight through terminal outcome, then compare accepted result lineage, integration start vs first impulse vs actual thrust onset, accepted/limiter dt and excess counts, aero acceleration versus time/altitude, final contact prediction vs saved vessel location. No accuracy or safe landing claim yet. Do not repair parachutes or alter control law in M1.
+
+M1.4 supersedes the historical thrust interpretation: schema-1 thrustVectorNEU was a neutral-gimbal projection, not achieved force. New rows null this field, retain neutralThrustVectorNEU, and add raw runtimeObservation. See [M1.4 scope](Integrated-Landing-Dynamics-M1.md). The current callback has unverified physics timing.

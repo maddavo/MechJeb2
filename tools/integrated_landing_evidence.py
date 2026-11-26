@@ -352,7 +352,21 @@ def measurement_inventory(samples,max_gap):
 def m1_report(path,radius,omega,mu,max_gap):
     before=fingerprint(path)
     header,samples,terminal=load_m1(path)
+    # Schema 1 writer used neutralized gimbal transforms for ThrustVectorLastFrame.
+    # Preserve originals on disk; do not use that field as independently attained thrust.
+    samples=[dict(s,neutralThrustVectorNEU=s.get("neutralThrustVectorNEU",s.get("thrustVectorNEU")),
+                  thrustVectorNEU=None) for s in samples]
+    raw_by_phase=collections.defaultdict(lambda:{"rows":0,"rawRuntimeObservationRows":0,"engineListRows":0,"atmosphereModelRows":0})
+    for s in samples:
+        p=raw_by_phase[str(s.get("phase"))]; p["rows"]+=1
+        r=s.get("runtimeObservation")
+        if not isinstance(r,dict) or r.get("status")!="raw_unvalidated": continue
+        p["rawRuntimeObservationRows"]+=1
+        p["engineListRows"]+=isinstance(r.get("engines"),list)
+        p["atmosphereModelRows"]+=isinstance(r.get("atmosphereModel"),dict)
     report={"identity":"guid_identified_capture", "session":header,
+        "rawRuntimeCoverage":dict(raw_by_phase),
+        "thrustVectorStatus":"neutral_projection_or_unverified_raw_modules_not_actual",
         "sourceSHA256":file_digest(path),"samples":len(samples),
         "firstLive":samples[0],"lastLive":samples[-1],"sessionEndReason":terminal,
         "actualTouchdown":"observed_landed_or_splashed_state" if any(s.get("situation") in ("LANDED","SPLASHED") for s in samples) else "not_observed",
@@ -360,7 +374,8 @@ def m1_report(path,radius,omega,mu,max_gap):
         "bodyParameters":{"radius_m":radius,"signedOmega_rad_s":omega,"mu_m3_s2":mu,"origin":"caller_supplied"},
         "forceClosure":force_closure(samples,radius,omega,mu,max_gap),
         "measurementInventory":measurement_inventory(samples,max_gap),
-        "limitations":["Measured force closure only; NOT independent actuator/aerodynamic prediction parity.",
+        "limitations":["Actual-vector closure is unavailable for schema 1 captures: neutralized gimbal thrust and raw module observations do not establish achieved force/epoch.",
+            "Measured force closure only; NOT independent actuator/aerodynamic prediction parity.",
             "Verify signed rotation convention and CoM/NEU basis against matching runtime state.",
             "Per-step residuals at recorded cadence; no interpolation across warp/gaps.",
             "Actual landed state distinct from predictor outcome; no touchdown-speed certification."]}
@@ -459,6 +474,19 @@ class Tests(unittest.TestCase):
         c=dict(a,ut=1.2,mass=1.8)
         p=measurement_inventory([a,b,c],1.25)["byPhase"]["CourseCorrection"]
         self.assertEqual(p["observedTotalMassLossRate_kg_s"]["count"],0)
+    def test_m1_neutral_thrust_never_used_as_delivered(self):
+        h={"recordType":"session_start","schemaVersion":1,"session":"s","vessel":"v","body":"Duna","targetLat":1,"targetLon":2}
+        a=dict(h,recordType="live",ut=1,phase="DecelerationBurn",warpRate=1,mass=2,
+               latitude=0,longitude=0,altitudeASL=1000,surfaceVelocityNEU=[0,1,0],
+               thrustVectorNEU=[0,10,0],dragAccelNEU=[0,0,0],liftAccelNEU=[0,0,0])
+        b=dict(a,ut=2,runtimeObservation={"status":"raw_unvalidated","engines":[]})
+        p=self.write([h,a,b])
+        report=m1_report(p,320000,.0001,3e11,1.25)
+        self.assertIsNone(report["firstLive"]["thrustVectorNEU"])
+        self.assertEqual(report["firstLive"]["neutralThrustVectorNEU"],[0,10,0])
+        self.assertEqual(report["forceClosure"]["DecelerationBurn"]["intervals"],0)
+        self.assertEqual(report["phaseImpulse"]["DecelerationBurn"]["validIntervals"],0)
+        self.assertEqual(report["rawRuntimeCoverage"]["DecelerationBurn"]["engineListRows"],1)
     def test_legacy_no_contact_claim(self):
         p=self.write([self.legacy_state(1),{"recordType":"predictor_result","processUT":1,
             "body":"Duna","targetLat":1,"targetLon":2,"outcome":"LANDED"}])

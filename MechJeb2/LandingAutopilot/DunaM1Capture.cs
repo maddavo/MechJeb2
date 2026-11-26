@@ -82,7 +82,8 @@ namespace MuMech.Landing
     internal sealed class DunaM1Capture
     {
         internal const int MaxRecords = 20000;
-        internal const long MaxBytes = 32L * 1024 * 1024;
+        internal const long MaxBytes = 128L * 1024 * 1024;
+        private bool runtimeModelAttempted;
         private static bool claimed;
         private readonly string session = Guid.NewGuid().ToString("N");
         private readonly Guid vessel;
@@ -103,7 +104,9 @@ namespace MuMech.Landing
             writer = new StreamWriter(new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read),
                 new UTF8Encoding(false));
             Write("session_start", ",\"ut\":" + N(ut) + ",\"touchdownSetpoint\":" + N(touchdown) +
-                ",\"maxRecords\":" + MaxRecords + ",\"maxBytes\":" + MaxBytes);
+                ",\"maxRecords\":" + MaxRecords + ",\"maxBytes\":" + MaxBytes +
+                ",\"runtimeObservationRevision\":1,\"thrustVectorMeaning\":\"neutral_projection_not_actual\"" +
+                ",\"assemblyVersion\":" + Q(DunaM1RuntimeObservation.BuildVersion()));
             Debug.Log("[DunaM1] " + path);
         }
 
@@ -198,6 +201,9 @@ namespace MuMech.Landing
             lastLive = s.Time; lastPhase = phase;
             nextLive = s.Time + (phase == "CourseCorrection" || phase == "DecelerationBurn" ||
                 phase == "KillHorizontalVelocity" || phase == "FinalDescent" ? .1 : 1);
+            // Raw observations at this callback, not a verified post-physics boundary.
+            string runtime = DunaM1RuntimeObservation.Read(v, s, !runtimeModelAttempted);
+            runtimeModelAttempted = true;
             Write("live", ",\"ut\":" + N(s.Time) + ",\"phase\":" + Q(phase) +
                 ",\"status\":" + Q(status) + ",\"controllerDetail\":" + Q(detail) +
                 ",\"terminalReason\":" + Q(terminalReason) + ",\"situation\":" + Q(v.situation.ToString()) +
@@ -206,7 +212,9 @@ namespace MuMech.Landing
                 ",\"altitudeBottom\":" + N(s.AltitudeBottom) + ",\"mass\":" + N(s.Mass) +
                 ",\"surfaceSpeed\":" + N(s.SpeedSurface) + ",\"verticalSpeed\":" + N(s.SpeedVertical) +
                 ",\"horizontalSpeed\":" + N(s.SpeedSurfaceHorizontal) + ",\"surfaceVelocityNEU\":" + NEU(s.SurfaceVelocity,s) +
-                ",\"forwardNEU\":" + NEU(s.Forward,s) + ",\"thrustVectorNEU\":" + NEU(s.ThrustVectorLastFrame,s) +
+                ",\"forwardNEU\":" + NEU(s.Forward,s) + ",\"thrustVectorNEU\":null" +
+                ",\"neutralThrustVectorNEU\":" + NEU(s.ThrustVectorLastFrame,s) +
+                ",\"runtimeObservation\":" + runtime +
                 ",\"dragAccelNEU\":" + NEU(s.PureDragVector,s) + ",\"liftAccelNEU\":" + NEU(s.PureLiftVector,s) +
                 ",\"dragAcceleration\":" + N(s.DragAcceleration) + ",\"liftAcceleration\":" + N(s.LiftAcceleration) +
                 ",\"density\":" + N(s.AtmosphericDensity) + ",\"pressureKPa\":" + N(v.staticPressurekPa) +
