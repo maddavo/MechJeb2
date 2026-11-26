@@ -174,6 +174,12 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.Equal("trajectory deviation",t.Track(fast,.53,4,1,0,0).Reason);
             var displaced=new D.State(0,s.R+Y*4,s.Velocity,1000,X);
             Assert.Equal("trajectory deviation",t.Track(displaced,.53,4,1,0,0).Reason);
+            // A bounded vertical timing delay is recoverable using the
+            // terminal feedback law; the same lateral displacement is not.
+            var delayed=new D.State(0,s.R+X*4,s.Velocity,1000,X);
+            Assert.True(t.Track(delayed,4.53,4,1,0,0).Valid);
+            var sideways=new D.State(0,s.R,s.Velocity+Y*1.5,1000,X);
+            Assert.Equal("trajectory deviation",t.Track(sideways,.53,4,1,0,0).Reason);
         }
 
         private static Tracker PoweredTracker()
@@ -774,6 +780,14 @@ namespace MechJebLibTest.LandingPredictionTests
                     "\n"+string.Join("\n",diagnostics.Where(line=>line.StartsWith("prefix ")||line.StartsWith("approach ")||
                     line.StartsWith("scenario rejected")||line.StartsWith("join replay"))));
                 Assert.True(report.Best.OriginalMiss<=set.Common.TargetTolerance,"stock reference target miss "+report.Best.OriginalMiss);
+                Assert.Equal(4,report.Scenarios.Trials.Count);
+                foreach(var trial in report.Scenarios.Trials)
+                {
+                    Console.WriteLine("Eagle stock scenario "+trial.Name+" outcome="+trial.Outcome+
+                        " miss="+trial.Miss+" mass="+trial.Mass+" endUT="+trial.EndUT);
+                    Assert.True(trial.Passed&&trial.Miss<=set.Common.TargetTolerance&&trial.Mass>=lim.ReserveMass,
+                        trial.Name+" miss="+trial.Miss+" mass="+trial.Mass+" reason="+trial.Reason);
+                }
             }
         }
 

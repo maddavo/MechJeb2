@@ -143,10 +143,16 @@ namespace MuMech.Landing
             double vr=D.V.Dot(w,up),vh=(w-up*vr).Length;
             D.V contact=P.RotateTarget(plan.Result.End.R.Unit,environment.Omega,actual.UT-EndUT);
             double contactDistance=(up-contact).Length*environment.Radius;
+            // Timing recovery is vertical only: an arbitrary lateral
+            // displacement is NOT corrected by the radial terminal law.
+            // Keep the original transverse position and speed envelopes.
+            D.V lateralError=dr-up*D.V.Dot(dr,up);
+            D.V lateralVelocityError=dv-up*D.V.Dot(dv,up);
             bool terminal=D.Finite(plan.Result.TerminalStartUT)&&actual.UT>=plan.Result.TerminalStartUT&&
                 clearance<=Math.Min(50,settings.ApproachHeight*2+5)&&vr<=0&&
                 vr>=-settings.TerminalVertical-1&&vh<=Math.Max(1,settings.TerminalHorizontal+1)&&
                 D.Finite(contactDistance)&&contactDistance<=Math.Max(5,settings.Common.TargetTolerance)&&
+                lateralError.Length<=positionLimit&&lateralVelocityError.Length<=velocityLimit&&
                 D.V.Dot(actual.Forward,up)>.75;
             if((!terminal&&(pe>positionLimit||ve>velocityLimit))||me>massLimit)
                 return Reject("trajectory deviation");
