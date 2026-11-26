@@ -12,6 +12,8 @@ using P=MuMech.Landing.AtmosphericFeasibleRangePlanner;
 using T=MuMech.Landing.AtmosphericTerminalReplay;
 using Convex=MuMech.Landing.AtmosphericConvexPlanner;
 using Benchmark=MuMech.Landing.AtmosphericSolverBenchmark;
+using Replay=MuMech.Landing.AtmosphericLandingReplay;
+using Uncertainty=MuMech.Landing.AtmosphericUncertaintyReplay;
 
 namespace MechJebLibTest.LandingPredictionTests
 {
@@ -123,6 +125,133 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         private static string N(double n)=>D.Finite(n)?n.ToString("G12",CultureInfo.InvariantCulture):"NA";
+
+        private static string ContactState(D.Environment env,D.State state)
+        {
+            D.V up=state.R.Unit,w=env.Surface(state.R,state.Velocity);
+            double vertical=D.V.Dot(w,up),horizontal=(w-up*vertical).Length;
+            double angle=Math.Acos(Math.Max(-1,Math.Min(1,D.V.Dot(state.Forward,up))))*180/Math.PI;
+            return "ut="+N(state.UT)+" clearance="+N(env.PhysicalClearance(state))+
+                " vertical="+N(vertical)+" horizontal="+N(horizontal)+" angle_deg="+N(angle)+
+                " rate_deg_s="+N(state.PointingRate*180/Math.PI)+" mass="+N(state.Mass)+
+                " attained_throttle="+N(state.Throttle);
+        }
+
+        private static Replay.Report ReplayAt(D.Environment env,D.Propulsion engine,D.Limits lim,D.State state,
+            F.Settings settings,F.Candidate c,double step)
+        {
+            var common=settings.Common;
+            var finer=new D.Limits(lim.ReserveMass,lim.TurnRate,lim.EngineRise,lim.EngineFall,step);
+            return Replay.Run(env,engine,finer,state,c.Commands.ToArray(),Array.Empty<Replay.Observation>(),
+                common.SafeVertical,common.SafeHorizontal,common.SafeAngle,common.SafeRate,80000);
+        }
+
+        // Diagnostic only: do not change either production law or the
+        // existing benchmark acceptance criteria to make a fixture pass.
+        [Fact]
+        public void DiagnoseM52ReplayFailuresAndAlternateProfiles()
+        {
+            var rows=new List<string>();
+            var duna=Env(301363211975.0978);var heavy=Engine(350);
+            var thin=Env(301363211975.0978,4);var e=Engine();
+            var fixtures=new[]{
+                (name:"vertical_6km",env:duna,engine:heavy,limits:new D.Limits(184000,Math.PI/30,.1,.1,.5),
+                    state:State(6080,15,0,220000),settings:Settings(duna,heavy,min:90,max:130,coast:10,horizon:400)),
+                (name:"thin_atmosphere_crossrange",env:thin,engine:e,limits:new D.Limits(700,Math.PI/15,.1,.1,.5),
+                    state:State(500,15,20),settings:Settings(thin,e,min:20,max:90,coast:5,horizon:200,target:(X+Y*.0001).Unit))
+            };
+            foreach(var f in fixtures)
+            foreach(bool convex in new[]{false,true})
+            {
+                string label=f.name+" "+(convex?"C":"B");
+                var set=f.settings;var common=set.Common;
+                var search=F.Search(f.env,f.engine,f.limits,f.state,set,convex:convex);
+                Assert.NotNull(search.Best);
+                var selected=search.Best.Profile;
+                var coarse=F.Evaluate(f.env,f.engine,f.limits,f.state,set,selected,80000,true,default,convex);
+                Assert.True(coarse.Result.Feasible);
+                rows.Add(label+" selected coast="+N(selected.Coast)+" duration="+N(selected.Duration)+
+                    " terminal_start="+N(coarse.Result.TerminalStartUT)+" limits_v="+N(common.SafeVertical)+
+                    " h="+N(common.SafeHorizontal)+" angle_deg="+N(common.SafeAngle*180/Math.PI)+
+                    " rate_deg_s="+N(common.SafeRate*180/Math.PI));
+                rows.Add(label+" nominal "+ContactState(f.env,coarse.Result.End));
+                foreach(double dt in new[]{.5,.25,.125,.0625})
+                {
+                    var replay=ReplayAt(f.env,f.engine,f.limits,f.state,set,coarse,dt);
+                    rows.Add(label+" fixed_history dt="+N(dt)+" outcome="+replay.Outcome+
+                        " "+ContactState(f.env,replay.End)+" completed="+replay.CompletedSegments+
+                        " pos_delta="+N((replay.End.R-coarse.Result.End.R).Length)+
+                        " vel_delta="+N((replay.End.Velocity-coarse.Result.End.Velocity).Length));
+                    if(dt==.25&&replay.Outcome==D.Outcome.UnknownCapability&&replay.CompletedSegments<coarse.Commands.Count)
+                    {
+                        var seg=coarse.Commands[replay.CompletedSegments];var st=replay.End;
+                        double failedDt=Math.Min(dt,seg.EndUT-st.UT);
+                        double midAsl=(st.R+st.Velocity*(failedDt*.5)).Length-f.env.Radius;
+                        bool midAir=f.env.AirAtAltitude(midAsl,out double p,out double rho);
+                        rows.Add(label+" failed_step dt="+N(failedDt)+" segment_end="+N(seg.EndUT)+
+                            " midpoint_asl="+N(midAsl)+" midpoint_air_known="+midAir+
+                            " pressure="+N(p)+" density="+N(rho)+" current_forces_known="+D.Forces(f.env,f.engine,st).Known);
+                        var tiny=new D.Limits(f.limits.ReserveMass,f.limits.TurnRate,f.limits.EngineRise,f.limits.EngineFall,dt);
+                        for(int split=1;split<=4;split++)
+                        {
+                            var result=D.Advance(f.env,f.engine,tiny,st,seg.Command,failedDt/Math.Pow(2,split),
+                                common.SafeVertical,common.SafeHorizontal,common.SafeAngle,common.SafeRate);
+                            rows.Add(label+" failed_step_subdivision "+split+" outcome="+result.Status+" "+ContactState(f.env,result.End));
+                        }
+                    }
+                }
+                foreach(double dt in new[]{.25,.125,.0625})
+                {
+                    var fineLim=new D.Limits(f.limits.ReserveMass,f.limits.TurnRate,f.limits.EngineRise,f.limits.EngineFall,dt);
+                    var rebuilt=F.Evaluate(f.env,f.engine,fineLim,f.state,set,selected,80000,true,default,convex);
+                    rows.Add(label+" rebuild dt="+N(dt)+" outcome="+rebuilt.Result.Outcome+
+                        " "+ContactState(f.env,rebuilt.Result.End));
+                    if(rebuilt.Result.Feasible)
+                    {
+                        var rep=ReplayAt(f.env,f.engine,fineLim,f.state,set,rebuilt,dt*.5);
+                        rows.Add(label+" rebuilt_replay dt="+N(dt*.5)+" outcome="+rep.Outcome+" "+ContactState(f.env,rep.End));
+                    }
+                }
+                int tested=0,nominal=0,finerContact=0,finePassed=0,allPassed=0;
+                // Original grid plus the selected refined profile. This is
+                // a bounded sample, not a claim of full reachable coverage.
+                var profiles=new List<F.Profile>{selected};
+                for(int i=0;i<=set.CoastIntervals;i++)
+                for(int j=0;j<=set.DurationIntervals;j++)
+                {
+                    var p=new F.Profile(common.MaxIgnitionDelay*i/set.CoastIntervals,
+                        set.MinPoweredSeconds+(set.MaxPoweredSeconds-set.MinPoweredSeconds)*j/set.DurationIntervals);
+                    if(!profiles.Any(x=>Math.Abs(x.Coast-p.Coast)<1e-9&&Math.Abs(x.Duration-p.Duration)<1e-9))profiles.Add(p);
+                }
+                foreach(var profile in profiles)
+                {
+                    tested++;
+                    var c=F.Evaluate(f.env,f.engine,f.limits,f.state,set,profile,80000,true,default,convex);
+                    if(!c.Result.Feasible)continue;
+                    nominal++;
+                    var replay=ReplayAt(f.env,f.engine,f.limits,f.state,set,c,.25);
+                    if(replay.Outcome!=D.Outcome.ContactWithinLimits)continue;
+                    finerContact++;
+                    bool valid=(c.Result.End.R-replay.End.R).Length<=20&&
+                        Math.Abs(c.Result.End.Mass-replay.End.Mass)<=Math.Max(.5,f.state.Mass*.0005)&&
+                        Math.Abs(c.Result.End.UT-replay.End.UT)<=set.ControlTick+common.Terminal.Tick&&
+                        (c.Result.Miss>common.TargetTolerance||P.Miss(f.env,f.state,replay.End,common.TargetAtInitialUT)<=common.TargetTolerance);
+                    if(!valid)continue;
+                    finePassed++;
+                    var tracker=new AtmosphericPlanTracker(f.env,f.engine,f.limits,set,c);
+                    var screen=Uncertainty.Validate(f.env,f.engine,f.limits,tracker,80000);
+                    if(screen.Passed)allPassed++;
+                    rows.Add(label+" alternate coast="+N(profile.Coast)+" duration="+N(profile.Duration)+
+                        " fuel="+N(f.state.Mass-c.Result.End.Mass)+" uncertainty="+screen.Passed+
+                        " reason="+screen.Reason);
+                }
+                rows.Add(label+" sweep tested="+tested+" nominal="+nominal+" finer_contact="+finerContact+
+                    " fine_passed="+finePassed+" all_passed="+allPassed);
+            }
+            foreach(string row in rows)output.WriteLine(row);
+            string file=System.Environment.GetEnvironmentVariable("DUNA_BENCHMARK_OUTPUT");
+            if(!string.IsNullOrEmpty(file))File.WriteAllLines(Path.ChangeExtension(file,".replay.tsv"),rows);
+        }
 
         [Fact]
         public void CommonBenchmarkReportsActualOutcomesWithoutSelectingProductionSolver()
