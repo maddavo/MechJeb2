@@ -271,6 +271,18 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.True(MuMech.Landing.DunaLandingAdmission.OrbitalBurnAligned(tracker,wrong,false,0,1));
         }
 
+        [Theory]
+        [InlineData(800,1000,false,false)]
+        [InlineData(10,1000,false,false)]
+        [InlineData(-1,1000,false,true)]
+        [InlineData(15,20,false,true)]
+        [InlineData(3,0,true,true)]
+        [InlineData(.5,0,true,false)]
+        public void ActualTerrainConflictDoesNotRejectSafeHigherGround(double actual,double predicted,bool contact,bool conflict)
+        {
+            Assert.Equal(conflict,MuMech.Landing.DunaLandingAdmission.TerrainConflict(actual,predicted,contact));
+        }
+
         [Fact]
         public void SampledTerrainUsesBodyFixedHeightAndRetainsRefinement()
         {
@@ -744,9 +756,10 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Theory]
-        [InlineData(false)]
-        [InlineData(true)]
-        public void RecordedEagleOrbitalSnapshotExercisesActualStrategicSearch(bool stock)
+        [InlineData(false,false)]
+        [InlineData(true,false)]
+        [InlineData(true,true)]
+        public void RecordedEagleOrbitalSnapshotExercisesActualStrategicSearch(bool stock,bool relief)
         {
             // KSP.log 156992-156995, M5.6 snapshot. The density knots are
             // the actual suspect M5.6 model, NOT a corrected atmosphere.
@@ -809,6 +822,23 @@ namespace MechJebLibTest.LandingPredictionTests
                 288301.10267270356,new D.V(.56868154729374509,.36782917099611373,-.73573296700087043),
                 0,9.36213182285428e-5);
             var target=new D.V(-.69844897258755612,.71519480810347258,.025795719668668244);
+            if(relief)
+            {
+                // Analytic uneven terrain stress fixture, NOT actual Duna
+                // terrain. Same captured orbit, engine and stock atmosphere.
+                const int n=12;
+                double height=env.TerrainRadius-env.Radius;
+                var values=new double[6*(n+1)*(n+1)];
+                for(int face=0;face<6;face++)for(int j=0;j<=n;j++)for(int i=0;i<=n;i++)
+                {
+                    var q=D.TerrainGrid.Direction(face,n,i,j);
+                    values[face*(n+1)*(n+1)+j*(n+1)+i]=height+1800*(1-D.V.Dot(q,target.Unit));
+                }
+                var grid=new D.TerrainGrid(n,values).Refine(new D.TerrainGrid.Patch(target.Unit,.0125,10,
+                    Enumerable.Repeat(height,121).ToArray())).Refine(new D.TerrainGrid.Patch(target.Unit,.00078125,10,
+                    Enumerable.Repeat(height,121).ToArray()));
+                env=env.WithGrid(grid,initial.UT,X,Y,Z);
+            }
             var engine=new D.Propulsion(true,new D.Engine(367.09782481193542,1,9.80665,default,new D.Curve(ip)));
             var lim=new D.Limits(138489.73795478529,Math.PI/30,.1,.1,.5);
             Assert.Equal(MuMech.Landing.DunaLandingAdmission.Mode.Orbit,
@@ -819,7 +849,7 @@ namespace MechJebLibTest.LandingPredictionTests
             var settings=new Strategic.Settings(set,preparation:45,engagementLead:45,maxWait:6000,maxBurn:600);
             var diagnostics=new System.Collections.Generic.List<string>();
             var report=Strategic.Search(env,engine,lim,initial,settings,diagnostic:diagnostics.Add);
-            Console.WriteLine("recorded-eagle-"+(stock?"stock-Duna-reference":"M5.6-suspect-density")+" status="+report.Status+
+            Console.WriteLine("recorded-eagle-"+(stock?(relief?"stock-Duna-analytic-relief":"stock-Duna-reference"):"M5.6-suspect-density")+" status="+report.Status+
                 " prefixes="+report.Prefixes+" approaches="+report.Approaches+" steps="+report.Steps+
                 " feasible="+report.Feasible+" unresolved="+report.Unresolved+" miss="+report.Best?.OriginalMiss);
             Console.WriteLine(string.Join("\n",diagnostics));

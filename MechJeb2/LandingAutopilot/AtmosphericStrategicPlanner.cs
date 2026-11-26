@@ -378,7 +378,8 @@ namespace MuMech.Landing
         }
 
         internal static Report Search(D.Environment env,D.Propulsion propulsion,D.Limits limits,D.State initial,
-            Settings settings,CancellationToken token=default,Action<string> diagnostic=null)
+            Settings settings,CancellationToken token=default,Action<string> diagnostic=null,
+            double preferredDelay=double.NaN,F.Profile? preferredApproach=null)
         {
             Candidate best=null;int prefixes=0,approaches=0,steps=0,feasible=0,unresolved=0;
             bool exhausted=false;
@@ -425,6 +426,13 @@ namespace MuMech.Landing
                 epochs.Add((delay,D.V.Dot(up*Math.Cos(angle)+along*Math.Sin(angle),target)));
             }
             epochs.Sort((a,b)=>b.score.CompareTo(a.score));
+            // Timing hints only; recompute the transfer from the current
+            // orbit and moving target, not a stale inertial burn vector.
+            if(D.Finite(preferredDelay)&&preferredDelay>=earliest&&preferredDelay<=wait)
+            {
+                epochs.RemoveAll(e=>Math.Abs(e.delay-preferredDelay)<.01);
+                epochs.Insert(0,(preferredDelay,double.PositiveInfinity));
+            }
             foreach(var epoch in epochs)
             {
                 if(token.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
@@ -507,7 +515,9 @@ namespace MuMech.Landing
                                 " endMass="+c.Result.End.Mass+" elapsed="+(c.Result.End.UT-prefix.End.UT)+
                                 " endMiss="+P.Miss(env,prefix.End,c.Result.End,approachSettings.Common.TargetAtInitialUT)+
                                 " terminal="+c.Result.TerminalStartUT+" saturation="+c.MaxSaturation);
-                        var report=F.Search(env,propulsion,limits,prefix.End,approachSettings,token,diagnostic:describe,refineNearContact:true,curvedCandidates:Math.Abs(normal)>.1);
+                        var warm=D.Finite(preferredDelay)&&Math.Abs(epoch.delay-preferredDelay)<.01?preferredApproach:null;
+                        var report=F.Search(env,propulsion,limits,prefix.End,approachSettings,token,warmStart:warm,
+                            diagnostic:describe,refineNearContact:true,curvedCandidates:Math.Abs(normal)>.1);
                         approaches+=report.Attempts;steps+=report.Steps;
                         diagnostic?.Invoke("approach "+report.Status+" attempts="+report.Attempts+
                             " nominal="+report.Feasible+" unresolved="+report.Unresolved+

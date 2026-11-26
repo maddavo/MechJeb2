@@ -131,3 +131,4 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Replace target-elevation sphere in production planning with a copied body-fixed terrain grid and fine local destination patches. Propagate and replay terrain-dependent clearance and contact, including scenario replay and fallback environment copies.
 - Distinguish physically clear higher ground from collision or terminal terrain conflict; use actual clearance in live stopping/terminal control, automatically sample conflict terrain and replan from current orbital state. Preserve genuine terrain and reserve safety constraints.
+- Use coarse orbital routing and demand-loaded approach terrain, fast high-clearance propagation, local terminal interpolation bounds and warm-started terrain-aware planning; record terrain samples for replay and add uneven-terrain acceptance.

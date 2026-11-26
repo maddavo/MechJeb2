@@ -38,6 +38,8 @@ namespace MuMech.Landing
             internal F.Settings Settings;
             internal bool Strategic;
             internal double ApproachStartUT,DeorbitStartUT,DeorbitEndUT;
+            internal double PreferredBurnUT=double.NaN;
+            internal F.Profile? PreferredApproach;
         }
         private sealed class Answer
         {
@@ -63,6 +65,8 @@ namespace MuMech.Landing
         private TerrainAcquisition terrainCapture;
         private D.TerrainGrid terrainGrid;
         private int terrainRefinements;
+        private double preferredBurnUT=double.NaN;
+        private F.Profile? preferredApproach;
         // Incremental main-thread PQS sampling. Use body-fixed coordinates
         // so a fresh solver epoch does not invalidate acquired elevations.
         private sealed class TerrainAcquisition
@@ -75,11 +79,16 @@ namespace MuMech.Landing
             internal D.TerrainGrid Grid {get;private set;}
             internal bool Complete=>Grid!=null&&patchIndex>=requests.Count;
             internal int Samples {get;private set;}
-            internal TerrainAcquisition(D.TerrainGrid previous,double latitude,double longitude,double radius)
+            internal TerrainAcquisition(D.TerrainGrid previous,double latitude,double longitude,double radius,
+                IEnumerable<D.V> approachRadials=null)
             {
                 Grid=previous;globe=previous==null?new double[6*(N+1)*(N+1)]:null;
                 double lat=latitude*Math.PI/180,lon=longitude*Math.PI/180;
                 D.V q=new D.V(Math.Cos(lat)*Math.Cos(lon),Math.Cos(lat)*Math.Sin(lon),Math.Sin(lat));
+                // Regional path patches first, fine destination last.
+                if(approachRadials!=null)
+                    foreach(var radial in approachRadials)
+                        requests.Add((radial.Unit,Math.Min(.25,6000/radius)));
                 requests.Add((q,Math.Min(.25,4000/radius)));
                 requests.Add((q,Math.Min(.01,250/radius)));
                 patch=new double[(PatchN+1)*(PatchN+1)];
@@ -420,7 +429,8 @@ namespace MuMech.Landing
                 if(s.Strategic)
                 {
                     var settings=new AtmosphericStrategicPlanner.Settings(s.Settings,preparation:45,engagementLead:45,maxWait:6000,maxBurn:600);
-                    a.Strategic=AtmosphericStrategicPlanner.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,settings,token);
+                    a.Strategic=AtmosphericStrategicPlanner.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,settings,token,
+                        preferredDelay:s.PreferredBurnUT-s.UT,preferredApproach:s.PreferredApproach);
                     a.ReplayPassed=a.Strategic.Best?.ReplayPassed==true;
                     a.Scenarios=a.Strategic.Scenarios;
                     if(a.ReplayPassed&&a.Scenarios?.Passed==true&&!token.IsCancellationRequested)
@@ -452,13 +462,25 @@ namespace MuMech.Landing
             {
                 snapshot=Capture(core);answer=null;logged=false;
                 var copy=snapshot;
-                terrainCapture=new TerrainAcquisition(null,copy.Latitude,copy.Longitude,copy.Environment.Radius);
-                status="Acquiring planetary terrain";
+                if(copy.Strategic)
+                {
+                    // Initial target-sphere solution is a routing hint,
+                    // never executable landing authority.
+                    cancel=new CancellationTokenSource();cancel.CancelAfter(20000);
+                    CancellationToken token=cancel.Token;
+                    job=Task.Run(()=>Solve(copy,token));
+                    status="Computing coarse orbital approach";
+                }
+                else
+                {
+                    terrainCapture=new TerrainAcquisition(null,copy.Latitude,copy.Longitude,copy.Environment.Radius);
+                    status="Acquiring approach terrain";
+                }
                 Debug.Log("[DunaIntegratedPreview] snapshot UT="+Num(copy.UT,"R")+" vessel="+copy.Vessel+
                     " target="+Num(copy.Latitude,"R")+","+Num(copy.Longitude,"R")+" massKg="+Num(copy.Mass)+
                     " mixtureKg="+Num(copy.UsableFuel)+" cap="+Num(copy.Cap,"F3")+
                     " dragArea="+Num(copy.DragArea)+" model=approximate_no_actuation"+
-                    " mode="+(strategic?"orbit":"descent")+" position="+copy.Initial.R.X.ToString("R",CultureInfo.InvariantCulture)+","+
+                    " mode="+(copy.Strategic?"orbit":"descent")+" position="+copy.Initial.R.X.ToString("R",CultureInfo.InvariantCulture)+","+
                     copy.Initial.R.Y.ToString("R",CultureInfo.InvariantCulture)+","+copy.Initial.R.Z.ToString("R",CultureInfo.InvariantCulture)+
                     " velocity="+Num(copy.Initial.Velocity.X,"R")+","+Num(copy.Initial.Velocity.Y,"R")+","+Num(copy.Initial.Velocity.Z,"R")+
                     " reserveKg="+Num(copy.Limits.ReserveMass,"R")+" thrustAccel="+Num(core.VesselState.MaxThrustAcceleration,"R")+
@@ -478,6 +500,7 @@ namespace MuMech.Landing
             snapshot=Capture(core);
             var basis=snapshot.Frame.AtCapture;
             snapshot.Environment=snapshot.Environment.WithGrid(terrainGrid,snapshot.UT,basis.A,basis.B,basis.C);
+            snapshot.PreferredBurnUT=preferredBurnUT;snapshot.PreferredApproach=preferredApproach;
             var copy=snapshot;
             cancel=new CancellationTokenSource();cancel.CancelAfter(copy.Strategic?20000:8000);
             CancellationToken token=cancel.Token;
@@ -486,13 +509,14 @@ namespace MuMech.Landing
             status=copy.Strategic?"Computing terrain-aware orbital landing":"Computing terrain-aware descent";
             Debug.Log("[DunaIntegratedPreview] terrain-aware solve UT="+Num(copy.UT,"R")+
                 " terrain min="+Num(terrainGrid.Min)+" max="+Num(terrainGrid.Max)+" refinements="+terrainRefinements);
+            Debug.Log("[DunaIntegratedPreview] terrain samples metres="+terrainGrid.Evidence());
         }
         internal bool Running=>terrainCapture!=null||job!=null&&!job.IsCompleted;
         internal void Cancel()
         {
             if(cancel!=null){cancel.Cancel();cancel.Dispose();cancel=null;}
             job=null;snapshot=null;answer=null;logged=false;status="Not evaluated";
-            terrainCapture=null;terrainGrid=null;terrainRefinements=0;
+            terrainCapture=null;terrainGrid=null;terrainRefinements=0;preferredBurnUT=double.NaN;preferredApproach=null;
             tracker=null;corridor=null;
             corridorStatus=null;corridorPassed=false;executionStatus=null;
         }
@@ -572,6 +596,11 @@ namespace MuMech.Landing
                 {
                     Debug.Log("[DunaIntegratedPreview] "+corridorStatus+"; acquiring additional terrain and replanning");
                     terrainRefinements++;
+                    if(answer.Strategic?.Best!=null)
+                    {
+                        preferredBurnUT=snapshot.UT+answer.Strategic.Best.Deorbit.Delay;
+                        preferredApproach=answer.Strategic.Best.Approach.Profile;
+                    }
                     terrainCapture=new TerrainAcquisition(terrainGrid,corridor.ConflictLatitude,
                         corridor.ConflictLongitude,snapshot.Environment.Radius);
                     answer=null;tracker=null;corridor=null;corridorStatus=null;corridorPassed=false;
@@ -650,6 +679,39 @@ namespace MuMech.Landing
                 finally{job=null;cancel?.Dispose();cancel=null;}
             }
             if(answer==null||snapshot==null)return status;
+            if(snapshot.Strategic&&terrainGrid==null&&terrainCapture==null)
+            {
+                // Use the coarse predicted approach to demand-load actual
+                // terrain in body-fixed coordinates. Limit to eight
+                // regional samples; destination patches remain fine.
+                var best=answer.Strategic?.Best;
+                var radials=new List<D.V>();
+                if(best!=null)
+                {
+                    preferredBurnUT=snapshot.UT+best.Deorbit.Delay;
+                    preferredApproach=best.Approach.Profile;
+                    var basis=snapshot.Frame.AtCapture;
+                    var target=snapshot.Settings.Common.TargetAtInitialUT;
+                    D.V fixedTarget=new D.V(D.V.Dot(target,basis.A),D.V.Dot(target,basis.B),D.V.Dot(target,basis.C));
+                    var route=new List<D.V>();
+                    foreach(var point in best.Approach.Reference)
+                    {
+                        var state=point.State;
+                        if(state.R.Length-snapshot.Environment.Radius>20000)continue;
+                        var radial=P.RotateTarget(state.R.Unit,snapshot.Environment.Omega,snapshot.UT-state.UT);
+                        var q=new D.V(D.V.Dot(radial,basis.A),D.V.Dot(radial,basis.B),D.V.Dot(radial,basis.C)).Unit;
+                        if((q-fixedTarget).Length*snapshot.Environment.Radius<4000)continue;
+                        if(route.Count==0||(q-route[route.Count-1]).Length*snapshot.Environment.Radius>=6000)
+                            route.Add(q);
+                    }
+                    int count=Math.Min(8,route.Count);
+                    for(int i=0;i<count;i++)radials.Add(route[count==1?0:i*(route.Count-1)/(count-1)]);
+                }
+                terrainCapture=new TerrainAcquisition(null,snapshot.Latitude,snapshot.Longitude,
+                    snapshot.Environment.Radius,radials);
+                answer=null;status="Acquiring terrain along predicted approach";
+                return status;
+            }
             AdvanceCorridor(core);
             if(answer==null)return status;
             double age=core.VesselState.Time-snapshot.UT;

@@ -289,6 +289,24 @@ namespace MuMech.Landing
                 }
                 internal V Direction(int i,int j)=> (Centre+A*(Half*(2.0*i/N-1))+
                     B*(Half*(2.0*j/N-1))).Unit;
+                internal bool CoversCore(V first,V last,double extra)
+                {
+                    double a=V.Dot(first,Centre),b=V.Dot(last,Centre);
+                    if(Math.Min(a,b)<.5)return false;
+                    double Edge(V q,double dot)=>Math.Max(Math.Abs(V.Dot(q,A)),Math.Abs(V.Dot(q,B)))/dot;
+                    return Math.Max(Edge(first,a),Edge(last,b))+4*extra<=.75*Half;
+                }
+                internal bool MayAffect(V first,V last,double extra)
+                    =>Math.Min((first-Centre).Length,(last-Centre).Length)<=
+                        Math.Sqrt(2)*Half+(first-last).Length+extra;
+                internal void AppendSamples(System.Text.StringBuilder text)
+                {
+                    var culture=System.Globalization.CultureInfo.InvariantCulture;
+                    text.Append(";patch=").Append(Centre.X.ToString("R",culture)).Append(',')
+                        .Append(Centre.Y.ToString("R",culture)).Append(',').Append(Centre.Z.ToString("R",culture))
+                        .Append(',').Append(Half.ToString("R",culture)).Append(',').Append(N).Append(':');
+                    foreach(double height in heights)text.Append(height.ToString("F1",culture)).Append(',');
+                }
                 internal double Blend(V unit,double background)
                 {
                     double axial=V.Dot(unit,Centre);
@@ -371,6 +389,15 @@ namespace MuMech.Landing
                 foreach(var patch in patches)h=patch.Blend(q,h);
                 return h;
             }
+            internal string Evidence()
+            {
+                var text=new System.Text.StringBuilder();
+                var culture=System.Globalization.CultureInfo.InvariantCulture;
+                text.Append("cubeN=").Append(N).Append(";heights=");
+                foreach(double height in heights)text.Append(height.ToString("F1",culture)).Append(',');
+                foreach(var patch in patches)patch.AppendSamples(text);
+                return text.ToString();
+            }
             internal TerrainGrid Refine(Patch patch)
             {
                 var next=new Patch[patches.Length+1];Array.Copy(patches,next,patches.Length);
@@ -407,8 +434,18 @@ namespace MuMech.Landing
                     double ha=Height(aa),hb=Height(bb);
                     // Use the smaller of the global elevation maximum
                     // and the Lipschitz upper envelope of the sampled map.
-                    double angular=(aa-bb).Length*.5+2*sag/Math.Max(1,minR);
-                    double peak=Math.Min(Max,Math.Max(ha,hb)+slope*angular);
+                    double extra=2*sag/Math.Max(1,minR);
+                    double angular=(aa-bb).Length*.5+extra;
+                    double localSlope=slope,localMax=Max;
+                    for(int i=patches.Length-1;i>=0;i--)
+                    {
+                        var patch=patches[i];
+                        if(!patch.MayAffect(aa,bb,extra))continue;
+                        if(patch.CoversCore(aa,bb,extra))
+                        {localSlope=patch.Slope*4;localMax=patch.Max;}
+                        break;
+                    }
+                    double peak=Math.Min(localMax,Math.Max(ha,hb)+localSlope*angular);
                     return Math.Min(Math.Min(first.R.Length-radius-offset-ha,last.R.Length-radius-offset-hb),
                         minR-radius-offset-peak);
                 }
@@ -704,6 +741,16 @@ namespace MuMech.Landing
                 return new Result(Outcome.InvalidInput,s,double.NaN);
             if(env.Terrain!=null)
             {
+                // Use the same inexpensive orbital propagator far above
+                // the sampled map's relief, not fine terrain event search.
+                if(env.Grid!=null&&s.R.Length-env.Radius-env.BottomOffset-env.Grid.Max>500)
+                {
+                    int coarseBudget=512;
+                    var coarse=AdvanceSphere(env,propulsion,lim,s,c,dt,safeVertical,safeHorizontal,safeAngle,safeRate,ref coarseBudget);
+                    double minimum=coarse.MinimumClearance+env.TerrainRadius-env.Radius-env.Grid.Max;
+                    if(coarse.Status==Outcome.Advanced&&minimum>500)
+                        return new Result(Outcome.Advanced,coarse.End,minimum,coarse.FirstPoweredUT);
+                }
                 int budget=512;
                 return AdvanceTerrain(env,propulsion,lim,s,c,dt,safeVertical,safeHorizontal,safeAngle,safeRate,ref budget);
             }

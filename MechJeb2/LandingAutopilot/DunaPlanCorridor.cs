@@ -26,10 +26,7 @@ namespace MuMech.Landing
         private void Reject(string reason){Status="Rejected: "+reason;Finished=true;}
         // Compare actual available clearance with the physical trajectory,
         // not with the arbitrary height of a target-elevation sphere.
-        internal static bool TerrainConflict(double clearance,double modelClearance,bool contact)
-            =>contact?Math.Abs(clearance)>2:clearance<=0||
-                modelClearance<=30&&Math.Abs(clearance-modelClearance)>2;
-        private void Refine(double lat,double lon,double clearance,double modelClearance)
+         private void Refine(double lat,double lon,double clearance,double modelClearance)
         {
             NeedsTerrainRefinement=true;ConflictLatitude=lat;ConflictLongitude=lon;
             Reject("terrain requires trajectory refinement at "+lat.ToString("F5")+","+lon.ToString("F5")+
@@ -76,7 +73,7 @@ namespace MuMech.Landing
                     if(!D.Finite(ground)){Reject("unknown terrain");return;}
                     if(contact)contactGround=ground;
                     double sampledClearance=pt.R.Length-body.Radius-ground-environment.BottomOffset;
-                    if(TerrainConflict(sampledClearance,modelClearance,contact))
+                    if(DunaLandingAdmission.TerrainConflict(sampledClearance,modelClearance,contact))
                     {
                         Refine(lat,lon,sampledClearance,modelClearance);return;
                     }

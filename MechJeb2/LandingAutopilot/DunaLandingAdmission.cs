@@ -206,6 +206,10 @@ namespace MuMech.Landing
                 tracker.ReferenceAt(actual.UT,out _,out var planned)&&
                 D.V.Dot(actual.Forward,planned.Direction.Unit)>=.995;
 
+        internal static bool TerrainConflict(double clearance,double modelClearance,bool contact)
+            =>!D.Finite(clearance)||!D.Finite(modelClearance)||(contact?Math.Abs(clearance)>2:
+                clearance<=0||modelClearance<=30&&Math.Abs(clearance-modelClearance)>2);
+
         internal static bool OwnsActuators(int attitudeUsers,bool landingAttitude,int thrustUsers,
             bool thrustSelf,bool landingThrust,bool pending)
             =>pending?attitudeUsers==1&&landingAttitude&&thrustUsers==2&&thrustSelf&&landingThrust:
