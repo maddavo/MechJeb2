@@ -318,3 +318,8 @@ User explicitly directs documenting recurring worker failure modes as prohibitio
 ### Correction to worker optimiser rule (2026-11-27 Sydney)
 
 User rejects the previous prohibition on promotion of unproven optimisation algorithms. Experimental integration and active selection of new algorithms in the guidance under development are necessary and encouraged; effectiveness is established through testing after inclusion, not required beforehand. Replaced prohibited-behaviour item 4 in the binding design and SPEC in place. The prohibition is on unsupported effectiveness/readiness claims, not experimentation or integration. Common realistic benchmarking and the whole-candidate offline flight-test delivery gate remain applicable; neither is a precondition for implementing or activating a new technique in development. No other worker rule changed. Documentation only; no executable change or version increment.
+
+
+### Flight-test delivery principle (2026-11-27 Sydney)
+
+User clarifies that a submitted DLL must have a reasonable expectation of success; otherwise there are shortcomings that can and should be addressed before delivery. Added this governing principle to the binding design and SPEC, including proactive review for implicit deficiencies, without requiring certainty or prohibiting experimental techniques. Applicable offline gates remain unchanged. Documentation only; no executable change or version increment.
