@@ -62,3 +62,8 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Implement nonlinear finite-time vector-guidance candidate search, clearance-dependent terminal velocity feedback, complete command history and independent finer-step replay.
 - Add opt-in Duna snapshot solver preview to Landing Guidance, comparing A/B results without commanding the vessel. Approximate model only; existing live controllers unchanged.
+
+## 2.16.0-landing.20261126.duna-integrated-m4.0
+
+- Implement trajectory interpolation, live position/velocity tracking and explicit reserve/authority/clearance/expiry guard.
+- Publish replayed model candidate with bounded sampled corridor checks and coast preparation; add isolated experimental Duna powered-descent engagement, single MechJeb ownership, direct attitude/throttle requests and explicit manual-abort/lifecycle release. No default guidance change; no automatic replanning or strategic deorbit.

@@ -23,18 +23,18 @@ namespace MuMech.Landing
         {
             internal readonly P.Settings Common;
             internal readonly double TargetSurfaceRadius,ApproachHeight,ApproachSpeed,
-                MinPoweredSeconds,MaxPoweredSeconds,ControlTick,TerminalHorizontal,TerminalVertical;
+                MinPoweredSeconds,MaxPoweredSeconds,ControlTick,TerminalHorizontal,TerminalVertical,MinCoast;
             internal readonly int CoastIntervals,DurationIntervals,Refinements;
             internal Settings(P.Settings common,double targetRadius,double approachHeight=15,double approachSpeed=2,
                 double minPowered=10,double maxPowered=600,double controlTick=.5,int coastIntervals=6,
-                int durationIntervals=8,int refinements=3,double terminalHorizontal=1,double terminalVertical=4)
+                int durationIntervals=8,int refinements=3,double terminalHorizontal=1,double terminalVertical=4,double minCoast=0)
             {
                 Common=common;TargetSurfaceRadius=targetRadius;ApproachHeight=approachHeight;ApproachSpeed=approachSpeed;
                 MinPoweredSeconds=minPowered;MaxPoweredSeconds=maxPowered;ControlTick=controlTick;
                 CoastIntervals=coastIntervals;DurationIntervals=durationIntervals;Refinements=refinements;
-                TerminalHorizontal=terminalHorizontal;TerminalVertical=terminalVertical;
+                TerminalHorizontal=terminalHorizontal;TerminalVertical=terminalVertical;MinCoast=minCoast;
             }
-            internal bool Valid=>Common!=null&&Common.Valid&&D.Finite(TargetSurfaceRadius)&&TargetSurfaceRadius>0&&
+            internal bool Valid=>Common!=null&&Common.Valid&&D.Finite(MinCoast)&&MinCoast>=0&&MinCoast<=Common.MaxIgnitionDelay&&D.Finite(TargetSurfaceRadius)&&TargetSurfaceRadius>0&&
                 D.Finite(ApproachHeight)&&ApproachHeight>0&&ApproachHeight<=300&&D.Finite(ApproachSpeed)&&ApproachSpeed>0&&
                 D.Finite(MinPoweredSeconds)&&MinPoweredSeconds>0&&D.Finite(MaxPoweredSeconds)&&
                 MaxPoweredSeconds>=MinPoweredSeconds&&MaxPoweredSeconds<=Common.Horizon&&
@@ -158,7 +158,7 @@ namespace MuMech.Landing
             }
             if(env==null||propulsion==null||limits==null||settings==null||!env.Valid||!limits.Valid||
                 !settings.Valid||!initial.Valid||initial.Mass<limits.ReserveMass||budget<1||budget>1000000||
-                !D.Finite(profile.Coast)||profile.Coast<0||profile.Coast>settings.Common.MaxIgnitionDelay||
+                !D.Finite(profile.Coast)||profile.Coast<settings.MinCoast||profile.Coast>settings.Common.MaxIgnitionDelay||
                 !D.Finite(profile.Duration)||profile.Duration<settings.MinPoweredSeconds||profile.Duration>settings.MaxPoweredSeconds||
                 profile.Coast+profile.Duration>settings.Common.Horizon)return Finish(D.Outcome.InvalidInput);
             var common=settings.Common;
@@ -247,7 +247,7 @@ namespace MuMech.Landing
             bool exhausted=false;
             void Try(double coast,double duration)
             {
-                if(exhausted||cancellation.IsCancellationRequested||coast<0||coast>common.MaxIgnitionDelay||
+                if(exhausted||cancellation.IsCancellationRequested||coast<settings.MinCoast||coast>common.MaxIgnitionDelay||
                     duration<settings.MinPoweredSeconds||duration>settings.MaxPoweredSeconds||
                     coast+duration>common.Horizon||!visited.Add((coast,duration)))return;
                 if(attempts>=common.MaxCandidates||steps>=common.MaxSteps){exhausted=true;return;}
@@ -262,11 +262,11 @@ namespace MuMech.Landing
                     c.Result.Outcome==D.Outcome.Horizon||c.Result.Outcome==D.Outcome.Cancelled||
                     c.Result.Outcome==D.Outcome.InvalidInput)unresolved++;
             }
-            double dc=common.MaxIgnitionDelay/settings.CoastIntervals,
+            double dc=(common.MaxIgnitionDelay-settings.MinCoast)/settings.CoastIntervals,
                 dt=(settings.MaxPoweredSeconds-settings.MinPoweredSeconds)/settings.DurationIntervals;
             for(int i=0;i<=settings.CoastIntervals&&!exhausted;i++)
                 for(int j=0;j<=settings.DurationIntervals&&!exhausted;j++)
-                    Try(i==settings.CoastIntervals?common.MaxIgnitionDelay:i*dc,
+                    Try(i==settings.CoastIntervals?common.MaxIgnitionDelay:settings.MinCoast+i*dc,
                         j==settings.DurationIntervals?settings.MaxPoweredSeconds:settings.MinPoweredSeconds+j*dt);
             for(int n=0;n<settings.Refinements&&!exhausted&&best!=null&&!cancellation.IsCancellationRequested;n++)
             {

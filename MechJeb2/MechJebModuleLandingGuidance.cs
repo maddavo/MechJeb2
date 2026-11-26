@@ -200,6 +200,18 @@ namespace MuMech
                     else if (GUILayout.Button("Evaluate integrated descent (preview)"))
                         _integratedPreview.Start(Core);
                     GUILayout.Label(preview, new GUIStyle(GUI.skin.label) { wordWrap = true });
+                    if(!Core.Landing.Enabled&&_integratedPreview.ExecutionAvailable)
+                    {
+                        GUILayout.Label("Experimental model only. Check fuel, terrain and manual takeover.");
+                        if(GUILayout.Button("Execute integrated descent (experimental)"))
+                        {
+                            if(_integratedPreview.TryTakePlan(Core,out var snapshot,out var tracker,out string reason)&&
+                                Core.Landing.StartIntegratedDescent(this,snapshot,tracker))
+                                _integratedPreview.Cancel();
+                            else
+                                _integratedPreview.SetExecutionStatus("Engagement refused: "+(reason??"actuator ownership unavailable"));
+                        }
+                    }
                 }
                 else _integratedPreview.Cancel();
             }

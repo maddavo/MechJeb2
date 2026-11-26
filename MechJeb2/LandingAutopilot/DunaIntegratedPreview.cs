@@ -23,10 +23,12 @@ namespace MuMech.Landing
             internal double Flow,G;
             internal double[] Isp;
         }
-        private sealed class Snapshot
+        internal sealed class Snapshot
         {
             internal Guid Vessel;
             internal uint[] Parts;
+            internal uint ReferencePart;
+            internal string EngineConfiguration;
             internal double Latitude,Longitude,UT,Mass,Cap,Warp,DragArea,UsableFuel;
             internal D.State Initial;
             internal D.Environment Environment;
@@ -49,9 +51,44 @@ namespace MuMech.Landing
         private Answer answer;
         private string status="Not evaluated";
         private bool logged;
-        private static D.V V(Vector3d x)=>new D.V(x.x,x.y,x.z);
+        private AtmosphericPlanTracker tracker;
+        private int corridorIndex,corridorQueries;
+        private double nextCorridorUT;
+        private string corridorStatus;
+        private bool corridorPassed;
+        private string executionStatus;
+        internal static D.V V(Vector3d x)=>new D.V(x.x,x.y,x.z);
+        internal static Vector3d World(D.V x)=>new Vector3d(x.X,x.Y,x.Z);
         private static string Num(double x,string format="F1")=>D.Finite(x)?x.ToString(format,CultureInfo.InvariantCulture):"unknown";
         private static void Require(bool ok,string reason){if(!ok)throw new InvalidOperationException(reason);}
+
+        // Configuration identity excludes attained throttle, pressure and
+        // current thrust (those vary during the validated trajectory).
+        internal static string EngineSignature(Vessel v)
+        {
+            var text=new System.Text.StringBuilder();
+            int modules=0;
+            foreach(Part part in v.parts)
+                for(int i=0;i<part.Modules.Count;i++)
+                {
+                    if(++modules>2048)throw new InvalidOperationException("module budget");
+                    if(!(part.Modules[i] is ModuleEngines e))continue;
+                    text.Append(part.flightID).Append(':').Append(i).Append(':')
+                        .Append(e.EngineIgnited).Append(':').Append(e.isEnabled).Append(':')
+                        .Append(e.isOperational).Append(':').Append(e.throttleLocked).Append(':')
+                        .Append(Num(e.maxFuelFlow,"R")).Append(':').Append(Num(e.minFuelFlow,"R")).Append(':')
+                        .Append(Num(e.thrustPercentage,"R")).Append(';');
+                }
+            return text.ToString();
+        }
+        internal static D.State LiveState(MechJebCore core)
+        {
+            var s=core.VesselState;
+            double attained=s.MaxThrustAcceleration>0?
+                Math.Max(0,Math.Min(1,s.CurrentThrustAcceleration/s.MaxThrustAcceleration)):double.NaN;
+            return new D.State(s.Time,V(s.OrbitalPosition),V(s.OrbitalVelocity),s.Mass*1000,
+                V(s.Forward).Unit,attained,core.vessel.angularVelocity.magnitude);
+        }
 
         // Snapshot uses a reduced-order equivalent axial engine, frozen
         // measured/estimated drag area, sampled atmosphere at target, and
@@ -214,7 +251,7 @@ namespace MuMech.Landing
             // turn guarantee. The selected model is not executable.
             var limits=new D.Limits(reserve,Math.PI/30,response,response,.5);
             double attained=Math.Max(0,Math.Min(1,s.CurrentThrustAcceleration/s.MaxThrustAcceleration));
-            var initial=new D.State(s.Time,pos,vel,mass,forward,attained);
+            var initial=new D.State(s.Time,pos,vel,mass,forward,attained,v.angularVelocity.magnitude);
             Require(initial.Valid&&environment.Valid&&limits.Valid,"invalid numerical snapshot");
             double clearance=environment.PhysicalClearance(initial);
             Require(clearance>0&&clearance<=200000,"outside descent preview domain");
@@ -243,12 +280,14 @@ namespace MuMech.Landing
                 safeVertical:Math.Max(1,touchdown),safeHorizontal:1,safeAngle:5*Math.PI/180,
                 safeRate:Math.PI/180,entryCutoffDelay:0,commandCap:cap);
             var settings=new F.Settings(common,terrainRadius+offset,minPowered:minDuration,maxPowered:maxDuration,
-                controlTick:.5,coastIntervals:4,durationIntervals:6,refinements:2);
+                controlTick:.5,coastIntervals:4,durationIntervals:6,refinements:2,
+                minCoast:Math.Min(15,coast));
             Require(settings.Valid,"invalid solver settings");
             var partIds=new uint[v.parts.Count];for(int i=0;i<partIds.Length;i++)partIds[i]=v.parts[i].flightID;
             return new Snapshot{Vessel=v.id,Parts=partIds,Latitude=lat,Longitude=lon,UT=s.Time,Mass=mass,
                 Cap=cap,Warp=TimeWarp.CurrentRate,DragArea=area,UsableFuel=usable,Initial=initial,
-                Environment=environment,Propulsion=propulsion,Limits=limits,Settings=settings};
+                Environment=environment,Propulsion=propulsion,Limits=limits,Settings=settings,
+                ReferencePart=v.GetReferenceTransformPart().flightID,EngineConfiguration=EngineSignature(v)};
         }
         private static Answer Solve(Snapshot s,CancellationToken token)
         {
@@ -294,6 +333,8 @@ namespace MuMech.Landing
         {
             if(cancel!=null){cancel.Cancel();cancel.Dispose();cancel=null;}
             job=null;snapshot=null;answer=null;logged=false;status="Not evaluated";
+            tracker=null;corridorIndex=corridorQueries=0;nextCorridorUT=double.NegativeInfinity;
+            corridorStatus=null;corridorPassed=false;executionStatus=null;
         }
         private static string CandidateText(P.Candidate? c,double initialMass)
         {
@@ -302,20 +343,137 @@ namespace MuMech.Landing
             return "miss "+Num(a.Miss/1000,"F2")+" km; fuel "+Num(initialMass-a.End.Mass, "F0")+" kg; coast "+
                 Num(a.Profile.IgnitionDelay)+" s";
         }
-        private bool SameContext(MechJebCore core)
+        internal static bool SameContext(MechJebCore core,Snapshot snapshot)
         {
             if(snapshot==null||core.vessel==null||core.vessel.id!=snapshot.Vessel||
                 core.vessel.mainBody==null||core.vessel.mainBody.bodyName!="Duna"||
                 !core.Target.PositionTargetExists||core.Target.targetBody!=core.vessel.mainBody||
                 (double)core.Target.targetLatitude!=snapshot.Latitude||(double)core.Target.targetLongitude!=snapshot.Longitude||
-                TimeWarp.CurrentRate!=snapshot.Warp||core.vessel.parts.Count!=snapshot.Parts.Length)return false;
+                TimeWarp.CurrentRate!=snapshot.Warp||core.vessel.packed||core.vessel.parts.Count!=snapshot.Parts.Length||
+                core.vessel.GetReferenceTransformPart()==null||
+                core.vessel.GetReferenceTransformPart().flightID!=snapshot.ReferencePart)return false;
             if(core.VesselState.Time<snapshot.UT)return false;
             for(int i=0;i<snapshot.Parts.Length;i++)if(core.vessel.parts[i].flightID!=snapshot.Parts[i])return false;
             return true;
         }
+        internal static string LiveCompatibility(MechJebCore core,Snapshot snap,bool checkEngines)
+        {
+            if(!SameContext(core,snap)||FlightGlobals.ActiveVessel!=core.vessel)return "vessel, target, reference part, topology, warp or epoch changed";
+            var v=core.vessel;var s=core.VesselState;var body=v.mainBody;
+            if(core.Landing.DeployChutes||s.ParachuteDeployed||core.Thrust.LimiterMinThrottle||
+                core.Thrust.DifferentialThrottle||core.Thrust.SmoothThrottle||v.ActionGroups[KSPActionGroup.RCS])
+                return "unsupported active actuator or throttle setting";
+            if(ReflectionUtils.IsLoadedFAR)return "unsupported aero model";
+            double cap=Math.Min(s.ThrottleLimit,s.ThrottleFixedLimit);
+            if(!D.Finite(cap)||cap+1e-5<snap.Cap||s.MinThrustAcceleration>1e-6)
+                return "throttle authority changed";
+            if(Math.Abs((double)core.Landing.TouchdownSpeed-snap.Settings.Common.Terminal.TouchdownSpeed)>1e-6)
+                return "touchdown setting changed";
+            D.V pos=V(s.OrbitalPosition),vel=V(s.OrbitalVelocity);
+            if((vel-V(s.SurfaceVelocity)-D.V.Cross(snap.Environment.Omega,pos)).Length>.5)
+                return "inertial frame changed";
+            D.V target=V(body.GetWorldSurfacePosition(snap.Latitude,snap.Longitude,0)-body.position).Unit;
+            D.V expected=P.RotateTarget(snap.Settings.Common.TargetAtInitialUT,snap.Environment.Omega,s.Time-snap.UT);
+            if(!target.Valid||(target-expected).Length>1e-5)return "target frame mismatch";
+            if(checkEngines&&EngineSignature(v)!=snap.EngineConfiguration)return "engine configuration changed";
+            return null;
+        }
+
+        // Main-thread sampled corridor review, not a swept-terrain proof.
+        // Check all near-ground reference states, plus bounded coarse
+        // samples at altitude. Reproject future body-fixed locations at
+        // the current UT, never retain floating-origin world positions.
+        private void AdvanceCorridor(MechJebCore core)
+        {
+            if(answer?.Validated==null||corridorPassed||corridorStatus!=null&&corridorStatus.StartsWith("Rejected:"))return;
+            try
+            {
+                if(tracker==null)
+                {
+                    tracker=new AtmosphericPlanTracker(snapshot.Environment,snapshot.Propulsion,snapshot.Limits,
+                        snapshot.Settings,answer.Validated);
+                    if(tracker.TargetMiss>snapshot.Settings.Common.TargetTolerance)
+                    {corridorStatus="Rejected: modelled target miss exceeds tolerance";return;}
+                }
+                double now=core.VesselState.Time;
+                if(now>=tracker.EndUT){corridorStatus="Rejected: trajectory expired";return;}
+                if(now<nextCorridorUT)return;
+                nextCorridorUT=now+.02;
+                var points=tracker.Plan.Reference;
+                int stride=Math.Max(1,(points.Count+127)/128);
+                var body=core.vessel.mainBody;
+                int work=0,scanned=0;
+                while(corridorIndex<=points.Count&&work<8&&scanned++<128)
+                {
+                    int i=corridorIndex++;
+                    bool contact=i==points.Count;
+                    D.State pt=contact?tracker.Plan.Result.End:points[i].State;
+                    double modelClearance=snapshot.Environment.PhysicalClearance(pt);
+                    if(!contact&&i%stride!=0&&modelClearance>300)continue;
+                    if(++corridorQueries>512){corridorStatus="Rejected: corridor sample budget";return;}
+                    work++;
+                    D.V radial=P.RotateTarget(pt.R.Unit,snapshot.Environment.Omega,now-pt.UT);
+                    Vector3d world=body.position+World(radial*body.Radius);
+                    double lat=body.GetLatitude(world),lon=body.GetLongitude(world);
+                    double ground=body.TerrainAltitude(lat,lon);
+                    if(contact||modelClearance<=300)
+                    {
+                        ground=core.Landing.LandingSurface.Altitude(body,lat,lon,ground);
+                        if(core.Landing.LandingSurface.LastQuerySaturated)
+                        {corridorStatus="Rejected: local collider surface query saturated";return;}
+                    }
+                    if(!D.Finite(ground)||!D.Finite(modelClearance))
+                    {corridorStatus="Rejected: unknown terrain";return;}
+                    double sampledClearance=pt.R.Length-body.Radius-ground-snapshot.Environment.BottomOffset;
+                    if(contact||modelClearance<=300)
+                    {
+                        if(Math.Abs(sampledClearance-modelClearance)>2)
+                        {corridorStatus="Rejected: near-ground terrain differs from model";return;}
+                    }
+                    else if(sampledClearance<modelClearance-Math.Min(100,Math.Max(2,modelClearance*.1)))
+                    {corridorStatus="Rejected: terrain rises into model corridor";return;}
+                }
+                corridorPassed=corridorIndex>points.Count;
+                corridorStatus=corridorPassed?"Sampled corridor passed (not swept validation)":
+                    "Checking sampled terrain ("+corridorQueries+")";
+            }
+            catch(Exception ex){corridorStatus="Rejected: "+ex.Message;}
+        }
+
+        internal bool ExecutionAvailable=>tracker!=null&&corridorPassed;
+        internal bool TryTakePlan(MechJebCore core,out Snapshot input,out AtmosphericPlanTracker plan,out string reason)
+        {
+            input=null;plan=null;
+            if(!ExecutionAvailable){reason="no replayed and corridor-screened model trajectory";return false;}
+            try
+            {
+                reason=LiveCompatibility(core,snapshot,true);
+                if(reason!=null)return false;
+                if(core.Landing.Enabled||core.Attitude.Users.Count!=0||core.Thrust.Users.Count!=1||
+                    !core.Thrust.Users.Contains(core.Thrust))
+                {reason="another autopilot owns attitude or throttle";return false;}
+                var s=core.VesselState;
+                if(core.vessel.ctrlState.mainThrottle>1e-4||s.CurrentThrustAcceleration>.05)
+                {reason="engagement requires unpowered coast";return false;}
+                var decision=tracker.Track(LiveState(core),s.AltitudeBottom,s.MaxThrustAcceleration,
+                    Math.Min(snapshot.Cap,Math.Min(s.ThrottleLimit,s.ThrottleFixedLimit)),s.LocalGravity,s.MaxEngineResponseTime);
+                if(!decision.Valid){reason=decision.Reason;return false;}
+                // Refuse engagement after skipping a planned positive-thrust
+                // interval, even if the position tolerance is still met.
+                foreach(var p in tracker.Plan.Reference)
+                {
+                    if(p.State.UT>=s.Time)break;
+                    if(p.Command.Throttle>1e-4&&s.Time-p.State.UT>.1)
+                    {reason="required powered interval already elapsed; evaluate again";return false;}
+                }
+                input=snapshot;plan=tracker;reason=null;return true;
+            }
+            catch(Exception ex){reason=ex.Message;return false;}
+        }
+        internal void SetExecutionStatus(string message)=>executionStatus=message;
         internal string Poll(MechJebCore core)
         {
-            if(snapshot!=null&&!SameContext(core)){Cancel();status="Cancelled: vessel, target, warp or topology changed";}
+            if(snapshot!=null&&!SameContext(core,snapshot)){Cancel();status="Cancelled: vessel, target, warp or topology changed";}
             if(job!=null&&job.IsCompleted&&answer==null)
             {
                 try{answer=job.GetAwaiter().GetResult();status=answer.Error??"Snapshot complete";}
@@ -323,17 +481,20 @@ namespace MuMech.Landing
                 finally{job=null;cancel?.Dispose();cancel=null;}
             }
             if(answer==null||snapshot==null)return status;
+            AdvanceCorridor(core);
             double age=core.VesselState.Time-snapshot.UT;
-            string lines=status+" (age "+Num(age)+" s; not executable)\n";
+            string lines=status+" (age "+Num(age)+" s; experimental model)\n";
             if(answer.Reference!=null)
                 lines+="A: "+CandidateText(answer.Reference.Best,snapshot.Mass)+"; "+answer.Reference.Status+
                     " ("+answer.Reference.Candidates.Count+" tests, "+Num(answer.ReferenceMs,"F0")+" ms)\n";
             if(answer.Direct!=null)
                 lines+="B: "+CandidateText(answer.Direct.Best?.Result,snapshot.Mass)+"; "+answer.Direct.Status+
                     (answer.Direct.Best==null?"":"; powered "+Num(answer.Direct.Best.Profile.Duration)+" s")+
-                    " ("+answer.Direct.Attempts+" tests, "+Num(answer.Direct.ElapsedMilliseconds,"F0")+" ms)\n";
+                    " ("+answer.Direct.Attempts+" tests, "+Num(answer.Direct.ElapsedMilliseconds,"F0")+" ms; min prep "+Num(snapshot.Settings.MinCoast)+" s)\n";
             lines+="B finer-step replay: "+(answer.ReplayPassed?"PASS (model only)":"not demonstrated")+
                 "; approximate terrain/aero/actuators.";
+            if(corridorStatus!=null)lines+="\n"+corridorStatus;
+            if(executionStatus!=null)lines+="\n"+executionStatus;
             if(!logged){logged=true;Debug.Log("[DunaIntegratedPreview] "+lines.Replace('\n',' '));}
             return lines;
         }
