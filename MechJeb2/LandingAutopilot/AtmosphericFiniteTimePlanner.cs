@@ -143,7 +143,7 @@ namespace MuMech.Landing
         }
 
         internal static Candidate Evaluate(D.Environment env,D.Propulsion propulsion,D.Limits limits,D.State initial,
-            Settings settings,Profile profile,int budget,bool record=false,CancellationToken cancellation=default)
+            Settings settings,Profile profile,int budget,bool record=false,CancellationToken cancellation=default,bool convex=false)
         {
             var reference=new List<Point>();var commands=new List<R.Segment>();
             D.State state=initial;
@@ -200,8 +200,12 @@ namespace MuMech.Landing
                 {
                     double remaining=arrival-state.UT;
                     if(remaining<=0)return Finish(D.Outcome.Horizon);
-                    var powered=PoweredCommand(env,propulsion,state,settings,target,terminalVelocity,
-                        Math.Max(settings.ControlTick,remaining),out double request,out double sat);
+                    double request,sat;
+                    var powered=convex&&state.UT>=ignition?
+                        AtmosphericConvexPlanner.Command(env,propulsion,state,settings,target,terminalVelocity,
+                            Math.Max(settings.ControlTick,remaining),out request,out sat,cancellation):
+                        PoweredCommand(env,propulsion,state,settings,target,terminalVelocity,
+                            Math.Max(settings.ControlTick,remaining),out request,out sat);
                     if(!powered.Valid)return Finish(D.Outcome.UnknownCapability);
                     peak=Math.Max(peak,request);saturation=Math.Max(saturation,sat);
                     bool coast=state.UT<ignition;
@@ -235,7 +239,7 @@ namespace MuMech.Landing
         // seed. No early assumption of monotonicity. Budget counts integrations,
         // including reconstruction and independent validation, not wall time.
         internal static Report Search(D.Environment env,D.Propulsion propulsion,D.Limits limits,D.State initial,
-            Settings settings,CancellationToken cancellation=default,Profile? warmStart=null)
+            Settings settings,CancellationToken cancellation=default,Profile? warmStart=null,bool convex=false)
         {
             var clock=Stopwatch.StartNew();Candidate best=null;
             int attempts=0,steps=0,feasible=0,unresolved=0;
@@ -251,7 +255,7 @@ namespace MuMech.Landing
                     duration<settings.MinPoweredSeconds||duration>settings.MaxPoweredSeconds||
                     coast+duration>common.Horizon||!visited.Add((coast,duration)))return;
                 if(attempts>=common.MaxCandidates||steps>=common.MaxSteps){exhausted=true;return;}
-                Candidate c=Evaluate(env,propulsion,limits,initial,settings,new Profile(coast,duration),common.MaxSteps-steps,false,cancellation);
+                Candidate c=Evaluate(env,propulsion,limits,initial,settings,new Profile(coast,duration),common.MaxSteps-steps,false,cancellation,convex);
                 attempts++;steps+=c.Result.Steps;
                 if(c.Result.Feasible)
                 {

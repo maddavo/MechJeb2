@@ -201,7 +201,8 @@ namespace MuMech.Landing
         }
         internal static Report Run(D.Environment env,D.Propulsion propulsion,D.Limits limits,Settings settings,
             D.State initial,Memory memory,int maxTicks,double safeVertical,double safeHorizontal,double safeAngle,double safeRate,
-            CancellationToken cancellation=default,int maxIntegrationSteps=1000000)
+            CancellationToken cancellation=default,int maxIntegrationSteps=1000000,
+            Action<D.State,D.Command,double> record=null)
         {
             D.State state=initial;
             double minimum=env==null?double.NaN:env.PhysicalClearance(state);
@@ -223,6 +224,7 @@ namespace MuMech.Landing
                 if(!decision.Known)return Finish(D.Outcome.UnknownCapability);
                 memory=decision.Next;ticks++;
                 double endUT=state.UT+settings.Tick;
+                record?.Invoke(state,decision.Command,endUT);
                 while(state.UT<endUT)
                 {
                     if(cancellation.IsCancellationRequested)return Finish(D.Outcome.Cancelled);

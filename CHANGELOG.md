@@ -86,3 +86,8 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Add independent radial stopping/delay/fuel screening, distinguish high-altitude warning from imminent hazard, latch explicit best-effort non-targeting response after loss of admitted trajectory.
 - Add four closed-loop uncertainty scenarios, require sampled contact within limits before initial/replacement/contingency publication; share bounded terminal extension with flight control.
+
+## 2.16.0-landing.20261126.duna-integrated-m5.2
+
+- Implement constrained local fixed-time convex acceleration solver with scaled endpoint constraints, thrust ball/pointing cone projection, residual and cancellation gates.
+- Add common A/B/C nonlinear replay and closed-loop uncertainty benchmark; publish per-fixture net8/net48 outcome, timing, miss, fuel and validation results in CI. No live solver switch.

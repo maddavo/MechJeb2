@@ -21,5 +21,8 @@
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericStrategicPlanner.cs" Link="AtmosphericStrategicPlanner.cs"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericRecoverability.cs" Link="AtmosphericRecoverability.cs"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericUncertaintyReplay.cs" Link="AtmosphericUncertaintyReplay.cs"/>
+    <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericConvexPlanner.cs" Link="AtmosphericConvexPlanner.cs"/>
+    <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericSolverBenchmark.cs" Link="AtmosphericSolverBenchmark.cs"/>
+    <Compile Include="../../MechJebLibTest/LandingPredictionTests/AtmosphericSolverBenchmarkTests.cs" Link="AtmosphericSolverBenchmarkTests.cs"/>
   </ItemGroup>
 </Project>

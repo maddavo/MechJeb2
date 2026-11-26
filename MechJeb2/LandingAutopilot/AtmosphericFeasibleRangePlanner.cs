@@ -116,7 +116,8 @@ namespace MuMech.Landing
             return a.End.UT<b.End.UT;
         }
         internal static Candidate Evaluate(D.Environment env,D.Propulsion propulsion,D.Limits limits,D.State initial,
-            Settings settings,Profile p,int budget,CancellationToken cancellation=default)
+            Settings settings,Profile p,int budget,CancellationToken cancellation=default,
+            Action<D.State,D.Command,double> record=null)
         {
             D.State state=initial;
             double minimum=double.NaN,first=double.NaN,terminal=double.NaN;
@@ -163,7 +164,7 @@ namespace MuMech.Landing
                         },settings.Terminal.AttitudeError,settings.Terminal.EstimatedTerrainRadius);
                     var t=T.Run(env,propulsion,limits,terminalSettings,state,mem,ticks,
                         settings.SafeVertical,settings.SafeHorizontal,settings.SafeAngle,settings.SafeRate,
-                        cancellation,budget-steps);
+                        cancellation,budget-steps,record);
                     state=t.End;steps+=t.IntegrationSteps;minimum=Math.Min(minimum,t.MinimumClearance);
                     return Finish(t.Outcome);
                 }
@@ -175,6 +176,7 @@ namespace MuMech.Landing
                 if(correcting)dt=Math.Min(dt,correctionEnd-state.UT);
                 else if(!braking)dt=Math.Min(dt,ignition-state.UT);
                 if(dt<=0||state.UT+dt<=state.UT)return Finish(D.Outcome.InvalidInput);
+                record?.Invoke(state,command,state.UT+dt);
                 var r=D.Advance(env,propulsion,limits,state,command,dt,settings.SafeVertical,
                     settings.SafeHorizontal,settings.SafeAngle,settings.SafeRate);
                 steps++;
