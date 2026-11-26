@@ -3,6 +3,7 @@ using MuMech.Landing;
 using Xunit;
 using D=MuMech.Landing.AtmosphericLandingDynamics;
 using R=MuMech.Landing.AtmosphericLandingReplay;
+using T=MuMech.Landing.AtmosphericTerminalReplay;
 
 namespace MechJebLibTest.LandingPredictionTests
 {
@@ -381,6 +382,173 @@ namespace MechJebLibTest.LandingPredictionTests
             var unknown=R.Run(Vacuum(),new D.Propulsion(false),Limits(),s,h,observations);
             Assert.Equal(D.Outcome.UnknownCapability,unknown.Outcome);
             Assert.False(unknown.HistoryCompleted);
+        }
+
+        private static D.Environment Terrain(Func<D.State,D.SurfaceSample> sample,
+            Func<D.State,D.State,D.Command,double> bound)
+            =>new D.Environment(320000,0,default,0,null,null,0,320000,0,
+                terrain:new D.TerrainModel(sample,bound));
+
+        private static D.SurfaceSample PlaneSample(D.State s,double plane=320005,bool landable=true)
+            =>new D.SurfaceSample(s.R.X-plane,s.R.X-plane-2,s.R.X-320000,X,landable);
+
+        [Fact]
+        public void TerrainContactIsNotControllerAltitudeOrDatum()
+        {
+            // Analytic flat support plane; zero gravity and thrust, normal descent.
+            var env=Terrain(s=>PlaneSample(s),(a,b,c)=>Math.Min(a.R.X,b.R.X)-320005);
+            var start=State(5.5,-.5);
+            Assert.Equal(.5,env.SurfaceAt(start).Clearance,10);
+            Assert.Equal(-1.5,env.SurfaceAt(start).ControllerClearance,10);
+            var result=D.Advance(env,Engines(),Limits(dt:1),start,new D.Command(0,X),1);
+            Assert.Equal(D.Outcome.ContactWithinLimits,result.Status);
+            Assert.InRange(result.End.UT,.999999,1.000001);
+            Assert.InRange(result.End.R.X,320004.999999,320005.000001);
+        }
+
+        [Fact]
+        public void TerrainUnsafeSupportAndContactNormalAreExplicit()
+        {
+            var slope=new D.V(.8,.6,0);
+            var env=Terrain(s=>new D.SurfaceSample(s.R.X-320005,0,5,slope,true),
+                (a,b,c)=>Math.Min(a.R.X,b.R.X)-320005);
+            var result=D.Advance(env,Engines(),Limits(dt:1),State(5.5,-.5),new D.Command(0,X),1);
+            Assert.Equal(D.Outcome.ContactUnsafe,result.Status);
+            var water=Terrain(s=>PlaneSample(s,landable:false),(a,b,c)=>Math.Min(a.R.X,b.R.X)-320005);
+            Assert.Equal(D.Outcome.ContactUnsafe,D.Advance(water,Engines(),Limits(dt:1),
+                State(5.5,-.5),new D.Command(0,X),1).Status);
+        }
+
+        [Fact]
+        public void TerrainUnknownOrContradictoryBoundNeverPublishesLanding()
+        {
+            var env=Terrain(s=>PlaneSample(s),(a,b,c)=>double.NaN);
+            var s=State(5.5,-.5);
+            var result=D.Advance(env,Engines(),Limits(dt:1),s,new D.Command(0,X),1);
+            Assert.Equal(D.Outcome.UnknownTerrain,result.Status);
+            var bad=Terrain(t=>PlaneSample(t),(a,b,c)=>100);
+            Assert.Equal(D.Outcome.UnknownTerrain,D.Advance(bad,Engines(),Limits(dt:1),s,new D.Command(0,X),1).Status);
+            Assert.Equal(D.Window.Unresolved,D.Classify(0,0,100,1,0,
+                new D.Result(D.Outcome.CaptureEnvelope,s,100),result));
+        }
+
+        [Fact]
+        public void SweptInteriorRidgeIsDetectedBeforeClearEndpoint()
+        {
+            // x is radial; y crosses a triangular 2 m ridge. Analytic
+            // linear path; interval max ridge height at clamped y=0.
+            double Ridge(double y)=>2*Math.Max(0,1-Math.Abs(y));
+            var env=Terrain(s=>new D.SurfaceSample(s.R.X-320000-Ridge(s.R.Y),10,10,X,false),
+                (a,b,c)=>{
+                    double lo=Math.Min(a.R.Y,b.R.Y),hi=Math.Max(a.R.Y,b.R.Y);
+                    double y=Math.Max(lo,Math.Min(hi,0));
+                    return Math.Min(a.R.X,b.R.X)-320000-Ridge(y);
+                });
+            var s=new D.State(0,new D.V(320001,-2,0),new D.V(0,4,0),1000,X);
+            var step=D.Advance(env,Engines(),Limits(dt:1),s,new D.Command(0,X),1);
+            Assert.Equal(D.Outcome.ContactUnsafe,step.Status);
+            Assert.InRange(step.End.UT,.374999,.375001);
+        }
+
+        [Fact]
+        public void TerrainReserveExhaustionPrecedesLaterContact()
+        {
+            // Radial plane, off-axis force so radial path stays linear.
+            var env=Terrain(s=>PlaneSample(s),(a,b,c)=>Math.Min(a.R.X,b.R.X)-320005);
+            var y=new D.V(0,1,0);
+            var s=new D.State(0,X*320006,X*(-1),1000,y,1);
+            var step=D.Advance(env,Engines(),Limits(999.75,dt:1),s,new D.Command(1,y),1);
+            Assert.Equal(D.Outcome.ReserveExhausted,step.Status);
+            Assert.InRange(step.End.UT,.249999,.250001);
+        }
+
+        private static T.Settings TerminalSettings(double tick=.02,double touchdown=1,double gee=.3,
+            double raw=10,double limited=10,double cap=1,double angle=0,double smoothing=0,bool torque=false,
+            Func<double,D.V,double> terrain=null)
+            =>new T.Settings(tick,touchdown,gee,smoothing,
+                s=>new T.ControllerAuthority(raw,limited,cap,torque),(s,d)=>angle,terrain);
+
+        [Fact]
+        public void TerminalKHVUsesAttainedDirectionAndPreservesSpeedPIDMemory()
+        {
+            var s=new D.State(0,X*320100,new D.V(-2,3,0),1000,X);
+            var m=new T.Memory(T.Phase.HorizontalKill,T.Mode.Off,.1,.2,.7,.6);
+            var tick=T.Tick(Vacuum(3*320100*320100.0),TerminalSettings(),s,m);
+            Assert.True(tick.Known);
+            Assert.Equal(.5,tick.RequestedThrottle,10);
+            Assert.Equal(-.2/Math.Sqrt(1.04),tick.Command.Direction.Y,10);
+            Assert.Equal(.7,tick.Next.PreviousThrottle,10);
+            var quiet=T.Tick(Vacuum(),TerminalSettings(),State(100,-2),m);
+            Assert.Equal(T.Phase.FinalDescent,quiet.Next.Phase);
+            Assert.Equal(0,quiet.RequestedThrottle,10);
+            Assert.Equal(.7,quiet.Next.PreviousThrottle,10);
+        }
+
+        [Fact]
+        public void TerminalPIDUsesRawAuthorityLimitedEnvelopeAndPreviousRequest()
+        {
+            var env=Vacuum(3*320010*320010.0);
+            var s=State(10,-4,throttle:.1);
+            var m=new T.Memory(T.Phase.FinalDescent,T.Mode.KeepVertical,.1,.2,.7,.5);
+            var settings=TerminalSettings(raw:10,limited:4,cap:.6,smoothing:1);
+            var tick=T.Tick(env,settings,s,m);
+            double set=-.9*Math.Sqrt(20);
+            double error=(set+4)/10;
+            double integral=.2+error*.02;
+            double req=Math.Max(0,Math.Min(1,.7+.05*error+.000001*integral+.05*(error-.1)/.02));
+            Assert.True(tick.Known);
+            Assert.Equal(set,tick.Setpoint,9);
+            Assert.Equal(req,tick.RequestedThrottle,9);
+            Assert.Equal(req,tick.Next.PreviousThrottle,9);
+            Assert.InRange(tick.Command.Throttle,.48,.52);
+            Assert.Equal(integral,tick.Next.Integral,10);
+        }
+
+        [Fact]
+        public void TerminalAttitudeGateAndModeResetAreSourceDerived()
+        {
+            var env=Vacuum(3*320010*320010.0);
+            var s=State(10,-3);
+            var m=new T.Memory(T.Phase.FinalDescent,T.Mode.Direct,100,200,.6,.6);
+            var tick=T.Tick(env,TerminalSettings(angle:100,torque:true),s,m);
+            Assert.True(tick.Known);
+            Assert.Equal(.1,tick.RequestedThrottle,10);
+            Assert.Equal(T.Mode.KeepVertical,tick.Next.Mode);
+            Assert.InRange(Math.Abs(tick.Next.Integral),0,.1);
+            var noTorque=T.Tick(env,TerminalSettings(angle:100),s,m);
+            Assert.Equal(0,noTorque.RequestedThrottle,10);
+        }
+
+        [Fact]
+        public void TerminalUpperBranchRequiresActualProjectedSurface()
+        {
+            var s=State(1000,-20);
+            var m=new T.Memory(T.Phase.FinalDescent,T.Mode.KeepVertical,0,0,.5,.5);
+            var env=Vacuum(3*321000*321000.0);
+            Assert.False(T.Tick(env,TerminalSettings(),s,m).Known);
+            var tick=T.Tick(env,TerminalSettings(terrain:(ut,pos)=>320000),s,m);
+            Assert.True(tick.Known);
+            Assert.Equal(T.Mode.KeepSurface,tick.Next.Mode);
+            Assert.True(tick.Setpoint>0);
+            var ascending=T.Tick(env,TerminalSettings(),State(1000,20),m);
+            Assert.Equal(T.Mode.Direct,ascending.Next.Mode);
+            Assert.Equal(0,ascending.RequestedThrottle,10);
+        }
+
+        [Fact]
+        public void TerminalSubstepsDoNotRepeatPIDAndContactIsExplicit()
+        {
+            // Zero cap/zero gravity makes the physical motion analytic.
+            var s=State(.5,-.5);
+            var m=new T.Memory(T.Phase.FinalDescent,T.Mode.KeepVertical,0,0,0,0);
+            var settings=TerminalSettings(tick:.2,cap:0);
+            var coarse=T.Run(Vacuum(),Engines(),Limits(dt:.2),settings,s,m,10,1,1,.1,.1);
+            var fine=T.Run(Vacuum(),Engines(),Limits(dt:.05),settings,s,m,10,1,1,.1,.1);
+            Assert.Equal(D.Outcome.ContactWithinLimits,coarse.Outcome);
+            Assert.Equal(D.Outcome.ContactWithinLimits,fine.Outcome);
+            Assert.InRange(coarse.End.UT,.999999,1.000001);
+            Assert.InRange(fine.End.UT,.999999,1.000001);
+            Assert.InRange(Math.Abs(coarse.Memory.Integral-fine.Memory.Integral),0,.011);
         }
     }
 }

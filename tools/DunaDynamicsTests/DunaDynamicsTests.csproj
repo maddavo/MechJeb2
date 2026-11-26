@@ -8,6 +8,7 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericLandingDynamics.cs" Link="AtmosphericLandingDynamics.cs"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericLandingReplay.cs" Link="AtmosphericLandingReplay.cs"/>
+    <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericTerminalReplay.cs" Link="AtmosphericTerminalReplay.cs"/>
     <Compile Include="../../MechJebLibTest/LandingPredictionTests/AtmosphericLandingDynamicsTests.cs" Link="AtmosphericLandingDynamicsTests.cs"/>
   </ItemGroup>
 </Project>

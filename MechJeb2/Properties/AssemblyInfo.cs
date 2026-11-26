@@ -38,6 +38,6 @@ using System.Runtime.InteropServices;
 //   % git merge dev
 [assembly: AssemblyVersion("2.16.0.0")] // This should be bumped for major versions/breaking changes when the 2nd number changes
 [assembly: AssemblyFileVersion("2.16.0.0")] // this one is bumped every single time for both minor/patch
-[assembly: AssemblyInformationalVersion("2.16.0-landing.20261126.duna-dynamics-m1.2")] // Displayed in the window title if not empty (used to display dev #)
+[assembly: AssemblyInformationalVersion("2.16.0-landing.20261126.duna-dynamics-m1.3")] // Displayed in the window title if not empty (used to display dev #)
 
 [assembly: KSPAssembly("MechJeb2", 2, 16, 0)] // this one is bumped every single time for both minor/patch
