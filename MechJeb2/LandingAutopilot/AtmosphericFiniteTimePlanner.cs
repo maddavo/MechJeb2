@@ -254,7 +254,8 @@ namespace MuMech.Landing
         // seed. No early assumption of monotonicity. Budget counts integrations,
         // including reconstruction and independent validation, not wall time.
         internal static Report Search(D.Environment env,D.Propulsion propulsion,D.Limits limits,D.State initial,
-            Settings settings,CancellationToken cancellation=default,Profile? warmStart=null,bool convex=false)
+            Settings settings,CancellationToken cancellation=default,Profile? warmStart=null,bool convex=false,
+            Action<Candidate> diagnostic=null)
         {
             var clock=Stopwatch.StartNew();Candidate best=null;
             int attempts=0,steps=0,feasible=0,unresolved=0;
@@ -279,6 +280,7 @@ namespace MuMech.Landing
                 if(attempts>=common.MaxCandidates||steps>=common.MaxSteps){exhausted=true;return;}
                 Candidate c=Evaluate(env,propulsion,limits,initial,settings,new Profile(coast,duration),common.MaxSteps-steps,false,cancellation,convex);
                 attempts++;steps+=c.Result.Steps;
+                diagnostic?.Invoke(c);
                 if(c.Result.Feasible)
                 {
                     feasible++;ranked.Add(c);

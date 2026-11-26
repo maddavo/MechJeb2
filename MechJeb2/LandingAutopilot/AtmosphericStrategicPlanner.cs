@@ -327,7 +327,17 @@ namespace MuMech.Landing
                         if(approachSettings==null){unresolved++;continue;}
                         // Enforce one shared numerical-work ceiling.
                         if(settings.MaxSteps-steps<approachSettings.Common.MaxSteps){exhausted=true;break;}
-                        var report=F.Search(env,propulsion,limits,prefix.End,approachSettings,token);
+                        // Bounded diagnostic sample: detailed failures for the
+                        // first two seed epochs, aggregate later.
+                        Action<F.Candidate> describe=null;
+                        if(diagnostic!=null&&(prefixes<=12||prefixes%6==4))
+                            describe=c=>diagnostic("  candidate coast="+c.Profile.Coast+" duration="+c.Profile.Duration+
+                                " outcome="+c.Result.Outcome+" endH="+env.PhysicalClearance(c.Result.End)+
+                                " endV="+env.Surface(c.Result.End.R,c.Result.End.Velocity).Length+
+                                " endMass="+c.Result.End.Mass+" elapsed="+(c.Result.End.UT-prefix.End.UT)+
+                                " endMiss="+P.Miss(env,prefix.End,c.Result.End,approachSettings.Common.TargetAtInitialUT)+
+                                " terminal="+c.Result.TerminalStartUT+" saturation="+c.MaxSaturation);
+                        var report=F.Search(env,propulsion,limits,prefix.End,approachSettings,token,diagnostic:describe);
                         approaches+=report.Attempts;steps+=report.Steps;
                         diagnostic?.Invoke("approach "+report.Status+" attempts="+report.Attempts+
                             " nominal="+report.Feasible+" unresolved="+report.Unresolved+

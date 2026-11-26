@@ -570,7 +570,15 @@ namespace MechJebLibTest.LandingPredictionTests
             // for a representative small rocket-powered Duna lander.
             var env=RepresentativeDuna(3);
             var initial=Circular(env,60000);
-            var engine=Engine(4);
+            // The production adapter samples the whole pressure domain;
+            // a vacuum-only one-knot engine is not a valid atmospheric
+            // orbital fixture. Use sampled vacuum-to-Duna-surface Isp
+            // with the same nominal 90% authority derate.
+            var engine=new D.Propulsion(true,new D.Engine(4,1,9.80665,default,
+                new D.Curve(new D.Knot(0,400*.9),new D.Knot(20000.0/101325,376*.9))));
+            Assert.True(engine.At(0).Known);
+            Assert.True(engine.At(10000).Known);
+            Assert.True(engine.At(20000).Known);
             var lim=new D.Limits(420,Math.PI/30,.1,.1,.5);
             var target=new D.V(Math.Cos(2.3),Math.Sin(2.3),0);
             var mode=MuMech.Landing.DunaLandingAdmission.Choose(env,initial,0,0,out string reason);
