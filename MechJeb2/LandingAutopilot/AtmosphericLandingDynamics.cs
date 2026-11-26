@@ -3,7 +3,7 @@ using System.Threading;
 
 namespace MuMech.Landing
 {
-    // 2.16.0-landing.20261126.duna-dynamics-m1.1
+    // 2.16.0-landing.20261126.duna-dynamics-m1.2
     // Independent SI, body-centred inertial, non-actuating reference model.
     // Fixed spherical terrain and collinear fixed engines only. No KSP APIs.
     internal static class AtmosphericLandingDynamics
@@ -129,12 +129,45 @@ namespace MuMech.Landing
             }
         }
 
+        // Explicit inertial samples. The caller owns the fidelity and domain
+        // of a supplied atmosphere/aerodynamics adapter. No silent fallback.
+        internal readonly struct AirSample
+        {
+            internal readonly bool Known;
+            internal readonly double Pressure,Density;
+            internal AirSample(double pressure,double density)
+            {Known=true;Pressure=pressure;Density=density;}
+            internal bool Valid=>Known&&Finite(Pressure)&&Pressure>=0&&Finite(Density)&&Density>=0;
+        }
+        internal readonly struct AeroSample
+        {
+            internal readonly bool Known;
+            internal readonly V Drag,Lift; // forces in N, inertial axes
+            internal AeroSample(V drag,V lift){Known=true;Drag=drag;Lift=lift;}
+            internal bool Valid=>Known&&Drag.Valid&&Lift.Valid;
+        }
+        internal readonly struct ForceSample
+        {
+            internal readonly bool Known;
+            internal readonly double Pressure,Density,MassFlow;
+            internal readonly V AirVelocity,Gravity,Thrust,Drag,Lift,Acceleration;
+            internal ForceSample(double p,double rho,double flow,V air,V gravity,V thrust,V drag,V lift,double mass)
+            {
+                Pressure=p;Density=rho;MassFlow=flow;AirVelocity=air;Gravity=gravity;
+                Thrust=thrust;Drag=drag;Lift=lift;
+                Acceleration=gravity+(thrust+drag+lift)*(1/mass);
+                Known=Acceleration.Valid&&Finite(flow)&&flow>=0;
+            }
+        }
+
         internal sealed class Environment
         {
             internal readonly double Radius,Mu,AtmosphereTop,TerrainRadius,DragArea,BottomOffset;
             internal readonly V Omega;
             internal readonly Curve Pressure,Density;
             internal readonly Func<V,V,V,double,double,V> PassiveLift;
+            internal readonly Func<double,V,AirSample> Atmosphere;
+            internal readonly Func<double,V,V,V,double,double,AeroSample> Aerodynamics;
             // DragArea = Cd*A m², constant synthetic/passive adapter. Lift is
             // NOT assumed zero for a real vessel; unsupported unless supplied
             // via an explicitly supplied deterministic force model (r, air-relative
@@ -142,19 +175,42 @@ namespace MuMech.Landing
             // means explicit zero lift for the model, not actual-vessel evidence.
             internal Environment(double radius,double mu,V omega,double atmosphereTop,
                 Curve pressure,Curve density,double dragArea,double terrainRadius,double bottomOffset,
-                Func<V,V,V,double,double,V> passiveLift=null)
+                Func<V,V,V,double,double,V> passiveLift=null,
+                Func<double,V,AirSample> atmosphere=null,
+                Func<double,V,V,V,double,double,AeroSample> aerodynamics=null)
             {Radius=radius;Mu=mu;Omega=omega;AtmosphereTop=atmosphereTop;Pressure=pressure;Density=density;
-                DragArea=dragArea;TerrainRadius=terrainRadius;BottomOffset=bottomOffset;PassiveLift=passiveLift;}
+                DragArea=dragArea;TerrainRadius=terrainRadius;BottomOffset=bottomOffset;PassiveLift=passiveLift;
+                Atmosphere=atmosphere;Aerodynamics=aerodynamics;}
             internal bool Valid => Finite(Radius)&&Radius>0&&Finite(Mu)&&Mu>=0&&Omega.Valid&&
                 Finite(AtmosphereTop)&&AtmosphereTop>=0&&Finite(TerrainRadius)&&TerrainRadius>0&&
                 Finite(BottomOffset)&&BottomOffset>=0&&Finite(DragArea)&&DragArea>=0&&
-                (AtmosphereTop==0||Pressure!=null&&Density!=null);
-            internal bool Air(V r,out double p,out double rho)
+                (AtmosphereTop==0||Atmosphere!=null||Pressure!=null&&Density!=null)&&
+                (Aerodynamics==null||PassiveLift==null&&DragArea==0);
+            internal bool Air(double ut,V r,out double p,out double rho)
             {
+                p=rho=0;
+                if(!Finite(ut)||!r.Valid)return false;
                 double h=r.Length-Radius;
+                if(!Finite(h))return false;
+                if(AtmosphereTop==0||h>=AtmosphereTop)return true;
+                if(Atmosphere!=null)
+                {
+                    AirSample sample;
+                    try {sample=Atmosphere(ut,r);}catch(Exception){return false;}
+                    if(!sample.Valid)return false;
+                    p=sample.Pressure;rho=sample.Density;
+                    return true;
+                }
+                return AirAtAltitude(h,out p,out rho);
+            }
+            // A verified scalar altitude must not be rebuilt as a vector and
+            // rounded below a curve endpoint. Domain remains strict.
+            internal bool AirAtAltitude(double h,out double p,out double rho)
+            {
                 p=rho=0;
                 if(!Finite(h))return false;
                 if(AtmosphereTop==0||h>=AtmosphereTop)return true;
+                if(Atmosphere!=null||Pressure==null||Density==null)return false;
                 p=Pressure.At(h);rho=Density.At(h);
                 return Finite(p)&&p>=0&&Finite(rho)&&rho>=0;
             }
@@ -211,25 +267,45 @@ namespace MuMech.Landing
         }
         private static double Lag(double initial,double command,double tau,double dt)=>
             tau==0?command:command+(initial-command)*Math.Exp(-dt/tau);
-        private static bool Force(Environment env,Propulsion propulsion,V r,V v,V f,double throttle,
-            double mass,out V acceleration,out double flow)
+        // Shared predicted force decomposition for propagation and independent
+        // residual reporting. All vectors are inertial; gravity is m/s²,
+        // thrust/drag/lift are N, flow kg/s, pressure Pa, density kg/m³.
+        internal static ForceSample Forces(Environment env,Propulsion propulsion,State s)
         {
-            acceleration=default;flow=0;
-            if(!r.Valid||r.Length<=0||mass<=0||!env.Air(r,out double p,out double density))return false;
+            if(env==null||propulsion==null||!env.Valid||!s.Valid)return default;
+            return Evaluate(env,propulsion,s.UT,s.R,s.Velocity,s.Forward,s.Throttle,s.Mass);
+        }
+        private static ForceSample Evaluate(Environment env,Propulsion propulsion,double ut,V r,V v,V f,
+            double throttle,double mass)
+        {
+            if(!r.Valid||r.Length<=0||!v.Valid||!f.Valid||!Finite(mass)||mass<=0||
+                !Finite(throttle)||throttle<0||throttle>1||!env.Air(ut,r,out double p,out double density))return default;
             Authority a=propulsion.At(p);
-            if(!a.Known)return false;
-            V air=env.Surface(r,v);
-            V drag=air*(-.5*density*env.DragArea*air.Length);
-            V lift=default;
-            if(density>0&&env.PassiveLift!=null)
+            if(!a.Known)return default;
+            V air=env.Surface(r,v),drag=default,lift=default;
+            if(density>0)
             {
-                try { lift=env.PassiveLift(r,air,f,p,density); }
-                catch(Exception) { return false; }
-                if(!lift.Valid)return false;
+                if(env.Aerodynamics!=null)
+                {
+                    AeroSample sample;
+                    try {sample=env.Aerodynamics(ut,r,air,f,p,density);}catch(Exception){return default;}
+                    if(!sample.Valid)return default;
+                    drag=sample.Drag;lift=sample.Lift;
+                    // Passive drag cannot accelerate along the airflow.
+                    if(V.Dot(drag,air)>1e-9*Math.Max(1,drag.Length*air.Length))return default;
+                }
+                else
+                {
+                    drag=air*(-.5*density*env.DragArea*air.Length);
+                    if(env.PassiveLift!=null)
+                    {
+                        try {lift=env.PassiveLift(r,air,f,p,density);}catch(Exception){return default;}
+                        if(!lift.Valid)return default;
+                    }
+                }
             }
-            acceleration=r*(-env.Mu/(r.Length*r.Length*r.Length))+(f*(a.Force*throttle)+drag+lift)*(1/mass);
-            flow=a.Flow*throttle;
-            return acceleration.Valid&&Finite(flow)&&flow>=0;
+            V gravity=r*(-env.Mu/(r.Length*r.Length*r.Length));
+            return new ForceSample(p,density,a.Flow*throttle,air,gravity,f*(a.Force*throttle),drag,lift,mass);
         }
         // Midpoint integration, time-varying pressure, mass and direction.
         // Explicitly subdivide events at caller; never clamp away spent fuel.
@@ -241,12 +317,14 @@ namespace MuMech.Landing
             double endThrottle=Lag(s.Throttle,c.Throttle,tau,dt);
             V midForward=Turn(s.Forward,c.Direction,lim.TurnRate*dt*.5);
             V endForward=Turn(s.Forward,c.Direction,lim.TurnRate*dt);
-            if(!Force(env,propulsion,s.R,s.Velocity,s.Forward,Lag(s.Throttle,c.Throttle,tau,0),s.Mass,out V a0,out double q0))return false;
-            V midR=s.R+s.Velocity*(dt*.5),midV=s.Velocity+a0*(dt*.5);
-            double midMass=s.Mass-q0*dt*.5;
-            if(!Force(env,propulsion,midR,midV,midForward,midThrottle,midMass,out V am,out double qm))return false;
+            ForceSample a0=Evaluate(env,propulsion,s.UT,s.R,s.Velocity,s.Forward,Lag(s.Throttle,c.Throttle,tau,0),s.Mass);
+            if(!a0.Known)return false;
+            V midR=s.R+s.Velocity*(dt*.5),midV=s.Velocity+a0.Acceleration*(dt*.5);
+            double midMass=s.Mass-a0.MassFlow*dt*.5;
+            ForceSample am=Evaluate(env,propulsion,s.UT+dt*.5,midR,midV,midForward,midThrottle,midMass);
+            if(!am.Known)return false;
             double turn=Math.Acos(Clamp(V.Dot(s.Forward,endForward),-1,1));
-            next=new State(s.UT+dt,s.R+midV*dt,s.Velocity+am*dt,s.Mass-qm*dt,
+            next=new State(s.UT+dt,s.R+midV*dt,s.Velocity+am.Acceleration*dt,s.Mass-am.MassFlow*dt,
                 endForward,endThrottle,turn/dt);
             return next.Valid;
         }
@@ -318,7 +396,7 @@ namespace MuMech.Landing
                 V w=env.Surface(state.R,state.Velocity);
                 if(state.UT>=ignition&&w.Length<=captureSpeed&&minimum>=captureClearance&&env.Clearance(state.R)>0)
                 {
-                    if(!env.Air(state.R,out double p,out _))
+                    if(!env.Air(state.UT,state.R,out double p,out _))
                         return new Result(Outcome.UnknownCapability,state,minimum,first);
                     Authority authority=propulsion.At(p);
                     if(!authority.Known)return new Result(Outcome.UnknownCapability,state,minimum,first);
