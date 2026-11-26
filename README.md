@@ -240,3 +240,5 @@ Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m
 Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m5.3`. Shared integrator and contact-event corrections; no change to ordinary landing dispatch.
 
 Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m5.4`. Engineering-scale event and adaptive integration resolution; validation requirements unchanged.
+
+Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m5.5`. Bounded validation-aware selection and terminal replay completion.

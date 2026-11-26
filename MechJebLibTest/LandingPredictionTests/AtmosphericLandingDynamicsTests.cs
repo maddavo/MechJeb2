@@ -454,6 +454,28 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
+        public void ExplicitTerminalReplayContinuationRequiresPhysicalContact()
+        {
+            var env=Vacuum();var engine=Engines();var lim=Limits(dt:.1);
+            var history=new[]{new R.Segment(0,.2,new D.Command(0,X))};
+            var obs=Array.Empty<R.Observation>();
+            var start=State(.154,-.5);
+            var strict=R.Run(env,engine,lim,start,history,obs);
+            Assert.Equal(D.Outcome.Advanced,strict.Outcome);
+            Assert.InRange(env.PhysicalClearance(strict.End),.053,.055);
+            var extended=R.Run(env,engine,lim,start,history,obs,contactContinuationSeconds:.5);
+            Assert.Equal(D.Outcome.ContactWithinLimits,extended.Outcome);
+            Assert.InRange(extended.End.UT,.307,.308+D.ContactResolutionSeconds);
+            Assert.InRange(env.PhysicalClearance(extended.End),-D.ContactResolutionMetres,0);
+            Assert.Equal(D.Outcome.Advanced,R.Run(env,engine,lim,State(.05,.1),history,obs,
+                contactContinuationSeconds:.5).Outcome);
+            Assert.Equal(D.Outcome.Advanced,R.Run(env,engine,lim,State(.5,-.5),history,obs,
+                contactContinuationSeconds:.5).Outcome);
+            Assert.Equal(D.Outcome.Horizon,R.Run(env,engine,lim,start,history,obs,maxSteps:2,
+                contactContinuationSeconds:.5).Outcome);
+        }
+
+        [Fact]
         public void ReplayRejectsUnspecifiedIntervalsAndOutOfOrderObservations()
         {
             var s=State(1000,10);

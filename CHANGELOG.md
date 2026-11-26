@@ -99,3 +99,8 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 ## 2.16.0-landing.20261126.duna-integrated-m5.4
 
 - Adopt engineering-scale contact brackets (100mm / 10ms), refine only where safety classification or reserve order requires it, and trial tenfold coarser adaptive error budgets. Preserve physical acceptance and strict atmosphere-domain checks.
+
+## 2.16.0-landing.20261127.duna-integrated-m5.5
+
+- Try ranked alternatives under shared validation budgets before admitting a plan, including replan, fallback and whole orbital trajectory.
+- Allow explicitly bounded terminal replay continuation inside the engineering contact band; preserve all physical and trajectory consistency checks.

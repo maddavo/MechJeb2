@@ -122,13 +122,11 @@ namespace MuMech.Landing
                 attempts=report.Attempts;steps=report.Steps;
                 if(token.IsCancellationRequested)return Finish(null,"cancelled");
                 if(report.Best==null)return Finish(null,"search "+report.Status);
-                if(!F.Validate(r.Environment,r.Propulsion,r.Limits,anchor,settings,report.Best,
-                    20000,10,Math.Max(.5,anchor.Mass*.00025),out var reference,out _,token))
-                    return Finish(null,"independent replay not demonstrated");
-                var tracker=new AtmosphericPlanTracker(r.Environment,r.Propulsion,r.Limits,settings,reference);
-                var scenarios=AtmosphericUncertaintyReplay.Validate(r.Environment,r.Propulsion,r.Limits,tracker,60000,token);
-                steps+=scenarios.Steps;
-                if(!scenarios.Passed)return Finish(null,"scenario: "+scenarios.Reason);
+                var selection=F.SelectValidated(r.Environment,r.Propulsion,r.Limits,anchor,settings,report,
+                    20000,60000,10,Math.Max(.5,anchor.Mass*.00025),token);
+                steps+=selection.ReplaySteps+selection.ScenarioSteps;
+                if(selection.Candidate==null)return Finish(null,selection.Reason);
+                var tracker=new AtmosphericPlanTracker(r.Environment,r.Propulsion,r.Limits,settings,selection.Candidate);
                 return Finish(tracker,tracker.TargetMiss<=settings.Common.TargetTolerance?"target candidate":"degraded candidate");
             }
             catch(Exception ex){return Finish(null,ex.GetType().Name+": "+ex.Message);}

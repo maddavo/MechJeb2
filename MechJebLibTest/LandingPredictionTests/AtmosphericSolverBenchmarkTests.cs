@@ -254,6 +254,41 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
+        public void RankedValidationFindsRobustAlternativesToRejectedNominalOptimum()
+        {
+            var env=Env(301363211975.0978);var engine=Engine(350);
+            var limits=new D.Limits(184000,Math.PI/30,.1,.1,.5);
+            var start=State(6080,15,0,220000);
+            var set=Settings(env,engine,min:90,max:130,coast:10,horizon:400);
+            foreach(bool convex in new[]{false,true})
+            {
+                var search=F.Search(env,engine,limits,start,set,convex:convex);
+                Assert.NotNull(search.Best);
+                Assert.True(search.Ranked.Count>1);
+                Assert.True(F.Validate(env,engine,limits,start,set,search.Best,30000,20,110,
+                    out var first,out _,convex:convex));
+                var firstScreen=Uncertainty.Validate(env,engine,limits,
+                    new MuMech.Landing.AtmosphericPlanTracker(env,engine,limits,set,first),120000);
+                // This exact M5.4 fixture has robust alternatives despite
+                // its rejected nominal optimum. If the optimum itself
+                // becomes robust, selecting it is also correct.
+                var selected=F.SelectValidated(env,engine,limits,start,set,search,30000,120000,
+                    20,110,convex:convex);
+                Assert.NotNull(selected.Candidate);
+                Assert.True(selected.Scenarios.Passed);
+                Assert.True(selected.FineReplayPassed);
+                Assert.InRange(selected.ReplaySteps,1,30000);
+                Assert.InRange(selected.ScenarioSteps,1,120000);
+                Assert.InRange(selected.Attempts,firstScreen.Passed?1:2,12);
+                Assert.True(selected.Candidate.Result.End.Mass>=limits.ReserveMass);
+                var cancelled=F.SelectValidated(env,engine,limits,start,set,search,30000,120000,
+                    20,110,new CancellationToken(true),convex);
+                Assert.Null(cancelled.Candidate);
+                Assert.Equal(0,cancelled.Attempts);
+            }
+        }
+
+        [Fact]
         public void CommonBenchmarkReportsActualOutcomesWithoutSelectingProductionSolver()
         {
             var rows=new List<string>{"fixture\tsolver\tstatus\tnominal\tfine\tscenarios\tvalidated\tattempts\tsearch_steps\tvalidation_steps\tsearch_ms\ttotal_ms\tmiss_m\tfuel_kg\tfirst_powered_ut\tmax_sampled_miss_m\tmin_sampled_contact_mass_kg\treason"};
@@ -285,7 +320,8 @@ namespace MechJebLibTest.LandingPredictionTests
                         Assert.True(t.SampledMinimumMass>=f.limits.ReserveMass);
                     }
                     if(f.name=="limited_fuel")Assert.False(t.Validated);
-                    if(f.name=="near_contact"&&t.Solver==Benchmark.Method.FiniteTimeShooting)Assert.True(t.Validated,t.Reason);
+                    if((f.name=="near_contact"||f.name=="vertical_6km"||f.name=="thin_atmosphere_crossrange")&&
+                        t.Solver==Benchmark.Method.FiniteTimeShooting)Assert.True(t.Validated,t.Reason);
                     var a=t.Nominal;
                     rows.Add(string.Join("\t",f.name,t.Solver,t.Status,a.HasValue,t.FineReplayPassed,t.ScenarioPassed,t.Validated,
                         t.Attempts,t.SearchSteps,t.ValidationSteps,N(t.SearchMs),N(t.TotalMs),

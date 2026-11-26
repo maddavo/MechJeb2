@@ -71,8 +71,23 @@ namespace MuMech.Landing
             internal readonly Candidate Best;
             internal readonly int Attempts,Steps,Feasible,Unresolved;
             internal readonly double ElapsedMilliseconds;
-            internal Report(P.SearchStatus status,Candidate best,int attempts,int steps,int feasible,int unresolved,double elapsed)
-            {Status=status;Best=best;Attempts=attempts;Steps=steps;Feasible=feasible;Unresolved=unresolved;ElapsedMilliseconds=elapsed;}
+            internal readonly IReadOnlyList<Candidate> Ranked;
+            internal Report(P.SearchStatus status,Candidate best,int attempts,int steps,int feasible,int unresolved,double elapsed,
+                List<Candidate> ranked)
+            {Status=status;Best=best;Attempts=attempts;Steps=steps;Feasible=feasible;Unresolved=unresolved;ElapsedMilliseconds=elapsed;
+                Ranked=Array.AsReadOnly(ranked.ToArray());}
+        }
+        internal sealed class ValidatedSelection
+        {
+            internal readonly Candidate Candidate;
+            internal readonly AtmosphericUncertaintyReplay.Report Scenarios;
+            internal readonly int Attempts,ReplaySteps,ScenarioSteps;
+            internal readonly bool FineReplayPassed;
+            internal readonly string Reason;
+            internal ValidatedSelection(Candidate candidate,AtmosphericUncertaintyReplay.Report scenarios,
+                int attempts,int replaySteps,int scenarioSteps,bool fine,string reason)
+            {Candidate=candidate;Scenarios=scenarios;Attempts=attempts;ReplaySteps=replaySteps;ScenarioSteps=scenarioSteps;
+                FineReplayPassed=fine;Reason=reason;}
         }
         // Minimum integral of squared acceleration for double-integrator
         // endpoint position AND velocity, evaluated at start of remaining arc.
@@ -244,7 +259,14 @@ namespace MuMech.Landing
             var clock=Stopwatch.StartNew();Candidate best=null;
             int attempts=0,steps=0,feasible=0,unresolved=0;
             var visited=new HashSet<(double,double)>();
-            Report Finish(P.SearchStatus status)=>new Report(status,best,attempts,steps,feasible,unresolved,clock.Elapsed.TotalMilliseconds);
+            var ranked=new List<Candidate>();
+            Report Finish(P.SearchStatus status)
+            {
+                if(settings!=null&&settings.Valid)
+                    ranked.Sort((a,b)=>P.Better(a.Result,b.Result,settings.Common.TargetTolerance)?-1:
+                        P.Better(b.Result,a.Result,settings.Common.TargetTolerance)?1:0);
+                return new Report(status,best,attempts,steps,feasible,unresolved,clock.Elapsed.TotalMilliseconds,ranked);
+            }
             if(settings==null||!settings.Valid||env==null||!env.Valid||limits==null||!limits.Valid||
                 propulsion==null||!initial.Valid||initial.Mass<limits.ReserveMass)return Finish(P.SearchStatus.InvalidInput);
             var common=settings.Common;
@@ -259,7 +281,7 @@ namespace MuMech.Landing
                 attempts++;steps+=c.Result.Steps;
                 if(c.Result.Feasible)
                 {
-                    feasible++;
+                    feasible++;ranked.Add(c);
                     if(best==null||P.Better(c.Result,best.Result,common.TargetTolerance))best=c;
                 }
                 else if(c.Result.Outcome==D.Outcome.UnknownCapability||c.Result.Outcome==D.Outcome.UnknownTerrain||
@@ -293,31 +315,86 @@ namespace MuMech.Landing
             return Finish(exhausted?P.SearchStatus.BudgetExhausted:best==null?P.SearchStatus.NoDemonstratedLanding:
                 best.Result.Miss<=common.TargetTolerance?P.SearchStatus.SampledTargetFeasible:P.SearchStatus.SampledFeasibleMiss);
         }
-        // Reconstruct candidate's full control history, then independently
-        // propagate exactly those commands with a finer numerical step. A
-        // successful coarse candidate is not enough for publication.
+        // Validate the recorded history at half the planning step. The
+        // final known terminal command may be held for <=.5 s only when
+        // the complete replay ends inside the 100 mm contact-resolution
+        // band in a safe descending state. A real contact is still required.
+        internal static bool ValidateRecorded(D.Environment env,D.Propulsion propulsion,D.Limits limits,D.State initial,
+            Settings settings,Candidate reference,int maxSteps,double positionTolerance,double massTolerance,
+            out R.Report replay,out string reason,CancellationToken token=default,double timeTolerance=double.NaN)
+        {
+            replay=null;reason="invalid recorded candidate";
+            if(reference==null||!reference.Result.Feasible||reference.Commands.Count==0||maxSteps<1)return false;
+            var common=settings.Common;
+            var fine=new D.Limits(limits.ReserveMass,limits.TurnRate,limits.EngineRise,limits.EngineFall,limits.Step*.5);
+            var history=new R.Segment[reference.Commands.Count];
+            for(int i=0;i<history.Length;i++)history[i]=reference.Commands[i];
+            double continuation=D.Finite(reference.Result.TerminalStartUT)&&
+                history[history.Length-1].StartUT>=reference.Result.TerminalStartUT?
+                Math.Min(.5,settings.ControlTick+common.Terminal.Tick):0;
+            replay=R.Run(env,propulsion,fine,initial,history,Array.Empty<R.Observation>(),
+                common.SafeVertical,common.SafeHorizontal,common.SafeAngle,common.SafeRate,maxSteps,token,continuation);
+            if(replay.Outcome!=D.Outcome.ContactWithinLimits){reason="replay "+replay.Outcome;return false;}
+            double p=(reference.Result.End.R-replay.End.R).Length;
+            double m=Math.Abs(reference.Result.End.Mass-replay.End.Mass);
+            double t=Math.Abs(reference.Result.End.UT-replay.End.UT);
+            double miss=P.Miss(env,initial,replay.End,common.TargetAtInitialUT);
+            if(p>positionTolerance){reason="replay position discrepancy";return false;}
+            if(m>massTolerance){reason="replay mass discrepancy";return false;}
+            if(t>(D.Finite(timeTolerance)?timeTolerance:settings.ControlTick+common.Terminal.Tick))
+                {reason="replay contact epoch discrepancy";return false;}
+            if(reference.Result.Miss<=common.TargetTolerance&&miss>common.TargetTolerance)
+                {reason="replay target discrepancy";return false;}
+            reason="fine replay passed";return true;
+        }
+
         internal static bool Validate(D.Environment env,D.Propulsion propulsion,D.Limits limits,D.State initial,
             Settings settings,Candidate candidate,int maxSteps,double positionTolerance,double massTolerance,
-            out Candidate reference,out R.Report replay,CancellationToken cancellation=default)
+            out Candidate reference,out R.Report replay,CancellationToken cancellation=default,bool convex=false)
         {
             reference=null;replay=null;
             if(candidate==null||!candidate.Result.Feasible||limits==null||!limits.Valid||
                 !D.Finite(positionTolerance)||positionTolerance<0||!D.Finite(massTolerance)||massTolerance<0||
                 maxSteps<2||maxSteps>1000000)return false;
-            reference=Evaluate(env,propulsion,limits,initial,settings,candidate.Profile,maxSteps/2,true,cancellation);
-            if(!reference.Result.Feasible||reference.Commands.Count==0||reference.Result.Steps>=maxSteps)return false;
-            var fine=new D.Limits(limits.ReserveMass,limits.TurnRate,limits.EngineRise,limits.EngineFall,limits.Step*.5);
-            var history=new R.Segment[reference.Commands.Count];
-            for(int i=0;i<history.Length;i++)history[i]=reference.Commands[i];
-            var common=settings.Common;
-            replay=R.Run(env,propulsion,fine,initial,history,Array.Empty<R.Observation>(),
-                common.SafeVertical,common.SafeHorizontal,common.SafeAngle,common.SafeRate,
-                maxSteps-reference.Result.Steps,cancellation);
-            return replay.Outcome==D.Outcome.ContactWithinLimits&&
-                (reference.Result.Miss>common.TargetTolerance||P.Miss(env,initial,replay.End,common.TargetAtInitialUT)<=common.TargetTolerance)&&
-                (reference.Result.End.R-replay.End.R).Length<=positionTolerance&&
-                Math.Abs(reference.Result.End.Mass-replay.End.Mass)<=massTolerance&&
-                Math.Abs(reference.Result.End.UT-replay.End.UT)<=settings.ControlTick+common.Terminal.Tick;
+            reference=Evaluate(env,propulsion,limits,initial,settings,candidate.Profile,maxSteps/2,true,cancellation,convex);
+            return reference.Result.Steps<maxSteps&&ValidateRecorded(env,propulsion,limits,initial,settings,reference,
+                maxSteps-reference.Result.Steps,positionTolerance,massTolerance,out replay,out _,cancellation);
+        }
+
+        // Best nominal candidate is only a proposal. Test the ranked
+        // alternatives until the first fully validated one, or the shared
+        // replay/scenario/deadline budgets run out. No unbounded retry.
+        // Search results contain only compact nominal candidates; reconstruct
+        // history on demand. Nominal rank is preserved among tested profiles.
+        internal static ValidatedSelection SelectValidated(D.Environment env,D.Propulsion propulsion,D.Limits limits,
+            D.State initial,Settings settings,Report search,int replayBudget,int scenarioBudget,
+            double positionTolerance,double massTolerance,CancellationToken token=default,bool convex=false,int maxAttempts=12)
+        {
+            int attempts=0,replaySteps=0,scenarioSteps=0;
+            bool fine=false;AtmosphericUncertaintyReplay.Report scenarios=null;
+            string reason="no nominal candidate";
+            ValidatedSelection Finish(Candidate selected,string why)=>new ValidatedSelection(selected,scenarios,
+                attempts,replaySteps,scenarioSteps,fine,why);
+            if(search==null||replayBudget<2||scenarioBudget<1||maxAttempts<1)return Finish(null,"invalid selection budget");
+            foreach(var candidate in search.Ranked)
+            {
+                if(token.IsCancellationRequested)return Finish(null,"cancelled");
+                if(attempts>=maxAttempts||replayBudget-replaySteps<2||scenarioBudget-scenarioSteps<1)
+                    return Finish(null,"validation budget exhausted: "+reason);
+                attempts++;
+                bool passed=Validate(env,propulsion,limits,initial,settings,candidate,replayBudget-replaySteps,
+                    positionTolerance,massTolerance,out var reference,out var replay,token,convex);
+                replaySteps+=(reference?.Result.Steps??0)+(replay?.Steps??0);
+                if(!passed){reason="independent replay not demonstrated: "+(replay?.Outcome.ToString()??"reconstruction");continue;}
+                fine=true;
+                var tracker=new AtmosphericPlanTracker(env,propulsion,limits,settings,reference);
+                scenarios=AtmosphericUncertaintyReplay.Validate(env,propulsion,limits,tracker,scenarioBudget-scenarioSteps,token);
+                scenarioSteps+=scenarios.Steps;
+                if(token.IsCancellationRequested)return Finish(null,"cancelled");
+                if(scenarios.Passed)return Finish(reference,"all sampled model contacts validated");
+                reason=scenarios.Reason;
+            }
+            return Finish(null,reason);
         }
     }
 }

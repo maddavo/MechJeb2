@@ -311,13 +311,9 @@ namespace MuMech.Landing
                     var settings=new AtmosphericStrategicPlanner.Settings(s.Settings,preparation:45,engagementLead:45);
                     a.Strategic=AtmosphericStrategicPlanner.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,settings,token);
                     a.ReplayPassed=a.Strategic.Best?.ReplayPassed==true;
-                    if(a.ReplayPassed&&!token.IsCancellationRequested)
-                    {
-                        var candidate=a.Strategic.Best.Combined;
-                        var t=new AtmosphericPlanTracker(s.Environment,s.Propulsion,s.Limits,s.Settings,candidate);
-                        a.Scenarios=AtmosphericUncertaintyReplay.Validate(s.Environment,s.Propulsion,s.Limits,t,240000,token);
-                        if(a.Scenarios.Passed)a.Validated=candidate;
-                    }
+                    a.Scenarios=a.Strategic.Scenarios;
+                    if(a.ReplayPassed&&a.Scenarios?.Passed==true&&!token.IsCancellationRequested)
+                        a.Validated=a.Strategic.Best.Combined;
                     return a;
                 }
                 a.Reference=P.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,s.Settings.Common,
@@ -327,15 +323,13 @@ namespace MuMech.Landing
                 a.Direct=F.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,s.Settings,token);
                 if(token.IsCancellationRequested||a.Direct.Best==null)return a;
                 clock.Restart();
-                a.ReplayPassed=F.Validate(s.Environment,s.Propulsion,s.Limits,s.Initial,s.Settings,a.Direct.Best,
-                    30000,20,Math.Max(.5,s.Mass*.0005),out var reconstructed,out _,token);
+                var selection=F.SelectValidated(s.Environment,s.Propulsion,s.Limits,s.Initial,s.Settings,a.Direct,
+                    30000,120000,20,Math.Max(.5,s.Mass*.0005),token);
                 a.ReplayMs=clock.Elapsed.TotalMilliseconds;
-                if(a.ReplayPassed&&!token.IsCancellationRequested)
-                {
-                    var t=new AtmosphericPlanTracker(s.Environment,s.Propulsion,s.Limits,s.Settings,reconstructed);
-                    a.Scenarios=AtmosphericUncertaintyReplay.Validate(s.Environment,s.Propulsion,s.Limits,t,120000,token);
-                    if(a.Scenarios.Passed)a.Validated=reconstructed;
-                }
+                a.ReplayPassed=selection.FineReplayPassed;
+                a.Scenarios=selection.Scenarios;
+                a.Validated=selection.Candidate;
+                if(a.Validated==null)a.Error=selection.Reason;
             }
             catch(Exception ex){a.Error=ex.GetType().Name+": "+ex.Message;}
             return a;
@@ -503,8 +497,8 @@ namespace MuMech.Landing
                 lines+="A: "+CandidateText(answer.Reference.Best,snapshot.Mass)+"; "+answer.Reference.Status+
                     " ("+answer.Reference.Candidates.Count+" tests, "+Num(answer.ReferenceMs,"F0")+" ms)\n";
             if(answer.Direct!=null)
-                lines+="B: "+CandidateText(answer.Direct.Best?.Result,snapshot.Mass)+"; "+answer.Direct.Status+
-                    (answer.Direct.Best==null?"":"; powered "+Num(answer.Direct.Best.Profile.Duration)+" s")+
+                lines+="B: "+CandidateText((answer.Validated??answer.Direct.Best)?.Result,snapshot.Mass)+"; "+answer.Direct.Status+
+                    (answer.Direct.Best==null?"":"; powered "+Num((answer.Validated??answer.Direct.Best).Profile.Duration)+" s")+
                     " ("+answer.Direct.Attempts+" tests, "+Num(answer.Direct.ElapsedMilliseconds,"F0")+" ms; min prep "+Num(snapshot.Settings.MinCoast)+" s)\n";
             lines+=(snapshot.Strategic?"Whole-history finer-step replay: ":"B finer-step replay: ")+(answer.ReplayPassed?"PASS (model only)":"not demonstrated")+
                 "; approximate terrain/aero/actuators.";

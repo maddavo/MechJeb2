@@ -111,16 +111,13 @@ namespace MuMech.Landing
                     attempts+=report.Attempts;steps+=report.Steps;
                     if(report.Best==null||report.Best.Result.Miss>settings.TargetTolerance)continue;
                     if(token.IsCancellationRequested)return Finish(null,null,double.NaN,"cancelled");
-                    // Validate each promising site before ranking it; a
-                    // failed replay must not exclude another viable site.
-                    if(best!=null&&report.Best.Result.End.Mass<best.Result.End.Mass)continue;
-                    if(!F.Validate(env,request.Propulsion,request.Limits,anchor,f,report.Best,16000,10,
-                        Math.Max(.5,anchor.Mass*.00025),out var replayed,out var replay,token))continue;
-                    steps+=replayed.Result.Steps+replay.Steps;
-                    var tested=new AtmosphericPlanTracker(env,request.Propulsion,request.Limits,f,replayed);
-                    var scenarios=AtmosphericUncertaintyReplay.Validate(env,request.Propulsion,request.Limits,tested,40000,token);
-                    steps+=scenarios.Steps;
-                    if(!scenarios.Passed)continue;
+                    // Test alternatives within each site before comparing
+                    // sites. A nominal optimum is not a validated fallback.
+                    var selection=F.SelectValidated(env,request.Propulsion,request.Limits,anchor,f,report,
+                        16000,40000,10,Math.Max(.5,anchor.Mass*.00025),token);
+                    steps+=selection.ReplaySteps+selection.ScenarioSteps;
+                    var replayed=selection.Candidate;
+                    if(replayed==null||replayed.Result.Miss>settings.TargetTolerance)continue;
                     double miss=P.Miss(env,anchor,replayed.Result.End,original);
                     if(!D.Finite(miss))continue;
                     if(best==null||replayed.Result.End.Mass>best.Result.End.Mass||

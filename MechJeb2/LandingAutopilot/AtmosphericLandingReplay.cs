@@ -83,7 +83,8 @@ namespace MuMech.Landing
         internal static Report Run(D.Environment env,D.Propulsion propulsion,D.Limits limits,
             D.State initial,Segment[] history,Observation[] observations,
             double safeVertical=1,double safeHorizontal=1,double safeAngle=5*Math.PI/180,
-            double safeRate=Math.PI/180,int maxSteps=100000,CancellationToken cancellation=default)
+            double safeRate=Math.PI/180,int maxSteps=100000,CancellationToken cancellation=default,
+            double contactContinuationSeconds=0)
         {
             var comparisons=new List<Comparison>();
             D.State state=initial;
@@ -95,7 +96,8 @@ namespace MuMech.Landing
                 initial.Mass<limits.ReserveMass||history==null||history.Length==0||observations==null||
                 maxSteps<1||maxSteps>1000000||!D.Finite(safeVertical)||safeVertical<0||
                 !D.Finite(safeHorizontal)||safeHorizontal<0||!D.Finite(safeAngle)||safeAngle<0||
-                !D.Finite(safeRate)||safeRate<0)return Finish(D.Outcome.InvalidInput);
+                !D.Finite(safeRate)||safeRate<0||!D.Finite(contactContinuationSeconds)||
+                contactContinuationSeconds<0||contactContinuationSeconds>.5)return Finish(D.Outcome.InvalidInput);
             history=(Segment[])history.Clone();observations=(Observation[])observations.Clone();
             double cursor=initial.UT;
             foreach(Segment segment in history)
@@ -140,6 +142,36 @@ namespace MuMech.Landing
                 }
                 if(state.UT!=segment.EndUT)return Finish(D.Outcome.InvalidInput);
                 segments++;
+            }
+            // Only an explicitly authorised terminal-history validation
+            // may hold its known final command briefly. The generic replay
+            // still ends exactly at the supplied command history. No
+            // invented contact, extrapolated atmosphere or relaxed gates.
+            if(contactContinuationSeconds>0)
+            {
+                var surface=env.SurfaceAt(state);
+                D.V w=env.Surface(state.R,state.Velocity);
+                double vertical=D.V.Dot(w,surface.Normal);
+                if(surface.Valid&&surface.Landable&&surface.Clearance>0&&
+                    surface.Clearance<=D.ContactResolutionMetres&&vertical<0&&vertical>=-safeVertical&&
+                    (w-surface.Normal*vertical).Length<=safeHorizontal&&
+                    D.V.Dot(state.Forward,surface.Normal)>=Math.Cos(safeAngle)&&
+                    state.PointingRate<=safeRate&&state.Mass>limits.ReserveMass)
+                {
+                    double until=state.UT+contactContinuationSeconds;
+                    var command=history[history.Length-1].Command;
+                    while(state.UT<until)
+                    {
+                        if(cancellation.IsCancellationRequested)return Finish(D.Outcome.Cancelled);
+                        if(steps>=maxSteps)return Finish(D.Outcome.Horizon);
+                        double dt=Math.Min(limits.Step,until-state.UT);
+                        if(dt<=0||state.UT+dt<=state.UT)return Finish(D.Outcome.InvalidInput);
+                        var result=D.Advance(env,propulsion,limits,state,command,dt,
+                            safeVertical,safeHorizontal,safeAngle,safeRate);
+                        steps++;state=result.End;minimum=Math.Min(minimum,result.MinimumClearance);
+                        if(result.Status!=D.Outcome.Advanced)return Finish(result.Status,true);
+                    }
+                }
             }
             return Finish(D.Outcome.Advanced,true);
         }
