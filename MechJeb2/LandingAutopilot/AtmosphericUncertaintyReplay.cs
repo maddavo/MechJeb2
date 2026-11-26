@@ -119,14 +119,15 @@ namespace MuMech.Landing
                 status==D.Outcome.ContactWithinLimits?P.Miss(model,initial,state,tracker.Settings.Common.TargetAtInitialUT):double.NaN,
                 state.Mass,state.UT,steps);
             if(model==null||!model.Valid||propulsion==null||limits==null||!limits.Valid||tracker==null||
-                model.Terrain!=null||model.PassiveLift!=null||model.Atmosphere!=null||model.Aerodynamics!=null||
+                model.Terrain!=null||model.PassiveLift!=null||model.Aerodynamics!=null||
                 !D.Finite(scenario.ImpulseScale)||scenario.ImpulseScale<=0||
                 !D.Finite(scenario.DragScale)||scenario.DragScale<0||
                 !D.Finite(scenario.ResponseScale)||scenario.ResponseScale<=0||
                 !D.Finite(scenario.TurnScale)||scenario.TurnScale<=0||budget<1||budget>1000000)
                 return Finish(D.Outcome.InvalidInput,"unsupported scenario model");
             var env=new D.Environment(model.Radius,model.Mu,model.Omega,model.AtmosphereTop,
-                model.Pressure,model.Density,model.DragArea*scenario.DragScale,model.TerrainRadius,model.BottomOffset);
+                model.Pressure,model.Density,model.DragArea*scenario.DragScale,model.TerrainRadius,model.BottomOffset,
+                atmosphere:model.Atmosphere);
             var engine=propulsion.WithImpulseScale(scenario.ImpulseScale);
             var lim=new D.Limits(limits.ReserveMass,limits.TurnRate*scenario.TurnScale,
                 limits.EngineRise*scenario.ResponseScale,limits.EngineFall*scenario.ResponseScale,limits.Step*.5);

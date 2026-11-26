@@ -57,10 +57,10 @@ namespace MuMech.Landing
             // Only the reduced-order copied spherical model is supported.
             // Do not discard richer terrain/aero delegates silently.
             if(env==null||!env.Valid||!site.Valid||env.Terrain!=null||
-                env.Aerodynamics!=null||env.PassiveLift!=null||env.Atmosphere!=null)
+                env.Aerodynamics!=null||env.PassiveLift!=null)
                 return null;
             return new D.Environment(env.Radius,env.Mu,env.Omega,env.AtmosphereTop,
-                env.Pressure,env.Density,env.DragArea,site.SurfaceRadius,env.BottomOffset);
+                env.Pressure,env.Density,env.DragArea,site.SurfaceRadius,env.BottomOffset,atmosphere:env.Atmosphere);
         }
 
         internal static Result Solve(AtmosphericReplanning.Request request,Site[] sites,CancellationToken token=default)

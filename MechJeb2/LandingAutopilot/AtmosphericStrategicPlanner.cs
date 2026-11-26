@@ -288,7 +288,7 @@ namespace MuMech.Landing
                     " endSpeed="+env.Surface(replay.End.R,replay.End.Velocity).Length);
                 return null;
             }
-            var profile=new F.Profile(prefix.End.UT-initial.UT+approach.Profile.Coast,approach.Profile.Duration);
+            var profile=new F.Profile(prefix.End.UT-initial.UT+approach.Profile.Coast,approach.Profile.Duration,approach.Profile.Curved);
             var p=new P.Profile(profile.Coast,0,new D.Command(0,initial.Forward));
             var result=new P.Candidate(p,approach.Result.Outcome,approach.Result.End,miss,
                 Math.Min(prefix.MinimumClearance,approach.Result.MinimumClearance),prefix.FirstPoweredUT,
@@ -418,13 +418,13 @@ namespace MuMech.Landing
                         // first two seed epochs, aggregate later.
                         Action<F.Candidate> describe=null;
                         if(diagnostic!=null&&(prefixes<=12||prefixes%6==4))
-                            describe=c=>diagnostic("  candidate coast="+c.Profile.Coast+" duration="+c.Profile.Duration+
+                            describe=c=>diagnostic("  candidate coast="+c.Profile.Coast+" duration="+c.Profile.Duration+" curved="+c.Profile.Curved+
                                 " outcome="+c.Result.Outcome+" endH="+env.PhysicalClearance(c.Result.End)+
                                 " endV="+env.Surface(c.Result.End.R,c.Result.End.Velocity).Length+
                                 " endMass="+c.Result.End.Mass+" elapsed="+(c.Result.End.UT-prefix.End.UT)+
                                 " endMiss="+P.Miss(env,prefix.End,c.Result.End,approachSettings.Common.TargetAtInitialUT)+
                                 " terminal="+c.Result.TerminalStartUT+" saturation="+c.MaxSaturation);
-                        var report=F.Search(env,propulsion,limits,prefix.End,approachSettings,token,diagnostic:describe,refineNearContact:true);
+                        var report=F.Search(env,propulsion,limits,prefix.End,approachSettings,token,diagnostic:describe,refineNearContact:true,curvedCandidates:Math.Abs(normal)>.1);
                         approaches+=report.Attempts;steps+=report.Steps;
                         diagnostic?.Invoke("approach "+report.Status+" attempts="+report.Attempts+
                             " nominal="+report.Feasible+" unresolved="+report.Unresolved+

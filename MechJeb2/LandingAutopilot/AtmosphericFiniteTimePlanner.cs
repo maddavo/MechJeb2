@@ -17,7 +17,8 @@ namespace MuMech.Landing
         internal readonly struct Profile
         {
             internal readonly double Coast,Duration;
-            internal Profile(double coast,double duration){Coast=coast;Duration=duration;}
+            internal readonly bool Curved;
+            internal Profile(double coast,double duration,bool curved=false){Coast=coast;Duration=duration;Curved=curved;}
         }
         internal sealed class Settings
         {
@@ -97,16 +98,49 @@ namespace MuMech.Landing
                 return new D.V(double.NaN,0,0);
             return (target-position-velocity*t)*(6/(t*t))-(terminalVelocity-velocity)*(2/t);
         }
+        // Endpoint law in radial and great-circle coordinates, rather than
+        // a Cartesian chord through the planet. The local tangent velocity
+        // follows the sphere, and centrifugal/Coriolis terms are explicit.
+        // This is a nonlinear shooting candidate, not a feasibility proof.
+        internal static D.V CurvedEndpointAcceleration(D.V r,D.V inertialVelocity,D.V omega,
+            D.V targetNow,double finalVertical,double time)
+        {
+            if(!r.Valid||r.Length<=0||!inertialVelocity.Valid||!omega.Valid||
+                !targetNow.Valid||targetNow.Length<=0||!D.Finite(finalVertical)||!D.Finite(time)||time<=0)
+                return new D.V(double.NaN,0,0);
+            double radius=r.Length;
+            D.V up=r.Unit,goal=targetNow.Unit,w=inertialVelocity-D.V.Cross(omega,r);
+            double vr=D.V.Dot(w,up);
+            D.V tangent=w-up*vr;
+            double dot=Math.Max(-1,Math.Min(1,D.V.Dot(up,goal)));
+            D.V toward=goal-up*dot;
+            double angle=Math.Atan2(toward.Length,dot);
+            // Antipodal direction is underdetermined; choose the actual
+            // track if available, else let the other candidate family work.
+            if(toward.Length<1e-10&&dot<0)
+            {
+                if(tangent.Length<1e-8)return new D.V(double.NaN,0,0);
+                toward=tangent.Unit;
+            }
+            D.V arc=toward.Unit*(radius*angle);
+            double radial=6*(targetNow.Length-radius-vr*time)/(time*time)-
+                2*(finalVertical-vr)/time;
+            D.V tangential=arc*(6/(time*time))-tangent*(4/time)+tangent*(2*vr/radius);
+            D.V rotating=up*(radial-D.V.Dot(tangent,tangent)/radius)+tangential;
+            return rotating+D.V.Cross(omega,w)*2+D.V.Cross(omega,D.V.Cross(omega,r));
+        }
         private static D.Command PoweredCommand(D.Environment env,D.Propulsion propulsion,D.State state,
-            Settings settings,D.V target,D.V terminalVelocity,double time,out double requested,out double saturation)
+            Settings settings,D.V target,D.V terminalVelocity,double time,out double requested,out double saturation,bool curved=false)
         {
             requested=saturation=double.NaN;
             var force=D.Forces(env,propulsion,state);
             if(!force.Known)return default;
             D.Authority authority=propulsion.At(force.Pressure);
             if(!authority.Known||!(authority.Force>0))return default;
-            D.V need=EndpointAcceleration(state.R,state.Velocity,target,terminalVelocity,time)-
-                force.Gravity-(force.Drag+force.Lift)*(1/state.Mass);
+            D.V acceleration=curved?CurvedEndpointAcceleration(state.R,state.Velocity,env.Omega,
+                P.RotateTarget(target,env.Omega,-time),-settings.ApproachSpeed,time):
+                EndpointAcceleration(state.R,state.Velocity,target,terminalVelocity,time);
+            D.V need=acceleration-force.Gravity-(force.Drag+force.Lift)*(1/state.Mass);
             if(!need.Valid)return default;
             requested=need.Length;
             double demand=requested*state.Mass/authority.Force;
@@ -220,7 +254,7 @@ namespace MuMech.Landing
                         AtmosphericConvexPlanner.Command(env,propulsion,state,settings,target,terminalVelocity,
                             Math.Max(settings.ControlTick,remaining),out request,out sat,cancellation):
                         PoweredCommand(env,propulsion,state,settings,target,terminalVelocity,
-                            Math.Max(settings.ControlTick,remaining),out request,out sat);
+                            Math.Max(settings.ControlTick,remaining),out request,out sat,profile.Curved);
                     if(!powered.Valid)return Finish(D.Outcome.UnknownCapability);
                     peak=Math.Max(peak,request);saturation=Math.Max(saturation,sat);
                     bool coast=state.UT<ignition;
@@ -255,12 +289,12 @@ namespace MuMech.Landing
         // including reconstruction and independent validation, not wall time.
         internal static Report Search(D.Environment env,D.Propulsion propulsion,D.Limits limits,D.State initial,
             Settings settings,CancellationToken cancellation=default,Profile? warmStart=null,bool convex=false,
-            Action<Candidate> diagnostic=null,bool refineNearContact=false)
+            Action<Candidate> diagnostic=null,bool refineNearContact=false,bool curvedCandidates=false)
         {
             var clock=Stopwatch.StartNew();Candidate best=null,nearContact=null;
             double nearScore=double.PositiveInfinity;
             int attempts=0,steps=0,feasible=0,unresolved=0;
-            var visited=new HashSet<(double,double)>();
+            var visited=new HashSet<(double,double,bool)>();
             var ranked=new List<Candidate>();
             Report Finish(P.SearchStatus status)
             {
@@ -273,13 +307,13 @@ namespace MuMech.Landing
                 propulsion==null||!initial.Valid||initial.Mass<limits.ReserveMass)return Finish(P.SearchStatus.InvalidInput);
             var common=settings.Common;
             bool exhausted=false;
-            void Try(double coast,double duration)
+            void Try(double coast,double duration,bool curved=false)
             {
                 if(exhausted||cancellation.IsCancellationRequested||coast<settings.MinCoast||coast>common.MaxIgnitionDelay||
                     duration<settings.MinPoweredSeconds||duration>settings.MaxPoweredSeconds||
-                    coast+duration>common.Horizon||!visited.Add((coast,duration)))return;
+                    coast+duration>common.Horizon||!visited.Add((coast,duration,curved)))return;
                 if(attempts>=common.MaxCandidates||steps>=common.MaxSteps){exhausted=true;return;}
-                Candidate c=Evaluate(env,propulsion,limits,initial,settings,new Profile(coast,duration),common.MaxSteps-steps,false,cancellation,convex);
+                Candidate c=Evaluate(env,propulsion,limits,initial,settings,new Profile(coast,duration,curved),common.MaxSteps-steps,false,cancellation,convex);
                 attempts++;steps+=c.Result.Steps;
                 diagnostic?.Invoke(c);
                 if(c.Result.Feasible)
@@ -318,23 +352,27 @@ namespace MuMech.Landing
             if(warmStart.HasValue)
             {
                 var w=warmStart.Value;
-                Try(w.Coast,w.Duration);
+                Try(w.Coast,w.Duration,w.Curved);
                 foreach(double factor in new[]{.9,1.1,.75,1.25})
-                    Try(w.Coast,Math.Max(settings.MinPoweredSeconds,Math.Min(settings.MaxPoweredSeconds,w.Duration*factor)));
-                Try(settings.MinCoast,w.Duration);
+                    Try(w.Coast,Math.Max(settings.MinPoweredSeconds,Math.Min(settings.MaxPoweredSeconds,w.Duration*factor)),w.Curved);
+                Try(settings.MinCoast,w.Duration,w.Curved);
             }
             double dc=(common.MaxIgnitionDelay-settings.MinCoast)/settings.CoastIntervals,
                 dt=(settings.MaxPoweredSeconds-settings.MinPoweredSeconds)/settings.DurationIntervals;
             for(int i=0;i<=settings.CoastIntervals&&!exhausted;i++)
                 for(int j=0;j<=settings.DurationIntervals&&!exhausted;j++)
-                    Try(i==settings.CoastIntervals?common.MaxIgnitionDelay:settings.MinCoast+i*dc,
-                        j==settings.DurationIntervals?settings.MaxPoweredSeconds:settings.MinPoweredSeconds+j*dt);
+                {
+                    double coast=i==settings.CoastIntervals?common.MaxIgnitionDelay:settings.MinCoast+i*dc;
+                    double duration=j==settings.DurationIntervals?settings.MaxPoweredSeconds:settings.MinPoweredSeconds+j*dt;
+                    if(curvedCandidates&&!convex)Try(coast,duration,true);
+                    Try(coast,duration);
+                }
             for(int n=0;n<settings.Refinements&&!exhausted&&(best!=null||nearContact!=null)&&!cancellation.IsCancellationRequested;n++)
             {
                 dc*=.5;dt*=.5;Profile center=(best??nearContact).Profile;
                 for(int i=-1;i<=1&&!exhausted;i++)
                     for(int j=-1;j<=1&&!exhausted;j++)
-                        Try(center.Coast+i*dc,center.Duration+j*dt);
+                        Try(center.Coast+i*dc,center.Duration+j*dt,center.Curved);
             }
             if(cancellation.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
             return Finish(exhausted?P.SearchStatus.BudgetExhausted:best==null?P.SearchStatus.NoDemonstratedLanding:

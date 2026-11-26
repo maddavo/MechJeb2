@@ -118,7 +118,7 @@ namespace MuMech.Landing
                 coast=Math.Min(settings.Common.MaxIgnitionDelay,coast);
                 double duration=Math.Max(settings.MinPoweredSeconds,Math.Min(settings.MaxPoweredSeconds,
                     oldArrival-anchor.UT-coast));
-                var report=F.Search(r.Environment,r.Propulsion,r.Limits,anchor,settings,token,new F.Profile(coast,duration));
+                var report=F.Search(r.Environment,r.Propulsion,r.Limits,anchor,settings,token,new F.Profile(coast,duration,r.Previous.Plan.Profile.Curved),curvedCandidates:true);
                 attempts=report.Attempts;steps=report.Steps;
                 if(token.IsCancellationRequested)return Finish(null,"cancelled");
                 if(report.Best==null)return Finish(null,"search "+report.Status);

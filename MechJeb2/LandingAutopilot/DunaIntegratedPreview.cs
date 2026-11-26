@@ -150,21 +150,52 @@ namespace MuMech.Landing
             const int N=64;
             var pressure=new D.Knot[N+1];var density=new D.Knot[N+1];
             var pressures=new double[N+1];double maxP=0;
+            // Copy effective KSP altitude and solar/latitude curves. Use
+            // GetTemperature(altitude), not a world-position temperature
+            // overload whose captured M5.6 output was near space temperature.
+            D.Curve Sample(double lo,double hi,int count,Func<double,double> evaluate,bool signed=false)
+            {
+                var keys=new D.Knot[count+1];
+                for(int i=0;i<=count;i++)
+                {
+                    double x=lo+(hi-lo)*i/count;
+                    keys[i]=new D.Knot(x,evaluate(x));
+                }
+                return new D.Curve(signed,keys);
+            }
+            const int airIntervals=256;
+            var pCurve=Sample(0,top,airIntervals,h=>body.GetPressure(h)*1000);
+            var tCurve=Sample(0,top,airIntervals,h=>body.GetTemperature(h));
+            var aSun=Sample(0,top,airIntervals,h=>body.atmosphereTemperatureSunMultCurve.Evaluate((float)h),true);
+            var lBias=Sample(0,90,90,latDeg=>body.latitudeTemperatureBiasCurve.Evaluate((float)latDeg),true);
+            var lSun=Sample(0,90,90,latDeg=>body.latitudeTemperatureSunMultCurve.Evaluate((float)latDeg),true);
+            var xSun=Sample(-1,1,128,dot=>body.axialTemperatureSunMultCurve.Evaluate((float)dot),true);
+            // Derive and cross-check the gas coefficient from the actual
+            // stock density API (kPa, kelvin), not an assumed gas composition.
+            double gas=FlightGlobals.getAtmDensity(1,200,body)*200/1000;
+            double gasCheck=FlightGlobals.getAtmDensity(5,300,body)*300/5000;
+            Require(D.Finite(gas)&&gas>0&&D.Finite(gasCheck)&&Math.Abs(gas-gasCheck)<=gas*1e-5,
+                "stock density evaluation inconsistent");
+            var atmosphere=new D.StockAtmosphere(radius,top,gas,V(body.bodyTransform.up),
+                V(FlightGlobals.Bodies[0].position-body.position),Math.Sign(body.rotationPeriod),
+                pCurve,tCurve,aSun,lBias,lSun,xSun);
             var temperatures=new System.Text.StringBuilder();
             for(int i=0;i<=N;i++)
             {
                 double h=top*i/N;
-                double kpa=body.GetPressure(h);
-                // Same world-position API as the existing DragLength helper.
-                double temp=FlightGlobals.getExternalTemperature(body.GetWorldSurfacePosition(lat,lon,h),body);
-                temperatures.Append(Num(h,"R")).Append(':').Append(Num(temp,"R")).Append(';');
+                double kpa=body.GetPressure(h),temp=atmosphere.Temperature(target*(radius+h));
                 double rho=FlightGlobals.getAtmDensity(kpa,temp,body);
-                Require(D.Finite(kpa)&&kpa>=0&&D.Finite(temp)&&temp>0&&D.Finite(rho)&&rho>=0,"invalid atmosphere sample");
+                Require(D.Finite(kpa)&&kpa>=0&&D.Finite(temp)&&temp>0&&D.Finite(rho)&&rho>=0,
+                    "invalid stock atmosphere sample");
+                Require(Math.Abs(rho-gas*kpa*1000/temp)<=Math.Max(1e-10,rho*1e-5),
+                    "stock density coefficient mismatch");
+                temperatures.Append(Num(h,"R")).Append(':').Append(Num(temp,"R")).Append(';');
                 pressures[i]=kpa*1000;maxP=Math.Max(maxP,pressures[i]);
                 pressure[i]=new D.Knot(h,pressures[i]);density[i]=new D.Knot(h,rho);
             }
             Require(maxP>0,"atmosphere pressure unavailable");
-            Debug.Log("[DunaIntegratedPreview] atmosphere samples(ASL:K)="+temperatures);
+            Debug.Log("[DunaIntegratedPreview] stock atmosphere gasKgKPerPaM3="+Num(gas,"R")+
+                " samples(ASL:K)="+temperatures);
 
             // Common propellant ratio and tank inventory. This is a
             // vessel-wide inventory estimate, not a proof of crossfeed.
@@ -275,7 +306,7 @@ namespace MuMech.Landing
             Require(D.Finite(area)&&area>0,"prospective drag area unavailable");
             double terrainRadius=radius+asl;
             var environment=new D.Environment(radius,mu,omega,top,new D.Curve(pressure),new D.Curve(density),
-                area,terrainRadius,offset);
+                area,terrainRadius,offset,atmosphere:atmosphere.At);
             double response=Math.Max(.1,s.MaxEngineResponseTime);
             Require(D.Finite(response)&&response<=30,"unknown actuator response");
             // 6 deg/s deliberately explicit, not an observed worst-case
@@ -333,7 +364,7 @@ namespace MuMech.Landing
                     0,new D.Command(0,s.Initial.Forward),token);
                 a.ReferenceMs=clock.Elapsed.TotalMilliseconds;
                 if(token.IsCancellationRequested)return a;
-                a.Direct=F.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,s.Settings,token);
+                a.Direct=F.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,s.Settings,token,curvedCandidates:true);
                 if(token.IsCancellationRequested||a.Direct.Best==null)return a;
                 clock.Restart();
                 var selection=F.SelectValidated(s.Environment,s.Propulsion,s.Limits,s.Initial,s.Settings,a.Direct,

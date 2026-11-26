@@ -598,6 +598,41 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
+        public void StockAtmosphereUsesSignedSolarCurvesAndPositionDependentDensity()
+        {
+            // Analytical fixture ONLY: verify geometry and SI gas relation,
+            // not a claim about Duna's actual gas properties.
+            var pressure=new D.Curve(new D.Knot(0,1000),new D.Knot(100,0));
+            var temp=new D.Curve(new D.Knot(0,200),new D.Knot(100,100));
+            var a=new D.Curve(new D.Knot(0,1),new D.Knot(100,1));
+            var bias=new D.Curve(true,new D.Knot(0,-10),new D.Knot(90,-10));
+            var sun=new D.Curve(new D.Knot(0,20),new D.Knot(90,0));
+            var axial=new D.Curve(true,new D.Knot(-1,-2),new D.Knot(1,2));
+            var model=new D.StockAtmosphere(320000,100,.005,Y,X*1e10,1,pressure,temp,a,bias,sun,axial);
+            var day=model.At(0,X*320000);var night=model.At(0,X*(-320000));
+            Assert.True(day.Valid&&night.Valid);
+            Assert.True(day.Density<night.Density);
+            Assert.InRange(Math.Abs(day.Density*model.Temperature(X*320000)-5),0,1e-10);
+            Assert.Equal(0,model.At(0,X*320100).Density);
+            Assert.True(model.At(0,Y*320050).Valid);
+        }
+
+        [Fact]
+        public void CurvedEndpointLawRespectsSphericalCentripetalAcceleration()
+        {
+            double r=320000,speed=800,time=100;
+            // Local angular displacement zero; radial endpoint unchanged.
+            var actual=F.CurvedEndpointAcceleration(X*r,Y*speed,default,X*r,0,time);
+            Assert.Equal(-speed*speed/r,actual.X,8);
+            Assert.Equal(-4*speed/time,actual.Y,8);
+            var across=F.CurvedEndpointAcceleration(X*r,Y*speed,default,Z*r,0,time);
+            Assert.Equal(-speed*speed/r,across.X,8);
+            Assert.Equal(6*r*Math.PI/2/(time*time),across.Z,8);
+            var stationary=F.CurvedEndpointAcceleration(X*r,D.V.Cross(Y*.001,X*r),Y*.001,X*r,0,time);
+            Assert.Equal(-r*.001*.001,stationary.X,8);
+        }
+
+        [Fact]
         public void LargePlaneChangeSeedIncludesFullNormalAndRetrogradeImpulse()
         {
             // 45-degree out-of-plane target, with a lower transfer speed.

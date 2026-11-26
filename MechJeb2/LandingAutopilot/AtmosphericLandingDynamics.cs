@@ -43,12 +43,15 @@ namespace MuMech.Landing
         internal sealed class Curve
         {
             private readonly Knot[] _keys;
-            internal Curve(params Knot[] keys)
+            private readonly bool signed;
+            internal Curve(params Knot[] keys):this(false,keys){}
+            internal Curve(bool signed,params Knot[] keys)
             {
+                this.signed=signed;
                 if(keys==null || keys.Length==0) throw new ArgumentException("empty curve");
                 _keys=(Knot[])keys.Clone();
                 for(int i=0;i<_keys.Length;i++)
-                    if(!Finite(_keys[i].X)||!Finite(_keys[i].Y)||_keys[i].Y<0 ||
+                    if(!Finite(_keys[i].X)||!Finite(_keys[i].Y)||!signed&&_keys[i].Y<0 ||
                         i>0&&_keys[i].X<=_keys[i-1].X) throw new ArgumentException("invalid curve");
             }
             internal Curve Scaled(double factor)
@@ -60,7 +63,7 @@ namespace MuMech.Landing
                     var k=_keys[i];
                     keys[i]=new Knot(k.X,k.Y*factor,k.In*factor,k.Out*factor);
                 }
-                return new Curve(keys);
+                return new Curve(signed,keys);
             }
             internal double At(double x)
             {
@@ -163,6 +166,57 @@ namespace MuMech.Landing
 
         // Explicit inertial samples. The caller owns the fidelity and domain
         // of a supplied atmosphere/aerodynamics adapter. No silent fallback.
+        // Immutable stock atmosphere evaluator. The caller copies all KSP
+        // curves/parameters on the main thread; there are no Unity objects here.
+        // Temperature geometry follows ReentrySimulation.GetTemperature.
+        internal sealed class StockAtmosphere
+        {
+            private readonly double radius,top,gasFactor,rotationSign;
+            private readonly V pole,sunPosition;
+            private readonly Curve pressure,baseTemperature,altitudeSun,latitudeBias,latitudeSun,axialSun;
+            internal StockAtmosphere(double radius,double top,double gasFactor,V pole,V sunPosition,
+                double rotationSign,Curve pressure,Curve baseTemperature,Curve altitudeSun,
+                Curve latitudeBias,Curve latitudeSun,Curve axialSun)
+            {
+                if(!Finite(radius)||radius<=0||!Finite(top)||top<=0||!Finite(gasFactor)||gasFactor<=0||
+                    !pole.Valid||pole.Length<.5||!sunPosition.Valid||sunPosition.Length<=radius||
+                    !Finite(rotationSign)||Math.Abs(rotationSign)!=1||pressure==null||baseTemperature==null||
+                    altitudeSun==null||latitudeBias==null||latitudeSun==null||axialSun==null)
+                    throw new ArgumentException("invalid stock atmosphere");
+                this.radius=radius;this.top=top;this.gasFactor=gasFactor;this.pole=pole.Unit;
+                this.sunPosition=sunPosition;this.rotationSign=rotationSign;this.pressure=pressure;
+                this.baseTemperature=baseTemperature;this.altitudeSun=altitudeSun;
+                this.latitudeBias=latitudeBias;this.latitudeSun=latitudeSun;this.axialSun=axialSun;
+            }
+            internal double Temperature(V position)
+            {
+                double h=position.Length-radius;
+                // Surface queries can round a zero altitude slightly negative.
+                if(!position.Valid||h<-.01||h>top+.01)return double.NaN;
+                h=Clamp(h,0,top);
+                V up=position.Unit,sun=(sunPosition-position).Unit;
+                double bodyDot=Clamp(V.Dot(pole,up),-1,1),sunDot=Clamp(V.Dot(pole,sun),-1,1);
+                double lat=Math.Asin(Math.Abs(bodyDot))*180/Math.PI;
+                double polar=Math.Acos(bodyDot),sunPolar=Math.Acos(sunDot);
+                double max=(1+Math.Cos(sunPolar-polar))*.5,min=(1+Math.Cos(sunPolar+polar))*.5;
+                double angle=rotationSign*Math.PI/4;
+                V corrected=up*Math.Cos(angle)+V.Cross(pole,up)*Math.Sin(angle)+
+                    pole*(V.Dot(pole,up)*(1-Math.Cos(angle)));
+                double sunFraction=max-min>1e-10?Clamp(((1+V.Dot(sun,corrected))*.5-min)/(max-min),0,1):.5;
+                return baseTemperature.At(h)+altitudeSun.At(h)*
+                    (latitudeBias.At(lat)+latitudeSun.At(lat)*sunFraction+axialSun.At(sunDot));
+            }
+            internal AirSample At(double ut,V position)
+            {
+                if(!Finite(ut)||!position.Valid)return default;
+                double h=position.Length-radius;
+                if(h>=top)return new AirSample(0,0);
+                if(h<-.01)return default;
+                double p=pressure.At(Math.Max(0,h)),temp=Temperature(position);
+                if(!Finite(p)||p<0||!Finite(temp)||temp<=0)return default;
+                return new AirSample(p,gasFactor*p/temp);
+            }
+        }
         internal readonly struct AirSample
         {
             internal readonly bool Known;
