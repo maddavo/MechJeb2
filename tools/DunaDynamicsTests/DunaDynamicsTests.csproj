@@ -7,6 +7,7 @@
     <PackageReference Include="xunit" Version="2.9.3"/>
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/DunaM1DiagnosticsRequest.cs" Link="DunaM1DiagnosticsRequest.cs"/>
+    <Compile Include="../../MechJeb2/LandingAutopilot/DunaLandingAdmission.cs" Link="DunaLandingAdmission.cs"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericLandingDynamics.cs" Link="AtmosphericLandingDynamics.cs"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericLandingReplay.cs" Link="AtmosphericLandingReplay.cs"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericTerminalReplay.cs" Link="AtmosphericTerminalReplay.cs"/>

@@ -97,27 +97,34 @@ namespace MuMech.Landing
         // spherical terrain at target ASL. These are explicitly NOT verified
         // real-engine, lift, crossfeed, attitude or swept terrain models.
         // Results are for comparing algorithms, never authorization to burn.
-        private static Snapshot Capture(MechJebCore core,bool strategic)
+        private static Snapshot Capture(MechJebCore core)
         {
             Vessel v=core.vessel;
             VesselState s=core.VesselState;
             CelestialBody body=v.mainBody;
             Require(body!=null&&body.bodyName=="Duna"&&body.atmosphere,"Duna atmosphere required");
-            Require(!v.packed&&!v.LandedOrSplashed&&TimeWarp.CurrentRate==1,"unpacked flight at 1x required");
-            Require(core.Target.PositionTargetExists&&core.Target.targetBody==body,"select a Duna landing target");
-            Require(!core.Landing.DeployChutes&&!s.ParachuteDeployed,"parachute dynamics unsupported");
-            Require(!core.Thrust.LimiterMinThrottle,"minimum throttle floor unsupported");
-            Require(!core.Thrust.DifferentialThrottle,"differential throttle model not yet supported");
-            Require(!core.Thrust.SmoothThrottle,"throttle smoothing model not yet supported for preview");
-            Require(!ReflectionUtils.IsLoadedFAR,"FAR aerodynamics unsupported by preview");
-            Require(v.parts!=null&&v.parts.Count>0&&v.parts.Count<=512,"unsupported part count");
-            Require(D.Finite(s.Mass)&&s.Mass>0&&D.Finite(s.Time)&&(strategic||s.SpeedVertical<0),"descending state required for descent-only preview");
+            Debug.Log("[DunaIntegratedPreview] capture request UT="+Num(s.Time,"R")+" vessel="+v.id+
+                " body="+body.bodyName+" ASL="+Num(s.AltitudeASL,"R")+" clearance="+Num(s.AltitudeBottom,"R")+
+                " vertical="+Num(s.SpeedVertical,"R")+" horizontal="+Num(s.SpeedSurfaceHorizontal,"R")+
+                " massKg="+Num(s.Mass*1000,"R")+" currentThrottle="+Num(v.ctrlState.mainThrottle,"R")+
+                " maxAcceleration="+Num(s.MaxThrustAcceleration,"R")+" minAcceleration="+Num(s.MinThrustAcceleration,"R")+
+                " liveAreaDrag="+Num(s.AreaDrag,"R")+" chuteOption="+core.Landing.DeployChutes+
+                " chuteCount="+s.Parachutes.Count+" RCS="+v.ActionGroups[KSPActionGroup.RCS]+
+                " warp="+Num(TimeWarp.CurrentRate,"R"));
+            string context=DunaLandingAdmission.CheckContext(FlightGlobals.ActiveVessel==v,v.packed,
+                v.LandedOrSplashed,TimeWarp.CurrentRate,core.Target.PositionTargetExists&&core.Target.targetBody==body,
+                core.Landing.DeployChutes,s.Parachutes.Count,s.ParachuteDeployed,v.ActionGroups[KSPActionGroup.RCS],
+                core.Thrust.LimiterMinThrottle,core.Thrust.DifferentialThrottle,core.Thrust.SmoothThrottle,
+                ReflectionUtils.IsLoadedFAR,v.parts==null?0:v.parts.Count);
+            Require(context==null,context);
+            Require(D.Finite(s.Mass)&&s.Mass>0&&D.Finite(s.Time),"invalid vessel mass or epoch");
+            Require(v.GetReferenceTransformPart()!=null,"vessel reference part unavailable");
             double lat=core.Target.targetLatitude,lon=core.Target.targetLongitude;
             double asl=body.TerrainAltitude(lat,lon);
             double radius=body.Radius,mu=body.gravParameter,top=body.RealMaxAtmosphereAltitude();
             double offset=s.TerminalBottomOffset();
-            Require(D.Finite(asl)&&asl>=0&&D.Finite(radius)&&radius>0&&D.Finite(mu)&&mu>0&&
-                D.Finite(top)&&top>0&&D.Finite(offset)&&offset>=0,"invalid body or target terrain");
+            Require(D.Finite(asl)&&D.Finite(radius)&&radius>0&&D.Finite(mu)&&mu>0&&
+                D.Finite(top)&&top>0&&asl>=0&&D.Finite(offset)&&offset>=0,"invalid body or target terrain");
             D.V pos=V(s.OrbitalPosition),vel=V(s.OrbitalVelocity),omega=V(body.angularVelocity),forward=V(s.Forward).Unit;
             // Frame sign is checked against the very same sampled inertial
             // and surface velocities; do not silently flip rotation.
@@ -211,14 +218,8 @@ namespace MuMech.Landing
             }
             Require(engines.Count>0&&mixture!=null,"no active engine");
             double flowTotal=0;foreach(var e in engines)flowTotal+=e.Flow;
-            double ratioUnits=double.PositiveInfinity,densityMix=0;
-            foreach(var kv in mixture)
-            {
-                inventory.TryGetValue(kv.Key,out double amount);
-                ratioUnits=Math.Min(ratioUnits,amount/kv.Value);
-                densityMix+=kv.Value*PartResourceLibrary.Instance.GetDefinition(kv.Key).density*1000;
-            }
-            double usable=ratioUnits*densityMix;
+            double usable=DunaLandingAdmission.UsableFuel(inventory,mixture,
+                id=>PartResourceLibrary.Instance.GetDefinition(id).density*1000,mass);
             Require(D.Finite(usable)&&usable>0&&usable<mass,"unknown usable propellant inventory");
             // Retain 5% of estimated mixture; crossfeed/staging is not
             // modelled. Do not infer a guaranteed reserve from total tanks.
@@ -238,12 +239,27 @@ namespace MuMech.Landing
             Require(nominalCurrent>0&&D.Finite(nominalCurrent),"unknown nominal current thrust");
             // Reduce impulse per kg rather than reduce fuel rate together
             // with thrust. Frozen flow multipliers remain an approximation.
-            double derate=.90*Math.Min(1,s.MaxThrustAcceleration*mass/nominalCurrent);
+            double derate=DunaLandingAdmission.ImpulseDerate(s.MaxThrustAcceleration,mass,nominalCurrent);
             Require(D.Finite(derate)&&derate>0,"unknown aggregate authority");
             for(int i=0;i<ispKeys.Length;i++)ispKeys[i]=new D.Knot(ispKeys[i].X,ispKeys[i].Y*derate);
             var propulsion=new D.Propulsion(true,new D.Engine(flowTotal,1,9.80665,default,new D.Curve(ispKeys)));
-            double area=s.AreaDrag;
-            Require(D.Finite(area)&&area>=0,"unknown drag area");
+            // AreaDrag is a current-flight sample and can be zero in
+            // vacuum. Copy the direction-independent drag-cube faces used
+            // by the stock MechJeb landing estimate, not current aero force.
+            var drag=new DunaLandingAdmission.DragAccumulator();
+            int aeroParts=0;
+            foreach(Part part in v.parts)
+            {
+                if(part.ShieldedFromAirstream||part.DragCubes.None)continue;
+                for(int face=0;face<6;face++)
+                    drag.AddFace(part.DragCubes.WeightedDrag[face],part.DragCubes.AreaOccluded[face]);
+                aeroParts++;
+            }
+            double area=drag.Finish(PhysicsGlobals.DragCubeMultiplier,PhysicsGlobals.DragMultiplier);
+            Debug.Log("[DunaIntegratedPreview] aero liveCdA="+Num(s.AreaDrag,"R")+
+                " prospectiveCdA="+Num(area,"R")+" aeroParts="+aeroParts+
+                " pressurePa="+Num(currentPa,"R")+" ASL="+Num(s.AltitudeASL,"R"));
+            Require(D.Finite(area)&&area>0,"prospective drag area unavailable");
             double terrainRadius=radius+asl;
             var environment=new D.Environment(radius,mu,omega,top,new D.Curve(pressure),new D.Curve(density),
                 area,terrainRadius,offset);
@@ -255,44 +271,28 @@ namespace MuMech.Landing
             double attained=Math.Max(0,Math.Min(1,s.CurrentThrustAcceleration/s.MaxThrustAcceleration));
             var initial=new D.State(s.Time,pos,vel,mass,forward,attained,v.angularVelocity.magnitude);
             Require(initial.Valid&&environment.Valid&&limits.Valid,"invalid numerical snapshot");
-            double clearance=environment.PhysicalClearance(initial);
-            Require(clearance>0&&clearance<=200000,"outside preview altitude domain");
-            if(strategic)
-            {
-                Require(initial.Throttle<=.01&&v.ctrlState.mainThrottle<1e-4,"orbital preview requires unpowered coast");
-                Require(AtmosphericStrategicPlanner.TryOrbit(environment,initial,out var orbit)&&
-                    orbit.Periapsis>radius+top&&orbit.Eccentricity<=.2&&orbit.Apoapsis-radius<=200000,
-                    "strategic preview requires low bound orbit above atmosphere (e <= 0.2)");
-                Require(area>0,"orbital aero area unavailable");
-            }
-            double gravity=mu/(radius*radius);
-            double acceleration=s.MaxThrustAcceleration*cap*derate;
-            double scale=Math.Max(12,Math.Max(Math.Sqrt(2*clearance/gravity),s.SpeedSurface/Math.Max(.1,acceleration)));
-            double coast=Math.Min(300,Math.Max(0,scale*.75));
-            double minDuration=Math.Max(8,scale*.65),maxDuration=Math.Min(900,Math.Max(minDuration,scale*3));
-            Require(minDuration<=maxDuration,"descent horizon unsupported");
-            double touchdown=(double)core.Landing.TouchdownSpeed;
-            // Terminal replay authority is computed only from numerical
-            // samples; no live callback is retained. Its 0.2 s controller
-            // cadence is a documented screening approximation.
-            var terminal=new T.Settings(.2,touchdown,gravity/9.81,0,
-                st=>{
-                    if(!environment.Air(st.UT,st.R,out double pressurePa,out _))return default;
-                    var a=propulsion.At(pressurePa);
-                    double raw=a.Force/st.Mass;
-                    return a.Known&&raw>0?new T.ControllerAuthority(raw,raw*cap,cap,false):default;
-                },
-                (st,dir)=>Math.Acos(Math.Max(-1,Math.Min(1,D.V.Dot(st.Forward,dir.Unit))))*180/Math.PI,
-                (ut,p)=>terrainRadius);
-            var memory=new T.Memory(T.Phase.FinalDescent,T.Mode.Off,0,0,attained,attained);
-            var common=new P.Settings(target,1800,coast,100,terminal,memory,intervals:8,refine:1,
-                maxCandidates:64,maxSteps:150000,captureClearance:50,captureSpeed:15,
-                safeVertical:Math.Max(1,touchdown),safeHorizontal:1,safeAngle:5*Math.PI/180,
-                safeRate:Math.PI/180,entryCutoffDelay:0,commandCap:cap);
-            var settings=new F.Settings(common,terrainRadius+offset,minPowered:minDuration,maxPowered:maxDuration,
-                controlTick:.5,coastIntervals:4,durationIntervals:6,refinements:2,
-                minCoast:Math.Min(15,coast));
-            Require(settings.Valid,"invalid solver settings");
+            var mode=DunaLandingAdmission.Choose(environment,initial,v.ctrlState.mainThrottle,s.SpeedVertical,out string reason);
+            Require(mode!=DunaLandingAdmission.Mode.Refused,reason);
+            bool strategic=mode==DunaLandingAdmission.Mode.Orbit;
+            var settings=DunaLandingAdmission.Settings(environment,propulsion,initial,target,cap,
+                s.MaxThrustAcceleration,derate,(double)core.Landing.TouchdownSpeed);
+            Require(settings!=null,"invalid solver settings or horizon");
+            // One bounded model record per admitted snapshot, sufficient
+            // to reconstruct the numerical input without a second flight.
+            var samples=new System.Text.StringBuilder();
+            for(int i=0;i<=N;i++)
+                samples.Append(Num(pressure[i].X,"R")).Append(':').Append(Num(pressure[i].Y,"R")).Append(':')
+                    .Append(Num(density[i].Y,"R")).Append(':').Append(Num(ispKeys[i].X,"R")).Append(':')
+                    .Append(Num(ispKeys[i].Y,"R")).Append(';');
+            Debug.Log("[DunaIntegratedPreview] model radius="+Num(radius,"R")+" mu="+Num(mu,"R")+
+                " top="+Num(top,"R")+" terrain="+Num(terrainRadius,"R")+" bottom="+Num(offset,"R")+
+                " omega="+Num(omega.X,"R")+","+Num(omega.Y,"R")+","+Num(omega.Z,"R")+
+                " target="+Num(target.X,"R")+","+Num(target.Y,"R")+","+Num(target.Z,"R")+
+                " forward="+Num(forward.X,"R")+","+Num(forward.Y,"R")+","+Num(forward.Z,"R")+
+                " pointingRate="+Num(initial.PointingRate,"R")+" attained="+Num(attained,"R")+
+                " flowKgS="+Num(flowTotal,"R")+" derate="+Num(derate,"R")+" fuelKg="+Num(usable,"R")+
+                " reserveKg="+Num(reserve,"R")+" touchdown="+Num(settings.Common.Terminal.TouchdownSpeed,"R")+
+                " samples(ASL:Pa:rho:atm:Isp)="+samples);
             var partIds=new uint[v.parts.Count];for(int i=0;i<partIds.Length;i++)partIds[i]=v.parts[i].flightID;
             return new Snapshot{Vessel=v.id,Parts=partIds,Latitude=lat,Longitude=lon,UT=s.Time,Mass=mass,
                 Cap=cap,Warp=TimeWarp.CurrentRate,DragArea=area,UsableFuel=usable,Initial=initial,
@@ -334,12 +334,13 @@ namespace MuMech.Landing
             catch(Exception ex){a.Error=ex.GetType().Name+": "+ex.Message;}
             return a;
         }
-        internal void Start(MechJebCore core,bool strategic=false)
+        internal bool Start(MechJebCore core,out string reason)
         {
             Cancel();
             try
             {
-                snapshot=Capture(core,strategic);answer=null;logged=false;
+                snapshot=Capture(core);answer=null;logged=false;
+                bool strategic=snapshot.Strategic;
                 var copy=snapshot;
                 cancel=new CancellationTokenSource();cancel.CancelAfter(strategic?20000:8000);
                 CancellationToken token=cancel.Token;
@@ -348,9 +349,19 @@ namespace MuMech.Landing
                 Debug.Log("[DunaIntegratedPreview] snapshot UT="+Num(copy.UT,"R")+" vessel="+copy.Vessel+
                     " target="+Num(copy.Latitude,"R")+","+Num(copy.Longitude,"R")+" massKg="+Num(copy.Mass)+
                     " mixtureKg="+Num(copy.UsableFuel)+" cap="+Num(copy.Cap,"F3")+
-                    " dragArea="+Num(copy.DragArea)+" model=approximate_no_actuation");
+                    " dragArea="+Num(copy.DragArea)+" model=approximate_no_actuation"+
+                    " mode="+(strategic?"orbit":"descent")+" position="+copy.Initial.R.X.ToString("R",CultureInfo.InvariantCulture)+","+
+                    copy.Initial.R.Y.ToString("R",CultureInfo.InvariantCulture)+","+copy.Initial.R.Z.ToString("R",CultureInfo.InvariantCulture)+
+                    " velocity="+Num(copy.Initial.Velocity.X,"R")+","+Num(copy.Initial.Velocity.Y,"R")+","+Num(copy.Initial.Velocity.Z,"R")+
+                    " reserveKg="+Num(copy.Limits.ReserveMass,"R")+" thrustAccel="+Num(core.VesselState.MaxThrustAcceleration,"R")+
+                    " offset="+Num(copy.Environment.BottomOffset,"R")+" response="+Num(copy.Limits.EngineRise,"R"));
+                reason=null;return true;
             }
-            catch(Exception ex){status="Unavailable: "+ex.Message;snapshot=null;}
+            catch(Exception ex)
+            {
+                reason=ex.Message;Cancel();status="Unavailable: "+reason;
+                Debug.Log("[DunaIntegratedPreview] "+status);return false;
+            }
         }
         internal bool Running=>job!=null&&!job.IsCompleted;
         internal void Cancel()
@@ -384,7 +395,7 @@ namespace MuMech.Landing
         {
             if(!SameContext(core,snap)||FlightGlobals.ActiveVessel!=core.vessel)return "vessel, target, reference part, topology, warp or epoch changed";
             var v=core.vessel;var s=core.VesselState;var body=v.mainBody;
-            if(core.Landing.DeployChutes||s.ParachuteDeployed||core.Thrust.LimiterMinThrottle||
+            if((core.Landing.DeployChutes&&s.Parachutes.Count>0)||s.ParachuteDeployed||core.Thrust.LimiterMinThrottle||
                 core.Thrust.DifferentialThrottle||core.Thrust.SmoothThrottle||v.ActionGroups[KSPActionGroup.RCS])
                 return "unsupported active actuator or throttle setting";
             if(ReflectionUtils.IsLoadedFAR)return "unsupported aero model";
@@ -433,7 +444,10 @@ namespace MuMech.Landing
         }
 
         internal bool ExecutionAvailable=>tracker!=null&&corridorPassed;
-        internal bool TryTakePlan(MechJebCore core,out Snapshot input,out AtmosphericPlanTracker plan,out string reason)
+        internal bool Finished=>!Running&&(snapshot==null||answer==null||answer.Validated==null||corridorPassed||
+            corridorStatus!=null&&corridorStatus.StartsWith("Rejected:"));
+        internal Snapshot Input=>snapshot;
+        internal bool TryTakePlan(MechJebCore core,out Snapshot input,out AtmosphericPlanTracker plan,out string reason,bool pending=false)
         {
             input=null;plan=null;
             if(!ExecutionAvailable){reason="no replayed and corridor-screened model trajectory";return false;}
@@ -441,8 +455,9 @@ namespace MuMech.Landing
             {
                 reason=LiveCompatibility(core,snapshot,true);
                 if(reason!=null)return false;
-                if(core.Landing.Enabled||core.Attitude.Users.Count!=0||core.Thrust.Users.Count!=1||
-                    !core.Thrust.Users.Contains(core.Thrust))
+                if(core.Landing.Enabled!=pending||
+                    !DunaLandingAdmission.OwnsActuators(core.Attitude.Users.Count,core.Attitude.Users.Contains(core.Landing),
+                        core.Thrust.Users.Count,core.Thrust.Users.Contains(core.Thrust),core.Thrust.Users.Contains(core.Landing),pending))
                 {reason="another autopilot owns attitude or throttle";return false;}
                 var s=core.VesselState;
                 if(core.vessel.ctrlState.mainThrottle>1e-4||s.CurrentThrustAcceleration>.05)
@@ -473,7 +488,8 @@ namespace MuMech.Landing
         internal void SetExecutionStatus(string message)=>executionStatus=message;
         internal string Poll(MechJebCore core)
         {
-            if(snapshot!=null&&!SameContext(core,snapshot)){Cancel();status="Cancelled: vessel, target, warp or topology changed";}
+            if(snapshot!=null&&!SameContext(core,snapshot)){Cancel();status="Cancelled: vessel, target, warp or topology changed";
+                Debug.Log("[DunaIntegratedPreview] "+status);}
             if(job!=null&&job.IsCompleted&&answer==null)
             {
                 try{answer=job.GetAwaiter().GetResult();status=answer.Error??"Snapshot complete";}

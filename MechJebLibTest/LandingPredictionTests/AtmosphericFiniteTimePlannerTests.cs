@@ -465,6 +465,137 @@ namespace MechJebLibTest.LandingPredictionTests
             return new D.State(0,X*radius,Y*Math.Sqrt(env.Mu/radius),1000,Y*(-1));
         }
 
+        // Representative KSP flight conditions exercise the production
+        // admission/settings code, not an alternate test-only policy.
+        // Duna radius/mu/rotation from previous captured body data; the
+        // craft mass, drag faces and sampled air curve are synthetic until
+        // the matching raw KSP snapshot is supplied.
+        private static D.Environment RepresentativeDuna(double area)
+        {
+            var p=new D.Curve(new D.Knot(0,20000),new D.Knot(10000,4500),
+                new D.Knot(20000,1000),new D.Knot(30000,150),new D.Knot(40000,20),new D.Knot(50000,0));
+            var rho=new D.Curve(new D.Knot(0,.145),new D.Knot(10000,.035),
+                new D.Knot(20000,.008),new D.Knot(30000,.0012),new D.Knot(40000,.00016),new D.Knot(50000,0));
+            return new D.Environment(320000,301363211975.0978,new D.V(0,0,-9.5900344839e-5),
+                50000,p,rho,area,320000,2);
+        }
+        [Fact]
+        public void KspAdmissionVacuumDragAndDefaultParachuteOption()
+        {
+            var drag=new MuMech.Landing.DunaLandingAdmission.DragAccumulator();
+            // Valid prospective cube faces, even when current AreaDrag=0
+            // and atmospheric pressure and density are both zero.
+            foreach(double face in new[]{2.0,2,4,4,3,3})drag.AddFace(.8,face);
+            Assert.Equal(2.4,drag.Finish(1,1),8);
+            var env=RepresentativeDuna(drag.Finish(1,1));
+            var orbit=Circular(env,60000);
+            Assert.True(env.Air(orbit.UT,orbit.R,out double p,out double rho));
+            Assert.Equal(0,p);Assert.Equal(0,rho);
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Mode.Orbit,
+                MuMech.Landing.DunaLandingAdmission.Choose(env,orbit,0,0,out var reason));
+            Assert.Null(reason);
+            Assert.Null(MuMech.Landing.DunaLandingAdmission.CheckContext(true,false,false,1,true,
+                true,0,false,false,false,false,false,false,30));
+            Assert.Equal("parachute dynamics unsupported",
+                MuMech.Landing.DunaLandingAdmission.CheckContext(true,false,false,1,true,
+                true,1,false,false,false,false,false,false,30));
+            Assert.Equal("active RCS unsupported",
+                MuMech.Landing.DunaLandingAdmission.CheckContext(true,false,false,1,true,
+                true,0,false,true,false,false,false,false,30));
+            Assert.Equal("active unpacked flight at 1x required",
+                MuMech.Landing.DunaLandingAdmission.CheckContext(true,false,false,5,true,
+                true,0,false,false,false,false,false,false,30));
+            drag.AddFace(double.NaN,2);
+            Assert.True(double.IsNaN(drag.Finish(1,1)));
+            Assert.True(double.IsNaN(new MuMech.Landing.DunaLandingAdmission.DragAccumulator().Finish(1,1)));
+            var noDrag=RepresentativeDuna(0);
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Mode.Refused,
+                MuMech.Landing.DunaLandingAdmission.Choose(noDrag,orbit,0,0,out reason));
+            Assert.Equal("prospective drag area unavailable",reason);
+        }
+
+        [Fact]
+        public void KspAdmissionEntryAndResourceAuthority()
+        {
+            var env=RepresentativeDuna(3);
+            var descending=new D.State(31154879,X*360000,new D.V(-50,500,0),1000,X);
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Mode.Descent,
+                MuMech.Landing.DunaLandingAdmission.Choose(env,descending,0,-50,out var reason));
+            Assert.Null(reason);
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Mode.Refused,
+                MuMech.Landing.DunaLandingAdmission.Choose(env,descending,.2,-50,out reason));
+            Assert.Equal("engagement requires unpowered coast",reason);
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Mode.Refused,
+                MuMech.Landing.DunaLandingAdmission.Choose(env,descending,0,5,out reason));
+            var inventory=new System.Collections.Generic.Dictionary<int,double>{{1,90},{2,110}};
+            var mixture=new System.Collections.Generic.Dictionary<int,double>{{1,.45},{2,.55}};
+            Assert.Equal(1000,MuMech.Landing.DunaLandingAdmission.UsableFuel(inventory,mixture,id=>5,2000),8);
+            inventory[2]=0;
+            Assert.True(double.IsNaN(MuMech.Landing.DunaLandingAdmission.UsableFuel(inventory,mixture,id=>5,2000)));
+            Assert.True(double.IsNaN(MuMech.Landing.DunaLandingAdmission.ImpulseDerate(0,2000,10000)));
+            Assert.Equal(.9,MuMech.Landing.DunaLandingAdmission.ImpulseDerate(5,2000,10000),8);
+            Assert.Null(MuMech.Landing.DunaLandingAdmission.Settings(env,Engine(),descending,X,0,5,.9,.5));
+            Assert.NotNull(MuMech.Landing.DunaLandingAdmission.Settings(env,Engine(),descending,X,1,5,.9,.5));
+        }
+
+        [Fact]
+        public void SingleClickAdmissionNeverEngagesStaleOrUnvalidatedPlan()
+        {
+            Assert.True(MuMech.Landing.DunaLandingAdmission.UsesIntegratedTargeted("Duna",true,true));
+            Assert.False(MuMech.Landing.DunaLandingAdmission.UsesIntegratedTargeted("Mun",false,true));
+            Assert.False(MuMech.Landing.DunaLandingAdmission.UsesIntegratedTargeted("Duna",true,false));
+            Assert.True(MuMech.Landing.DunaLandingAdmission.OwnsActuators(0,false,1,true,false,false));
+            Assert.True(MuMech.Landing.DunaLandingAdmission.OwnsActuators(1,true,2,true,true,true));
+            Assert.False(MuMech.Landing.DunaLandingAdmission.OwnsActuators(2,true,2,true,true,true));
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Progress.Waiting,
+                MuMech.Landing.DunaLandingAdmission.Next(true,true,true,false,false,false));
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Progress.Waiting,
+                MuMech.Landing.DunaLandingAdmission.Next(true,true,false,false,false,false));
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Progress.Engage,
+                MuMech.Landing.DunaLandingAdmission.Next(true,true,false,true,true,true));
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Progress.Refuse,
+                MuMech.Landing.DunaLandingAdmission.Next(true,true,false,true,true,false));
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Progress.Refuse,
+                MuMech.Landing.DunaLandingAdmission.Next(false,true,false,true,true,true));
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Progress.Refuse,
+                MuMech.Landing.DunaLandingAdmission.Next(true,false,false,true,true,true));
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Progress.Refuse,
+                MuMech.Landing.DunaLandingAdmission.Next(true,true,false,false,true,false));
+        }
+
+        [Fact]
+        public void RepresentativeDunaOrbitToTouchdownThroughProductionAdmission()
+        {
+            // Fixed target set before search. Enough propellant and thrust
+            // for a representative small rocket-powered Duna lander.
+            var env=RepresentativeDuna(3);
+            var initial=Circular(env,60000);
+            var engine=Engine(4);
+            var lim=new D.Limits(420,Math.PI/30,.1,.1,.5);
+            var target=new D.V(Math.Cos(2.3),Math.Sin(2.3),0);
+            var mode=MuMech.Landing.DunaLandingAdmission.Choose(env,initial,0,0,out string reason);
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Mode.Orbit,mode);
+            var set=MuMech.Landing.DunaLandingAdmission.Settings(env,engine,initial,target,1,
+                4*400*9.80665/initial.Mass, .9,.5);
+            Assert.NotNull(set);
+            var strategic=new Strategic.Settings(set,preparation:45,engagementLead:45);
+            var report=Strategic.Search(env,engine,lim,initial,strategic);
+            Console.WriteLine("orbital-admission-fixture status="+report.Status+" prefixes="+report.Prefixes+
+                " approaches="+report.Approaches+" steps="+report.Steps+" feasible="+report.Feasible+
+                " unresolved="+report.Unresolved+" miss="+report.Best?.OriginalMiss);
+            Assert.NotNull(report.Best);
+            Assert.True(report.Best.ReplayPassed);
+            Assert.True(report.Scenarios.Passed);
+            Assert.InRange(report.Best.OriginalMiss,0,set.Common.TargetTolerance);
+            var tracker=new Tracker(env,engine,lim,set,report.Best.Combined);
+            var decision=tracker.Track(initial,env.PhysicalClearance(initial),4*400*9.80665/initial.Mass,
+                1,env.Mu/(initial.R.Length*initial.R.Length),.1);
+            Assert.True(decision.Valid,decision.Reason);
+            Assert.Equal(0,decision.Command.Throttle);
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Progress.Engage,
+                MuMech.Landing.DunaLandingAdmission.Next(true,true,false,true,true,decision.Valid));
+        }
+
         [Fact]
         public void StrategicCircularOrbitAndPeriapsisSeedMatchAnalyticGeometry()
         {

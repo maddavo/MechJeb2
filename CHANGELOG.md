@@ -104,3 +104,9 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Try ranked alternatives under shared validation budgets before admitting a plan, including replan, fallback and whole orbital trajectory.
 - Allow explicitly bounded terminal replay continuation inside the engineering contact band; preserve all physical and trajectory consistency checks.
+
+## 2.16.0-landing.20261127.duna-integrated-m5.6
+
+- Use ordinary Land at target to automatically select and engage integrated Duna orbital/descent planning; no separate preview/execute interaction; explicit cancellation and refusal.
+- Obtain prospective drag from stock drag-cube geometry rather than instantaneous vacuum drag, and admit default parachute settings on craft without parachutes.
+- Share numerical admission and lifecycle decisions with representative offline tests and record capture inputs in ordinary KSP logs.

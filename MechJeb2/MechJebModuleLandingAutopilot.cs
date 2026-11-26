@@ -532,41 +532,47 @@ namespace MuMech
             }
         }
 
-        // Deliberate experimental entry point. Ordinary target/untargeted
-        // entry points are unchanged and cannot select this controller.
-        internal bool StartIntegratedDescent(object controller,DunaIntegratedPreview.Snapshot snapshot,
-            AtmosphericPlanTracker tracker)
+        internal bool IntegratedLandingActive => CurrentStep is DunaIntegratedDescent||CurrentStep is DunaIntegratedPlanning;
+        internal string IntegratedLandingStatus {get;private set;}
+        private void RecordIntegratedStatus(string reason)
         {
-            if(Enabled||Users.Count!=0||snapshot==null||tracker==null||
-                Core.Attitude.Users.Count!=0||Core.Thrust.Users.Count!=1||
-                !Core.Thrust.Users.Contains(Core.Thrust))return false;
-            string reason=DunaIntegratedPreview.LiveCompatibility(Core,snapshot,true);
-            if(reason!=null)return false;
-            // Construct the step before acquiring actuator ownership.
-            var step=new DunaIntegratedDescent(Core,snapshot,tracker);
-            ObserveDunaM1("integrated_experimental_start");
+            IntegratedLandingStatus=reason;
+            Debug.Log("[DunaIntegratedLanding] "+reason);
+        }
+
+        // The existing targeted-landing action is the sole engagement
+        // action on Duna. Refuse unsupported cases rather than silently
+        // reverting to the unrelated legacy controller.
+        private void StartIntegratedLanding(object controller)
+        {
+            if(IntegratedLandingActive)EndIntegratedDescent("new targeted landing");
+            if(Enabled||Users.Count!=0||
+                !DunaLandingAdmission.OwnsActuators(Core.Attitude.Users.Count,Core.Attitude.Users.Contains(this),
+                    Core.Thrust.Users.Count,Core.Thrust.Users.Contains(Core.Thrust),Core.Thrust.Users.Contains(this),false))
+            {RecordIntegratedStatus("Refused: another autopilot owns attitude or throttle");return;}
+            // Match the existing Land at target behavior for saved minimum
+            // throttle. Other unsupported settings are explicitly refused.
+            Core.Thrust.LimiterMinThrottle=false;
+            var planning=new DunaIntegratedPlanning(Core);
+            if(!planning.Start(out string reason))
+            {RecordIntegratedStatus("Refused: "+reason);return;}
+            ObserveDunaM1("integrated_targeted_landing");
             ResetDunaBrakingHandoff();ResetWarpPreparation();
             LandAtTarget=true;_deployedGears=false;
-            SetStep(step);
+            SetStep(planning);
             try
             {
                 Users.Add(controller);
                 Core.Thrust.ThrustOff();
-                Debug.Log("[DunaIntegratedDescent] engaged model-only trajectory; miss="+tracker.TargetMiss+
-                    " contactUT="+tracker.EndUT+" reserveKg="+tracker.ReserveMass);
-                return true;
+                RecordIntegratedStatus("Planning requested by Land at target");
             }
-            catch(Exception ex)
-            {
-                EndIntegratedDescent("engagement failed: "+ex.Message);
-                return false;
-            }
+            catch(Exception ex){EndIntegratedDescent("engagement failed: "+ex.Message);}
         }
 
         internal void EndIntegratedDescent(string reason)
         {
-            if(!(CurrentStep is DunaIntegratedDescent))return;
-            Debug.Log("[DunaIntegratedDescent] stopped: "+reason);
+            if(!IntegratedLandingActive)return;
+            RecordIntegratedStatus("Stopped: "+reason);
             // Only release this controller's users. If a competing owner
             // appeared, do not zero or deactivate that owner's commands.
             if(Enabled)Users.Clear();
@@ -575,6 +581,7 @@ namespace MuMech
         private void ReleaseIntegratedDescent()
         {
             if(CurrentStep is DunaIntegratedDescent integrated)integrated.CancelReplanning();
+            if(CurrentStep is DunaIntegratedPlanning planning)planning.Cancel();
             if(Core.Thrust.Users.Contains(this)&&Core.Thrust.Users.Count<=2)
                 Core.Thrust.ThrustOff();
             Core.Thrust.Users.Remove(this);
@@ -585,24 +592,27 @@ namespace MuMech
 
         public override void OnControlLost()
         {
-            if(CurrentStep is DunaIntegratedDescent)EndIntegratedDescent("control lost");
+            if(IntegratedLandingActive)EndIntegratedDescent("control lost");
             base.OnControlLost();
         }
         public override void OnInactive()
         {
-            if(CurrentStep is DunaIntegratedDescent)EndIntegratedDescent("vessel inactive");
+            if(IntegratedLandingActive)EndIntegratedDescent("vessel inactive");
             base.OnInactive();
         }
         public override void OnDestroy()
         {
-            if(CurrentStep is DunaIntegratedDescent)EndIntegratedDescent("module destroyed");
+            if(IntegratedLandingActive)EndIntegratedDescent("module destroyed");
             base.OnDestroy();
         }
 
         //public interface:
         public void LandAtPositionTarget(object controller)
         {
-            if(CurrentStep is DunaIntegratedDescent)EndIntegratedDescent("explicit switch to legacy targeted landing");
+            if(DunaLandingAdmission.UsesIntegratedTargeted(MainBody?.bodyName,MainBody!=null&&MainBody.atmosphere,true))
+            {StartIntegratedLanding(controller);return;}
+            if(IntegratedLandingActive)EndIntegratedDescent("explicit switch to legacy targeted landing");
+            IntegratedLandingStatus=null;
             ObserveDunaM1("new_targeted_landing");
             ResetDunaBrakingHandoff();
             ResetWarpPreparation();
@@ -636,7 +646,7 @@ namespace MuMech
 
         public void LandUntargeted(object controller)
         {
-            if(CurrentStep is DunaIntegratedDescent)EndIntegratedDescent("explicit switch to untargeted landing");
+            if(IntegratedLandingActive)EndIntegratedDescent("explicit switch to untargeted landing");
             ObserveDunaM1("switched_to_untargeted");
             ResetDunaBrakingHandoff();
             ResetWarpPreparation();
@@ -658,7 +668,7 @@ namespace MuMech
 
         public void StopLanding()
         {
-            if(CurrentStep is DunaIntegratedDescent){EndIntegratedDescent("manual abort");return;}
+            if(IntegratedLandingActive){EndIntegratedDescent("manual abort");return;}
             ObserveDunaM1(Vessel.LandedOrSplashed ? "landed_or_splashed" : "landing_stopped");
             ResetDunaBrakingHandoff();
             ResetWarpPreparation();
@@ -680,6 +690,7 @@ namespace MuMech
             if (!Active)
                 return;
 
+            if(CurrentStep is DunaIntegratedPlanning){base.Drive(s);return;}
             if(CurrentStep is DunaIntegratedDescent)
             {
                 // Gear deployment uses the existing mechanism. The plan
@@ -709,7 +720,7 @@ namespace MuMech
 
         public override void OnFixedUpdate()
         {
-            if(CurrentStep is DunaIntegratedDescent){base.OnFixedUpdate();return;}
+            if(IntegratedLandingActive){base.OnFixedUpdate();return;}
             if (!ReferenceEquals(_warpBody, MainBody) || _warpLatitude != (double)Core.Target.targetLatitude ||
                 _warpLongitude != (double)Core.Target.targetLongitude)
             {
@@ -814,7 +825,7 @@ namespace MuMech
 
         protected override void OnModuleDisabled()
         {
-            if(CurrentStep is DunaIntegratedDescent){ReleaseIntegratedDescent();return;}
+            if(IntegratedLandingActive){ReleaseIntegratedDescent();return;}
             ObserveDunaM1("module_disabled");
             ResetDunaBrakingHandoff();
             ResetWarpPreparation();

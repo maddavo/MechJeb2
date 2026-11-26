@@ -13,7 +13,6 @@ namespace MuMech
     public class MechJebModuleLandingGuidance : DisplayModule
     {
         private MechJebModuleLandingPredictions _predictor;
-        private readonly DunaIntegratedPreview _integratedPreview = new DunaIntegratedPreview();
         public static List<LandingSite> LandingSites;
 
         [UsedImplicitly, Persistent(pass = (int)(Pass.GLOBAL | Pass.LOCAL))]
@@ -37,7 +36,6 @@ namespace MuMech
 
         protected override void OnModuleDisabled()
         {
-            _integratedPreview.Cancel();
             base.OnModuleDisabled();
         }
 
@@ -123,7 +121,9 @@ namespace MuMech
             }
 
             var integrated=Core.Landing?.CurrentStep as DunaIntegratedDescent;
-            if(integrated!=null)
+            var planning=Core.Landing?.CurrentStep as DunaIntegratedPlanning;
+            if(planning!=null)GUILayout.Label(planning.ForecastText(),new GUIStyle(GUI.skin.label){wordWrap=true});
+            else if(integrated!=null)
             {
                 GUILayout.Label(integrated.ForecastText(),new GUIStyle(GUI.skin.label){wordWrap=true});
                 if(_predictor.Enabled)
@@ -157,7 +157,7 @@ namespace MuMech
                 GuiUtils.SimpleTextBox(Localizer.Format("#MechJeb_LandingGuidance_label3"), Core.Landing.TouchdownSpeed, "m/s",
                     35); //Touchdown speed:
 
-                if(integrated!=null)GUILayout.Label("Integrated guidance: 1x only");
+                if(integrated!=null||planning!=null)GUILayout.Label("Integrated guidance: 1x only");
                 else if (Core.Landing != null)
                     Core.Node.Autowarp = GUILayout.Toggle(Core.Node.Autowarp, Localizer.Format("#MechJeb_LandingGuidance_checkbox1")); //Auto-warp
 
@@ -179,7 +179,8 @@ namespace MuMech
                     StableInformationRow(Localizer.Format("#MechJeb_LandingGuidance_label6") + Core.Landing.Status); //Status:
                     StableInformationRow(Localizer.Format("#MechJeb_LandingGuidance_label7") +
                         (Core.Landing.CurrentStep != null ? Core.Landing.CurrentStep.GetType().Name : "N/A")); //Step:
-                    if(integrated!=null)StableInformationRow("Mode: integrated trajectory tracking");
+                    if(planning!=null)StableInformationRow("Mode: integrated planning");
+                    else if(integrated!=null)StableInformationRow("Mode: integrated trajectory tracking");
                     else StableInformationRow(Localizer.Format("#MechJeb_LandingGuidance_label8") +
                         (Core.Landing.DescentSpeedPolicy != null ? Core.Landing.DescentSpeedPolicy.GetType().Name : "N/A") + " (" +
                         Core.Landing.UseAtmosphereToBrake() + ")"); //Mode
@@ -199,35 +200,9 @@ namespace MuMech
                 GUILayout.Space(4);
                 Core.Landing.LandingTraceEnabled = GUILayout.Toggle(Core.Landing.LandingTraceEnabled, "Log trace data");
                 GUILayout.Label("Build: " + Core.version);
-                if (MainBody != null && MainBody.bodyName == "Duna" && integrated==null)
-                {
-                    string preview = _integratedPreview.Poll(Core);
-                    if (_integratedPreview.Running)
-                    {
-                        if (GUILayout.Button("Cancel descent preview")) _integratedPreview.Cancel();
-                    }
-                    else
-                    {
-                        if (GUILayout.Button("Evaluate integrated descent (preview)"))
-                            _integratedPreview.Start(Core);
-                        if (GUILayout.Button("Evaluate integrated landing from orbit (preview)"))
-                            _integratedPreview.Start(Core,true);
-                    }
-                    GUILayout.Label(preview, new GUIStyle(GUI.skin.label) { wordWrap = true });
-                    if(!Core.Landing.Enabled&&_integratedPreview.ExecutionAvailable)
-                    {
-                        GUILayout.Label("Experimental model only. Check fuel, terrain and manual takeover.");
-                        if(GUILayout.Button("Execute integrated descent (experimental)"))
-                        {
-                            if(_integratedPreview.TryTakePlan(Core,out var snapshot,out var tracker,out string reason)&&
-                                Core.Landing.StartIntegratedDescent(this,snapshot,tracker))
-                                _integratedPreview.Cancel();
-                            else
-                                _integratedPreview.SetExecutionStatus("Engagement refused: "+(reason??"actuator ownership unavailable"));
-                        }
-                    }
-                }
-                else _integratedPreview.Cancel();
+                if(MainBody!=null&&MainBody.bodyName=="Duna"&&!Core.Landing.Enabled&&
+                    !string.IsNullOrEmpty(Core.Landing.IntegratedLandingStatus))
+                    GUILayout.Label(Core.Landing.IntegratedLandingStatus,new GUIStyle(GUI.skin.label){wordWrap=true});
             }
 
             GUILayout.EndVertical();
