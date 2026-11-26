@@ -45,6 +45,14 @@ def records(path, first=1, last=None):
                 raise ValueError(f"Invalid record at source line {line}")
             yield line,data
 
+def fingerprint(path):
+    s=pathlib.Path(path).stat()
+    return (s.st_size,s.st_mtime_ns,s.st_ino)
+
+def unchanged(path,before):
+    if fingerprint(path)!=before:
+        raise ValueError("Source changed during analysis; use a stable copy")
+
 def file_digest(path):
     h=hashlib.sha256()
     with pathlib.Path(path).open("rb") as f:
@@ -67,6 +75,7 @@ def catalogue(path):
     are evidence of boundaries. Old/new runs with identical target and UT can
     still be indistinguishable; operator must confirm log and save lineage.
     """
+    before=fingerprint(path)
     windows=[]
     window=None
     last_state_ut=None
@@ -109,6 +118,7 @@ def catalogue(path):
                 window["phases"].append(phase)
         else: window["predictions"]+=1
     finish()
+    unchanged(path,before)
     return {"source":str(path),"identity":"candidate_windows_not_sessions","windows":windows}
 
 def interval_ok(a,b,max_gap):
@@ -154,10 +164,12 @@ def actual_impulse(samples,max_gap,mode):
 
 def select_legacy(path,first,last,expected,max_gap):
     if first<1 or last<first: raise ValueError("Invalid source line range")
+    before=fingerprint(path)
     selected=list(records(path,first,last))
     if len(selected)!=last-first+1: raise ValueError("Range extends past EOF")
     states=[]; predictions=[]; transitions=[]
     last_ut=None
+    previous_phase=None
     for l,r in selected:
         k=r.get("recordType")
         if k in STATE:
@@ -165,7 +177,11 @@ def select_legacy(path,first,last,expected,max_gap):
             if not finite(t): raise ValueError(f"Missing state UT at line {l}")
             if last_ut is not None and t<last_ut-EPS: raise ValueError("Mixed run: state UT regressed")
             last_ut=t
-            if k=="guidance_transition": transitions.append({"sourceLine":l,"record":r})
+            if k=="guidance_transition":
+                if r.get("phase") in START_PHASES and previous_phase not in (None,*START_PHASES):
+                    raise ValueError("Selected range contains a new approach transition")
+                transitions.append({"sourceLine":l,"record":r})
+            previous_phase=r.get("phase")
             # Prefer actual guidance_state over a same-epoch transition.
             if states and t==states[-1]["ut"]: states[-1]=r
             else: states.append(r)
@@ -185,6 +201,7 @@ def select_legacy(path,first,last,expected,max_gap):
         "phaseImpulse":actual_impulse(states,max_gap,"legacy"),
         "actualTouchdown":"unobserved_in_legacy_schema",
         "sourceSHA256":file_digest(path)}
+    unchanged(path,before)
     return report,selected
 
 def load_m1(path):
@@ -196,12 +213,15 @@ def load_m1(path):
     identity=tuple(header.get(k) for k in ("session","vessel","body","targetLat","targetLon"))
     if not all(isinstance(s,str) and s for s in identity[:3]) or target(header) is None:
         raise ValueError("Missing M1 identity")
-    samples=[]; terminal=None
+    samples=[]; terminal=None; ended=False
     for l,r in rows:
         if r.get("schemaVersion")!=1 or tuple(r.get(k) for k in ("session","vessel","body","targetLat","targetLon"))!=identity:
             raise ValueError(f"Mixed or unsupported session at {l}")
-        if terminal is not None: raise ValueError("Rows after session_end")
-        if r.get("recordType")=="session_end": terminal=r.get("reason")
+        if ended: raise ValueError("Rows after session_end")
+        if l!=rows[0][0] and r.get("recordType")=="session_start":
+            raise ValueError("Repeated session_start")
+        if r.get("recordType")=="session_end":
+            terminal=r.get("reason"); ended=True
         if r.get("recordType")=="live":
             t=r.get("ut")
             if not finite(t) or (samples and t<samples[-1]["ut"]-EPS): raise ValueError("Invalid live UT lineage")
@@ -260,14 +280,16 @@ def force_closure(samples,radius,omega,mu,max_gap):
         p["maxPositionResidual_m"]=max(p["maxPositionResidual_m"],er)
     for p in d.values():
         n=p["intervals"]
-        p["rmsVelocityResidual_m_s"]=math.sqrt(p.pop("velocityResidualSquared")/n) if n else None
-        p["rmsPositionResidual_m"]=math.sqrt(p.pop("positionResidualSquared")/n) if n else None
+        v2=p.pop("velocityResidualSquared");r2=p.pop("positionResidualSquared")
+        p["rmsVelocityResidual_m_s"]=math.sqrt(v2/n) if n else None
+        p["rmsPositionResidual_m"]=math.sqrt(r2/n) if n else None
         if not n: p["maxVelocityResidual_m_s"]=p["maxPositionResidual_m"]=None
     return dict(d)
 
 def m1_report(path,radius,omega,mu,max_gap):
+    before=fingerprint(path)
     header,samples,terminal=load_m1(path)
-    return {"identity":"guid_authenticated_capture", "session":header,
+    report={"identity":"guid_identified_capture", "session":header,
         "sourceSHA256":file_digest(path),"samples":len(samples),
         "firstLive":samples[0],"lastLive":samples[-1],"sessionEndReason":terminal,
         "actualTouchdown":"observed_landed_or_splashed_state" if any(s.get("situation") in ("LANDED","SPLASHED") for s in samples) else "not_observed",
@@ -278,6 +300,8 @@ def m1_report(path,radius,omega,mu,max_gap):
             "Verify signed rotation convention and CoM/NEU basis against matching runtime state.",
             "Per-step residuals at recorded cadence; no interpolation across warp/gaps.",
             "Actual landed state distinct from predictor outcome; no touchdown-speed certification."]}
+    unchanged(path,before)
+    return report
 
 class Tests(unittest.TestCase):
     def write(self,rows):
@@ -332,6 +356,17 @@ class Tests(unittest.TestCase):
         self.assertEqual(a,(3,1,2))
         s["dragAccelNEU"]=None
         self.assertIsNone(inertial(s,0,320000,.0001,0))
+    def test_same_target_new_approach_rejected(self):
+        a=self.legacy_state(1,"FinalDescent")
+        b=dict(self.legacy_state(2,"DeorbitBurn"),recordType="guidance_transition")
+        p=self.write([a,b,{"recordType":"predictor_result","processUT":2,
+            "body":"Duna","targetLat":1,"targetLon":2}])
+        self.assertEqual(catalogue(p)["windows"][1]["boundary"],"new_approach_transition")
+        with self.assertRaises(ValueError): select_legacy(p,1,3,("Duna",1,2),1.25)
+    def test_m1_rows_after_end_rejected(self):
+        h={"recordType":"session_start","schemaVersion":1,"session":"s","vessel":"v","body":"Duna","targetLat":1,"targetLon":2}
+        p=self.write([h,dict(h,recordType="session_end",reason=None),dict(h,recordType="live",ut=1)])
+        with self.assertRaises(ValueError): load_m1(p)
     def test_legacy_no_contact_claim(self):
         p=self.write([self.legacy_state(1),{"recordType":"predictor_result","processUT":1,
             "body":"Duna","targetLat":1,"targetLon":2,"outcome":"LANDED"}])

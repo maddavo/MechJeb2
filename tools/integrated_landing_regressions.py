@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """M0: repeat the common landing tests using genuine local KSP references.
 
-Local-only. No installation, KSP launch, existing checkout modification, network
-fetch, test expectation edits or deletion. Detached worktrees are created under
+Local-only. No installation, KSP launch, existing checkout modification, git
+fetch, test expectation edits or deletion. Normal dotnet restore may use NuGet. Detached worktrees are created under
 a new output directory and deliberately retained for failure investigation.
 """
 import argparse
@@ -117,6 +117,17 @@ def run(repo,ksp,out):
             item["status"]="test_results"
             item["testCount"]=len(rows)
             item["passed"]=sum(x["outcome"]=="Passed" for x in rows)
+            # The test project's Private=True references must be copied into
+            # its own build output. Verify bytes against installed assemblies,
+            # not merely that the command supplied KspData.
+            bin_dir=wt/"MechJebLibTest"/"bin"/"Release"
+            item["copiedTestReferences"]=[]
+            for ref in refs:
+                candidates=list(bin_dir.rglob(ref.name))
+                hashes=[sha256(x) for x in candidates]
+                item["copiedTestReferences"].append({"name":ref.name,"copies":len(candidates),
+                    "hashes":hashes,"allMatchInstalled":bool(hashes) and all(h==sha256(ref) for h in hashes)})
+            item["testReferenceCopiesVerified"]=all(x["allMatchInstalled"] for x in item["copiedTestReferences"])
             item["failures"]=[x for x in rows if x["outcome"]!="Passed"]
             (dst/"all-results.json").write_text(json.dumps(rows,indent=2),encoding="utf-8")
             if p==PINS[0]:baseline=rows
@@ -128,7 +139,7 @@ def run(repo,ksp,out):
         persist()
     # Verify installed inputs did not change during the comparison.
     result["referenceInputsUnchanged"]=all(sha256(p)==x["sha256"] for p,x in zip(files,identity))
-    all_runs=all(x.get("status")=="test_results" for x in result["runs"])
+    all_runs=all(x.get("status")=="test_results" and x.get("testReferenceCopiesVerified") is True for x in result["runs"])
     result["m0Gate"]="reference_inputs_changed" if not result["referenceInputsUnchanged"] else (
         "incomplete" if not all_runs else "await_review_of_actual_results")
     persist()
