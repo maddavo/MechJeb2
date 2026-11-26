@@ -122,7 +122,14 @@ namespace MuMech
                 GUILayout.EndHorizontal();
             }
 
-            DrawGUITogglePredictions();
+            var integrated=Core.Landing?.CurrentStep as DunaIntegratedDescent;
+            if(integrated!=null)
+            {
+                GUILayout.Label(integrated.ForecastText(),new GUIStyle(GUI.skin.label){wordWrap=true});
+                if(_predictor.Enabled)
+                    GUILayout.Label("Legacy map overlays are not the integrated forecast.");
+            }
+            else DrawGUITogglePredictions();
 
             if (Core.Landing != null)
             {
@@ -150,7 +157,8 @@ namespace MuMech
                 GuiUtils.SimpleTextBox(Localizer.Format("#MechJeb_LandingGuidance_label3"), Core.Landing.TouchdownSpeed, "m/s",
                     35); //Touchdown speed:
 
-                if (Core.Landing != null)
+                if(integrated!=null)GUILayout.Label("Integrated guidance: 1x only");
+                else if (Core.Landing != null)
                     Core.Node.Autowarp = GUILayout.Toggle(Core.Node.Autowarp, Localizer.Format("#MechJeb_LandingGuidance_checkbox1")); //Auto-warp
 
                 Core.Landing.DeployGears =
@@ -171,7 +179,8 @@ namespace MuMech
                     StableInformationRow(Localizer.Format("#MechJeb_LandingGuidance_label6") + Core.Landing.Status); //Status:
                     StableInformationRow(Localizer.Format("#MechJeb_LandingGuidance_label7") +
                         (Core.Landing.CurrentStep != null ? Core.Landing.CurrentStep.GetType().Name : "N/A")); //Step:
-                    StableInformationRow(Localizer.Format("#MechJeb_LandingGuidance_label8") +
+                    if(integrated!=null)StableInformationRow("Mode: integrated trajectory tracking");
+                    else StableInformationRow(Localizer.Format("#MechJeb_LandingGuidance_label8") +
                         (Core.Landing.DescentSpeedPolicy != null ? Core.Landing.DescentSpeedPolicy.GetType().Name : "N/A") + " (" +
                         Core.Landing.UseAtmosphereToBrake() + ")"); //Mode
                     //GUILayout.Label("DecEndAlt: " + core.landing.DecelerationEndAltitude().ToString("F2"));
@@ -190,7 +199,7 @@ namespace MuMech
                 GUILayout.Space(4);
                 Core.Landing.LandingTraceEnabled = GUILayout.Toggle(Core.Landing.LandingTraceEnabled, "Log trace data");
                 GUILayout.Label("Build: " + Core.version);
-                if (MainBody != null && MainBody.bodyName == "Duna")
+                if (MainBody != null && MainBody.bodyName == "Duna" && integrated==null)
                 {
                     string preview = _integratedPreview.Poll(Core);
                     if (_integratedPreview.Running)

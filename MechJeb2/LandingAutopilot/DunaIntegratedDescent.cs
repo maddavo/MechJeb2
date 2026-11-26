@@ -22,6 +22,25 @@ namespace MuMech.Landing
         private double nextSurfaceUT=double.NegativeInfinity,deckOffset;
         private string detail="";
         public override string TraceDetails=>detail;
+        // GUI must not present the independent legacy predictor as the
+        // forecast of this controller. Reproject contact radial at the
+        // present body orientation; the plan remains a model forecast.
+        internal string ForecastText()
+        {
+            if(hazardMode)return "Integrated forecast invalidated: "+hazardReason;
+            double now=VesselState.Time;
+            if(terminalExtension||now>=tracker.EndUT)return "Integrated contact epoch expired; terminal extension";
+            var end=tracker.Plan.Result.End;
+            var radial=AtmosphericFeasibleRangePlanner.RotateTarget(end.R.Unit,activeEnvironment.Omega,now-end.UT);
+            Vector3d world=MainBody.position+DunaIntegratedPreview.World(radial*MainBody.Radius);
+            double miss=AtmosphericFeasibleRangePlanner.Miss(snapshot.Environment,snapshot.Initial,end,
+                snapshot.Settings.Common.TargetAtInitialUT);
+            return "Integrated trajectory (model only)"+(emergency?"; alternative site":"")+
+                "\nContact "+MainBody.GetLatitude(world).ToString("F6",CultureInfo.InvariantCulture)+
+                "°, "+MainBody.GetLongitude(world).ToString("F6",CultureInfo.InvariantCulture)+"°"+
+                "\nOriginal target miss "+Num(miss/1000)+" km; contact in "+Num(end.UT-now)+" s"+
+                "\nModel remaining mass above reserve "+Num(end.Mass-tracker.ReserveMass)+" kg";
+        }
         internal DunaIntegratedDescent(MechJebCore core,DunaIntegratedPreview.Snapshot snapshot,
             AtmosphericPlanTracker tracker):base(core)
         {
