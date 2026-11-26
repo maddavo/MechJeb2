@@ -208,3 +208,7 @@ See the [integrated landing guidance implementation plan](docs/Integrated-Landin
 ### Independent Duna dynamics M1 test build
 
 `2.16.0-landing.20261126.duna-dynamics-m1.1` adds a non-actuating atmospheric reference model and synthetic tests. See [M1 scope and limits](docs/Integrated-Landing-Dynamics-M1.md). Not a replacement live landing controller or flight-validated release.
+
+## Integrated landing guidance development
+
+Current branch experimental version: `2.16.0-landing.20261126.duna-dynamics-m1.2`. This is a non-actuating engineering increment, not a new landing controller or a deployable flight fix. See the [binding implementation plan](docs/Integrated-Landing-Guidance-Plan.md) and [M1 dynamics/replay contract](docs/Integrated-Landing-Dynamics-M1.md). Run the independent model tests with `dotnet test tools/DunaDynamicsTests/DunaDynamicsTests.csproj -c Release`; real KSP-reference and flight validation remain required.

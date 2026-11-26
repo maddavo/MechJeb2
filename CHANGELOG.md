@@ -25,3 +25,9 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Explicit correction preparation fit for both deadlines, fail-closed capture, optional passive lift adapter.
 - Three further synthetic tests; no runtime activation.
+
+## 2.16.0-landing.20261126.duna-dynamics-m1.2
+
+- Added explicit SI force decomposition, deterministic atmosphere/aerodynamic adapters and strict scalar altitude lookup to the independent dynamics model.
+- Added continuous bounded command-history replay with separate state and measured-force residuals, explicit invalid/unknown data, contact and cancellation handling; ten new synthetic tests.
+- No live guidance change, no installation or flight-validation claim. Continue original M0/M1 gates.
