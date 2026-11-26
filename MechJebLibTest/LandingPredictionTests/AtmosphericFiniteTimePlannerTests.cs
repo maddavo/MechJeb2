@@ -20,6 +20,7 @@ namespace MechJebLibTest.LandingPredictionTests
     {
         private static D.V X=>new D.V(1,0,0);
         private static D.V Y=>new D.V(0,1,0);
+        private static D.V Z=>new D.V(0,0,1);
         private static D.Environment Env(double mu=0)=>new D.Environment(320000,mu,default,0,null,null,0,320000,0);
         private static D.Propulsion Engine(double flow=1)=>new D.Propulsion(true,
             new D.Engine(flow,1,9.80665,default,new D.Curve(new D.Knot(0,400))));
@@ -594,6 +595,100 @@ namespace MechJebLibTest.LandingPredictionTests
                 MuMech.Landing.DunaLandingAdmission.Next(true,false,false,true,true,true));
             Assert.Equal(MuMech.Landing.DunaLandingAdmission.Progress.Refuse,
                 MuMech.Landing.DunaLandingAdmission.Next(true,true,false,false,true,false));
+        }
+
+        [Fact]
+        public void LargePlaneChangeSeedIncludesFullNormalAndRetrogradeImpulse()
+        {
+            // 45-degree out-of-plane target, with a lower transfer speed.
+            double speed=850,desired=790,angle=Math.PI/4;
+            D.V wanted=Y*Math.Cos(angle)+Z*Math.Sin(angle);
+            Assert.True(Strategic.PlaneChangeSeed(X,Y,Z,wanted,speed,desired,out double dv,out double normal));
+            Assert.InRange(normal,.75,.99);
+            Assert.InRange((Y*speed+(Y*(-Math.Sqrt(1-normal*normal))+Z*normal)*dv-wanted*desired).Length,0,1e-9);
+            double flow=367.09782481193542,force=1295999.2749222436,mass=288301.10267270356;
+            double duration=Strategic.SeedBurnTime(dv,mass,force,flow,.85);
+            Assert.InRange(duration,1,300);
+            Assert.InRange(Math.Abs((force/flow)*Math.Log(mass/(mass-duration*flow*.85))-dv),0,1e-9);
+            Assert.True(Strategic.PlaneChangeSeed(X,Y,Z,Y*Math.Cos(angle)-Z*Math.Sin(angle),
+                speed,desired,out double oppositeDv,out double oppositeNormal));
+            Assert.Equal(dv,oppositeDv,8);
+            Assert.Equal(-normal,oppositeNormal,8);
+        }
+
+        [Fact]
+        public void RecordedEagleOrbitalSnapshotExercisesActualStrategicSearch()
+        {
+            // KSP.log 156992-156995, M5.6 snapshot. The density knots are
+            // the actual suspect M5.6 model, NOT a corrected atmosphere.
+            // This is diagnostic coverage, not a landing acceptance test.
+            double[] pressure={6755.000114440918,6220.9734916687012,5712.5134468078613,
+                5229.4244766235352,4771.5115547180176,4338.5791778564453,3930.4313659667969,
+                3546.8735694885254,3187.7100467681885,2852.7452945709229,2541.7847633361816,
+                2254.631519317627,1991.091251373291,1750.969409942627,1534.0690612792969,
+                1340.1951789855957,1167.6148176193237,1010.6047391891479,868.39199066162109,
+                740.68832397460938,627.20531225204468,527.65464782714844,441.74796342849731,
+                369.19701099395752,309.71336364746094,263.008713722229,228.08383405208588,
+                198.10594618320465,171.28054797649384,147.41876721382141,126.33171677589417,
+                107.83055424690247,91.7263776063919,77.830314636230469,65.953493118286133,
+                55.90704083442688,47.502085566520691,40.549725294113159,34.861117601394653,
+                30.247390270233154,26.519611477851868,23.488998413085938,20.966619253158569,
+                18.763557076454163,16.691029071807861,14.568695798516273,12.535063549876213,
+                10.698907077312469,9.0502165257930756,7.5789857655763626,6.2752049416303635,
+                5.12886606156826,4.1299620643258095,3.2684849575161934,2.53442395478487,
+                1.9177738577127457,1.4085248112678528,.99666882306337357,.67219790071249008,
+                .4251040518283844,.24537928402423859,.12301560491323435,.048001296818256378,
+                .01033395528793335,0};
+            double[] isp={359.99981022030937,359.88728281380975,359.7746455440867,
+                359.661953342752,359.54917874399979,359.43634921363594,359.32340982004882,
+                359.21041549484994,359.09733877223357,358.98417965219971,358.87093813474837,
+                358.75764168568543,358.6442628392048,358.5308015953068,358.41725795399128,
+                358.30365938106411,358.18997841071939,358.07621504295724,357.96239674358344,
+                357.84849604679404,357.7345129525832,357.62047492676265,357.50632703771879,
+                357.39215168286916,357.27786646479609,357.16352631511143,357.04913123381505,
+                356.93462628929535,356.820066413164,356.705451605421,356.59075440026049,
+                356.47597479768245,356.36114026349276,356.24622333188557,356.13125154896283,
+                356.01619720803029,355.90108801578231,355.78589642611678,355.67064990483959,
+                355.55532098614492,355.4399096700327,355.32444342230883,355.2089222429733,
+                355.09331866622034,354.97766015785561,354.86191925207339,354.74612341467957,
+                354.63024517986821,354.51431201344514,354.39832391541046,354.28225341995829,
+                354.16610052708859,354.049920168413,353.93365741232003,353.81731225880952,
+                353.70091217368724,353.58445715695348,353.46794720860788,353.35135486284486,
+                353.23470758547012,353.11797791067795,353.00119330427407,352.88435376625858,
+                352.76745929663139,352.6504824295867};
+            Assert.Equal(65,pressure.Length);Assert.Equal(65,isp.Length);
+            var p=pressure.Select((v,i)=>new D.Knot(i*781.25,v)).ToArray();
+            // Ratio is identical at every nonzero-pressure captured knot.
+            const double densityPerPa=.0007013894313998122;
+            var rho=pressure.Select((v,i)=>new D.Knot(i*781.25,v*densityPerPa)).ToArray();
+            var ip=isp.Select((v,i)=>new D.Knot(pressure[0]*i/64/101325,v)).ToArray();
+            var env=new D.Environment(320000,301363211975.09772,new D.V(0,-9.5900344839060708e-5,0),
+                50000,new D.Curve(p),new D.Curve(rho),156.35308946772946,322626.89560281805,23.187303275783847);
+            var initial=new D.State(31154879.330809835,
+                new D.V(-23186.752291146822,5507.7593945916087,418401.43325474294),
+                new D.V(-846.94362943558008,22.163760722689503,-47.456344131980643),
+                288301.10267270356,new D.V(.56868154729374509,.36782917099611373,-.73573296700087043),
+                0,9.36213182285428e-5);
+            var target=new D.V(-.69844897258755612,.71519480810347258,.025795719668668244);
+            var engine=new D.Propulsion(true,new D.Engine(367.09782481193542,1,9.80665,default,new D.Curve(ip)));
+            var lim=new D.Limits(138489.73795478529,Math.PI/30,.1,.1,.5);
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.Mode.Orbit,
+                MuMech.Landing.DunaLandingAdmission.Choose(env,initial,0,-.22873362897573202,out _));
+            var set=MuMech.Landing.DunaLandingAdmission.Settings(env,engine,initial,target,1,
+                4.9947751881921194,.89999951070689,.5);
+            Assert.NotNull(set);
+            var settings=new Strategic.Settings(set,preparation:45,engagementLead:45,maxWait:6000,maxBurn:600);
+            var diagnostics=new System.Collections.Generic.List<string>();
+            var report=Strategic.Search(env,engine,lim,initial,settings,diagnostic:diagnostics.Add);
+            Console.WriteLine("recorded-eagle-M5.6-suspect-density status="+report.Status+
+                " prefixes="+report.Prefixes+" approaches="+report.Approaches+" steps="+report.Steps+
+                " feasible="+report.Feasible+" unresolved="+report.Unresolved+" miss="+report.Best?.OriginalMiss);
+            Console.WriteLine(string.Join("\n",diagnostics));
+            Assert.True(report.Prefixes>0,"actual orbital snapshot must reach strategic search");
+            Assert.True(report.Approaches>0,"at least one actual finite deorbit must reach approach search");
+            Assert.Contains(diagnostics,line=>line.StartsWith("prefix "));
+            if(report.Best!=null)
+            {Assert.True(report.Best.ReplayPassed);Assert.True(report.Scenarios.Passed);}
         }
 
         [Fact]

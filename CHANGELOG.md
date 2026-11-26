@@ -116,3 +116,4 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 - Establish capture-epoch solver frame using body-fixed basis; transform live vectors, attitude commands, terrain/forecast/fallback locations and replacement corridors. Add recorded Eagle rotating-world regression.
 - Sample atmospheric temperature using the existing world-position FlightGlobals API and log temperature knots; runtime density parity remains unverified.
 - Document vessel-independent runtime capability acquisition and high-crossrange targeting requirements; actual Eagle end-to-end feasibility remains open.
+- Add a geometric large-plane-change/deorbit seed with variable-mass burn duration, expanded bounded strategic burn/wait domain, and captured Eagle orbital search diagnostic. Retain all replay, uncertainty and target gates.

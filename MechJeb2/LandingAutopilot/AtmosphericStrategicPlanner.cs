@@ -47,7 +47,7 @@ namespace MuMech.Landing
             {Approach=approach;Preparation=preparation;EngagementLead=engagementLead;MaxWait=maxWait;MaxBurn=maxBurn;Epochs=epochs;
                 MaxPrefixes=maxPrefixes;MaxSteps=maxSteps;ApproachCandidates=approachCandidates;}
             internal bool Valid=>Approach!=null&&Approach.Valid&&D.Finite(Preparation)&&Preparation>=0&&
-                D.Finite(EngagementLead)&&EngagementLead>=0&&D.Finite(MaxWait)&&MaxWait>=Preparation+EngagementLead&&MaxWait<=10000&&D.Finite(MaxBurn)&&MaxBurn>0&&MaxBurn<=300&&
+                D.Finite(EngagementLead)&&EngagementLead>=0&&D.Finite(MaxWait)&&MaxWait>=Preparation+EngagementLead&&MaxWait<=10000&&D.Finite(MaxBurn)&&MaxBurn>0&&MaxBurn<=900&&
                 Epochs>=1&&Epochs<=32&&MaxPrefixes>=1&&MaxPrefixes<=128&&MaxSteps>=1&&MaxSteps<=1000000&&
                 ApproachCandidates>=1&&ApproachCandidates<=64;
         }
@@ -105,6 +105,39 @@ namespace MuMech.Landing
             double desired=Math.Sqrt(env.Mu*(2/r-2/(r+periapsis)));
             return Math.Max(0,tangent-desired);
         }
+        // Geometry-only seed for a combined plane change and deorbit.
+        // A target outside the orbital plane generally needs BOTH a
+        // larger retrograde component and substantial normal impulse.
+        // Never use this impulsive estimate as a feasibility certificate.
+        internal static bool PlaneChangeSeed(D.V radial,D.V tangent,D.V normal,D.V target,
+            double speed,double desiredSpeed,out double deltaV,out double normalFraction)
+        {
+            deltaV=normalFraction=double.NaN;
+            if(!radial.Valid||!tangent.Valid||!normal.Valid||!target.Valid||
+                !D.Finite(speed)||speed<=0||!D.Finite(desiredSpeed)||desiredSpeed<=0||desiredSpeed>speed)
+                return false;
+            D.V projected=target-radial*D.V.Dot(target,radial);
+            if(projected.Length<1e-6)return false;
+            D.V wanted=projected.Unit;
+            double retrograde=speed-desiredSpeed*D.V.Dot(wanted,tangent);
+            double cross=desiredSpeed*D.V.Dot(wanted,normal);
+            double dv=Math.Sqrt(retrograde*retrograde+cross*cross);
+            if(!D.Finite(dv)||dv<=0||retrograde<=0)return false;
+            deltaV=dv;normalFraction=cross/dv;
+            return D.Finite(normalFraction)&&Math.Abs(normalFraction)<1;
+        }
+
+        // Variable mass burn time, rather than constant initial acceleration.
+        // This proposes a seed only; full dynamics and reserve checks decide.
+        internal static double SeedBurnTime(double deltaV,double mass,double force,double flow,double throttle)
+        {
+            if(!D.Finite(deltaV)||deltaV<=0||!D.Finite(mass)||mass<=0||
+                !D.Finite(force)||force<=0||!D.Finite(flow)||flow<=0||
+                !D.Finite(throttle)||throttle<=0||throttle>1)return double.NaN;
+            double exhaust=force/flow;
+            return mass*(1-Math.Exp(-deltaV/exhaust))/(flow*throttle);
+        }
+
         // Propagate a scheduled coast, preparation, finite vector burn and
         // engine tail. State/command history is continuous through handoff.
         internal static Prefix EvaluatePrefix(D.Environment env,D.Propulsion propulsion,D.Limits limits,
@@ -117,7 +150,7 @@ namespace MuMech.Landing
                 !initial.Valid||initial.Mass<=limits.ReserveMass||initial.Throttle>.01||budget<1||budget>1000000||
                 !D.Finite(burn.Delay)||burn.Delay<settings.Preparation+settings.EngagementLead||burn.Delay>settings.MaxWait||
                 !D.Finite(burn.Duration)||burn.Duration<=0||burn.Duration>settings.MaxBurn||
-                !D.Finite(burn.NormalFraction)||Math.Abs(burn.NormalFraction)>.75||
+                !D.Finite(burn.NormalFraction)||Math.Abs(burn.NormalFraction)>=1||
                 !D.Finite(burn.ThrottleFraction)||burn.ThrottleFraction<=0||burn.ThrottleFraction>1)return Finish(D.Outcome.InvalidInput);
             var common=settings.Approach.Common;
             double begin=initial.UT+burn.Delay,prep=begin-settings.Preparation;
@@ -336,17 +369,38 @@ namespace MuMech.Landing
                     var authority=propulsion.At(pressure);
                     double accel=authority.Force/initial.Mass*settings.Approach.Common.CommandCap;
                     if(!authority.Known||!D.Finite(accel)||accel<=0)continue;
+                    // Preserve the existing small-crossrange search, but
+                    // do not constrain a large plane change to a small
+                    // correction on top of a coplanar deorbit impulse.
+                    const double burnFraction=.85;
+                    var seeds=new List<(double fraction,double duration)>();
+                    if(Math.Abs(normal)>.1)
+                    {
+                        double angle=2*Math.PI*(epoch.delay-settings.Preparation)/orbit.Period;
+                        D.V radial=up*Math.Cos(angle)+along*Math.Sin(angle);
+                        D.V tangent=D.V.Cross(orbit.Normal,radial).Unit;
+                        D.V future=P.RotateTarget(settings.Approach.Common.TargetAtInitialUT,
+                            env.Omega,epoch.delay+orbit.Period*.325);
+                        double speed=(initial.Velocity-initial.R.Unit*D.V.Dot(initial.R.Unit,initial.Velocity)).Length;
+                        if(PlaneChangeSeed(radial,tangent,orbit.Normal,future,speed,speed-dv,
+                            out double planeDv,out double planeFraction))
+                        {
+                            double time=SeedBurnTime(planeDv,initial.Mass,authority.Force,authority.Flow,
+                                settings.Approach.Common.CommandCap*burnFraction);
+                            if(D.Finite(time)&&time>=.5&&time<=settings.MaxBurn&&
+                                time*authority.Flow*settings.Approach.Common.CommandCap*burnFraction<
+                                initial.Mass-limits.ReserveMass)
+                                seeds.Add((planeFraction,time));
+                        }
+                    }
                     foreach(double fraction in tilts)
+                        seeds.Add((fraction,Math.Min(settings.MaxBurn,Math.Max(.5,
+                            dv/(accel*burnFraction)/Math.Sqrt(1-fraction*fraction)))));
+                    foreach(var seed in seeds)
                     {
                         if(token.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
                         if(prefixes>=settings.MaxPrefixes||steps>=settings.MaxSteps){exhausted=true;break;}
-                        // Allow extra normal impulse while retaining a
-                        // retrograde component; finite burn still determines entry.
-                        // Reserve throttle headroom so the feedback law
-                        // can match planned impulse even under the 5%
-                        // adverse authority case and engine response lag.
-                        const double burnFraction=.85;
-                        double duration=Math.Min(settings.MaxBurn,Math.Max(.5,dv/(accel*burnFraction)/Math.Sqrt(1-fraction*fraction)));
+                        double fraction=seed.fraction,duration=seed.duration;
                         var burn=new Burn(epoch.delay,duration,fraction,burnFraction);
                         var prefix=EvaluatePrefix(env,propulsion,limits,initial,settings,burn,
                             settings.MaxSteps-steps,false,token);

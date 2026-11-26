@@ -321,7 +321,7 @@ namespace MuMech.Landing
                 var clock=Stopwatch.StartNew();
                 if(s.Strategic)
                 {
-                    var settings=new AtmosphericStrategicPlanner.Settings(s.Settings,preparation:45,engagementLead:45);
+                    var settings=new AtmosphericStrategicPlanner.Settings(s.Settings,preparation:45,engagementLead:45,maxWait:6000,maxBurn:600);
                     a.Strategic=AtmosphericStrategicPlanner.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,settings,token);
                     a.ReplayPassed=a.Strategic.Best?.ReplayPassed==true;
                     a.Scenarios=a.Strategic.Scenarios;
