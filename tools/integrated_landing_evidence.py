@@ -205,7 +205,7 @@ def select_legacy(path,first,last,expected,max_gap):
     unchanged(path,before)
     return report,selected
 
-def load_m1(path):
+def load_m1(path,probe_rows=None,require_live=True):
     rows=list(records(path))
     if not rows: raise ValueError("Empty capture")
     header=rows[0][1]
@@ -223,12 +223,14 @@ def load_m1(path):
             raise ValueError("Repeated session_start")
         if r.get("recordType")=="session_end":
             terminal=r.get("reason"); ended=True
+        if probe_rows is not None and r.get("recordType") in ("force_probe_start","force_probe_batch","force_probe_end"):
+            probe_rows.append(r)
         if r.get("recordType")=="live":
             t=r.get("ut")
             if not finite(t) or (samples and t<samples[-1]["ut"]-EPS): raise ValueError("Invalid live UT lineage")
             if samples and t==samples[-1]["ut"]: samples[-1]=r
             else: samples.append(r)
-    if not samples: raise ValueError("No M1 live samples")
+    if require_live and not samples: raise ValueError("No M1 live samples")
     return header,samples,terminal
 
 def inertial(s,t0,radius,omega,mu):
@@ -408,9 +410,101 @@ def raw_frame_audit(samples):
                 "Velocity-derived sign uses observed orbital minus surface velocity and geometric east.",
                 "Check residuals and geographic basis against source/epoch before accepting omega; no automatic sign selection."]}
 
+def force_probe_audit(rows):
+    """Inventory recorded callback order, not integrated force or solver completion."""
+    starts=[]; ends=[]; prefixes={}; paired=set(); counts=collections.Counter()
+    last=0; logged=0; missing_seq=0; anomalies=[]; counters=(0,0,0,0)
+    first_ut=None;last_ut=None; fixed_times=set(); ended=False
+    def count_int(x): return isinstance(x,int) and not isinstance(x,bool) and x>=0
+    def fault(message):
+        counts["anomalies"]+=1
+        if len(anomalies)<30: anomalies.append(message)
+    for r in rows:
+        kind=r.get("recordType")
+        if kind=="force_probe_start":
+            if starts or ended: fault("Repeated or late start")
+            starts.append(r);continue
+        if kind=="force_probe_end":
+            if not starts or ended: fault("Unmatched or repeated end")
+            ends.append(r);ended=True;continue
+        if kind!="force_probe_batch": continue
+        if not starts or ended: fault("Batch outside probe boundaries")
+        b=r.get("batch")
+        if not isinstance(b,dict) or not isinstance(b.get("events"),list):
+            fault("Malformed batch");continue
+        for e in b["events"]:
+            logged+=1
+            if not isinstance(e,dict) or not count_int(e.get("sequence")) or e["sequence"]<=last:
+                fault("Malformed or nonmonotonic event sequence");continue
+            seq=e["sequence"];missing_seq+=seq-last-1;last=seq
+            k=e.get("kind");counts[str(k)]+=1
+            ut=e.get("readUT")
+            if finite(ut):
+                first_ut=ut if first_ut is None else min(first_ut,ut)
+                last_ut=ut if last_ut is None else max(last_ut,ut)
+            else: counts["missingReadUT"]+=1
+            if finite(e.get("unityFixedTimeRaw")): fixed_times.add(e["unityFixedTimeRaw"])
+            if e.get("warpRate")!=1: counts["notOneX"]+=1
+            if k in ("stock_integrate_prefix","mfi_integrate_prefix"):
+                prefixes[seq]=(k,e.get("partFlightID"))
+                if k=="stock_integrate_prefix":
+                    n=e.get("pendingHolderCount"); hs=e.get("pendingHolders")
+                    if not count_int(n) or not isinstance(hs,list) or len(hs)>n or (
+                        not isinstance(e.get("holdersTruncated"),bool)) or (
+                        e.get("holdersTruncated") != (len(hs)<n)):
+                        counts["unknownHolderCoverage"]+=1
+                    elif any(not isinstance(h,dict) or not vec(h.get("forceRawKspKn")) or
+                             not vec(h.get("positionWorld")) for h in hs):
+                        counts["invalidHolderVectors"]+=1
+                    else:
+                        counts["pendingHoldersRecorded"]+=len(hs)
+                        counts["pendingHoldersOmitted"]+=n-len(hs)
+                        if n>len(hs): counts["truncatedStockPrefixes"]+=1
+            elif k in ("stock_integrate_postfix","mfi_integrate_postfix"):
+                pre=e.get("prefixSequence")
+                if not count_int(pre) or pre in paired or prefixes.get(pre)!=(k.replace("postfix","prefix"),e.get("partFlightID")):
+                    fault("Unmatched, duplicate or wrong-route postfix");continue
+                paired.add(pre)
+                flag=e.get("harmonyRunOriginalFlag")
+                counts["pairedOriginalFlagTrue" if flag is True else "pairedOriginalFlagFalse" if flag is False else "pairedOriginalFlagUnknown"]+=1
+            elif k!="drive_state":
+                fault("Unknown event kind")
+        c=tuple(b.get(k) for k in ("acceptedTotal","droppedTotal","errorsTotal","lastSequence"))
+        if not all(count_int(x) for x in c) or any(x<y for x,y in zip(c,counters)):
+            fault("Invalid or regressing cumulative counters")
+        else:
+            counters=c
+            if c[0]!=logged or c[3]<last: fault("Counters disagree with recorded events")
+    start=starts[0] if len(starts)==1 else None
+    end=ends[0] if len(ends)==1 else None
+    probe=start.get("probe") if isinstance(start,dict) else None
+    status="not_recorded" if not rows else "unavailable" if isinstance(probe,dict) and probe.get("status")=="unavailable" else "raw_callbacks_only"
+    return {"status":status,
+        "start":start,"end":end,"counts":dict(counts),"recordedEvents":logged,
+        "unpairedPrefixes":len(prefixes)-len(paired),"sequenceGaps":missing_seq,
+        "minimumReadUT":first_ut,"maximumReadUT":last_ut,"distinctFixedTimeRawValues":len(fixed_times),
+        "acceptedTotal":counters[0],"droppedTotal":counters[1],"errorsTotal":counters[2],
+        "lastSequenceCounter":counters[3],"anomalies":anomalies,
+        "postSolverVerified":False,"actualForceClosureAvailable":False,
+        "limitations":["Stock prefix holders are pending unclassified requests; MFI wrappers are route-only.",
+            "Postfix return and Harmony runOriginal flag do not establish individual force application.",
+            "No force from a bypassed stock path is inferred; no double counting or summing of queues.",
+            "Callback sequence, fixedTime and UT are observations, not certified physics-step identifiers.",
+            "Short selected-phase burst; not a flight-wide impulse or force closure."]}
+
+def probe_report(path):
+    before=fingerprint(path)
+    rows=[]
+    header,_,terminal=load_m1(path,rows,require_live=False)
+    report={"session":header,"sessionEndReason":terminal,"sourceSHA256":file_digest(path),
+            "forceProbe":force_probe_audit(rows)}
+    unchanged(path,before)
+    return report
+
 def m1_report(path,radius,omega,mu,max_gap):
     before=fingerprint(path)
-    header,samples,terminal=load_m1(path)
+    probe_rows=[]
+    header,samples,terminal=load_m1(path,probe_rows)
     # Schema 1 writer used neutralized gimbal transforms for ThrustVectorLastFrame.
     # Preserve originals on disk; do not use that field as independently attained thrust.
     samples=[dict(s,neutralThrustVectorNEU=s.get("neutralThrustVectorNEU",s.get("thrustVectorNEU")),
@@ -426,6 +520,7 @@ def m1_report(path,radius,omega,mu,max_gap):
     report={"identity":"guid_identified_capture", "session":header,
         "rawRuntimeCoverage":dict(raw_by_phase),
         "rawFrameAudit":raw_frame_audit(samples),
+        "forceProbe":force_probe_audit(probe_rows),
         "thrustVectorStatus":"neutral_projection_or_unverified_raw_modules_not_actual",
         "sourceSHA256":file_digest(path),"samples":len(samples),
         "firstLive":samples[0],"lastLive":samples[-1],"sessionEndReason":terminal,
@@ -564,6 +659,43 @@ class Tests(unittest.TestCase):
         self.assertAlmostEqual(d["worldRotationResidual_m_s"]["max"],64)
         self.assertLess(d["omegaFromBody_rad_s"]["mean"],0)
         self.assertGreater(d["omegaFromVelocity_rad_s"]["mean"],0)
+    def test_force_probe_pairs_stock_and_mfi_without_claiming_force(self):
+        h={"recordType":"session_start","schemaVersion":1,"session":"s","vessel":"v","body":"Duna","targetLat":1,"targetLon":2}
+        def e(k,seq,**kwargs): return dict(kind=k,sequence=seq,readUT=1,unityFixedTimeRaw=2,warpRate=1,partFlightID=7,**kwargs)
+        events=[e("mfi_integrate_prefix",1),
+                e("stock_integrate_prefix",2,pendingHolderCount=1,holdersTruncated=False,
+                  pendingHolders=[{"forceRawKspKn":[1,2,3],"positionWorld":[0,0,0]}]),
+                e("stock_integrate_postfix",3,prefixSequence=2,harmonyRunOriginalFlag=True),
+                e("mfi_integrate_postfix",4,prefixSequence=1,harmonyRunOriginalFlag=True),
+                e("drive_state",5)]
+        p=self.write([h,dict(h,recordType="force_probe_start",probe={"status":"armed_unvalidated"}),
+            dict(h,recordType="force_probe_batch",batch={"events":events,"acceptedTotal":5,
+                "droppedTotal":0,"errorsTotal":0,"lastSequence":5}),
+            dict(h,recordType="force_probe_end",reason="window_complete")])
+        a=probe_report(p)["forceProbe"]
+        self.assertEqual(a["unpairedPrefixes"],0)
+        self.assertEqual(a["counts"]["pendingHoldersRecorded"],1)
+        self.assertEqual(a["counts"]["pairedOriginalFlagTrue"],2)
+        self.assertFalse(a["actualForceClosureAvailable"])
+        self.assertFalse(a["postSolverVerified"])
+    def test_force_probe_preserves_gaps_truncation_and_missing_postfix(self):
+        events=[{"kind":"stock_integrate_prefix","sequence":1,"readUT":1,"warpRate":1,
+                 "partFlightID":7,"pendingHolderCount":2,"holdersTruncated":True,
+                 "pendingHolders":[{"forceRawKspKn":[1,0,0],"positionWorld":[0,0,0]}]},
+                {"kind":"stock_integrate_postfix","sequence":3,"readUT":1,"warpRate":1,
+                 "partFlightID":8,"prefixSequence":1,"harmonyRunOriginalFlag":True}]
+        a=force_probe_audit([{"recordType":"force_probe_start"},{"recordType":"force_probe_batch",
+            "batch":{"events":events,"acceptedTotal":2,"droppedTotal":1,"errorsTotal":0,"lastSequence":3}}])
+        self.assertEqual(a["sequenceGaps"],1)
+        self.assertEqual(a["counts"]["pendingHoldersOmitted"],1)
+        self.assertEqual(a["unpairedPrefixes"],1)
+        self.assertEqual(a["counts"]["anomalies"],1)
+        self.assertIsNone(a["end"])
+        self.assertFalse(a["actualForceClosureAvailable"])
+    def test_force_probe_missing_is_not_zero_force(self):
+        a=force_probe_audit([])
+        self.assertEqual(a["status"],"not_recorded")
+        self.assertFalse(a["actualForceClosureAvailable"])
     def test_m1_neutral_thrust_never_used_as_delivered(self):
         h={"recordType":"session_start","schemaVersion":1,"session":"s","vessel":"v","body":"Duna","targetLat":1,"targetLon":2}
         a=dict(h,recordType="live",ut=1,phase="DecelerationBurn",warpRate=1,mass=2,
@@ -595,6 +727,7 @@ def main():
     m1=sub.add_parser("m1");m1.add_argument("capture");m1.add_argument("--radius",type=float,required=True)
     m1.add_argument("--omega",type=float,required=True,help="verified signed rate about +north axis, rad/s")
     m1.add_argument("--mu",type=float,required=True);m1.add_argument("--max-gap",type=float,default=1.25)
+    probe=sub.add_parser("probe");probe.add_argument("capture")
     sub.add_parser("self-test")
     a=p.parse_args()
     if a.cmd=="self-test":
@@ -607,6 +740,7 @@ def main():
         if a.extract:
             with pathlib.Path(a.extract).open("x",encoding="utf-8") as f:
                 for l,r in rows: f.write(json.dumps({"sourceLine":l,"record":r},allow_nan=False)+"\n")
+    elif a.cmd=="probe": result=probe_report(a.capture)
     else: result=m1_report(a.capture,a.radius,a.omega,a.mu,a.max_gap)
     print(json.dumps(result,indent=2,allow_nan=False))
     return 0

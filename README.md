@@ -216,3 +216,5 @@ Current branch experimental version: `2.16.0-landing.20261126.duna-dynamics-m1.3
 Integrated landing research branch: `2.16.0-landing.20261126.duna-dynamics-m1.4` — passive diagnostic research, not an authorized landing fix or release. See [M1 contracts](docs/Integrated-Landing-Dynamics-M1.md).
 
 Current integrated landing research increment: `2.16.0-landing.20261126.duna-dynamics-m1.5` (passive raw observations, no flight validation or install authorization).
+
+Current integrated landing research increment: `2.16.0-landing.20261126.duna-dynamics-m1.6` (optional bounded integrator callback calibration, not flight validated or authorized for installation).

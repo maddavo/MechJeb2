@@ -312,6 +312,8 @@ namespace MuMech
                     _dunaM1.Matches(Vessel.id, Core.Target.targetLatitude, Core.Target.targetLongitude, VesselState.Time);
                 if (!sameContext || (terminalReason == null && !DunaM1Eligible()))
                     terminalReason = "context_changed";
+                if (_dunaM1.Open && sameContext && terminalReason == null)
+                    _dunaM1.ObserveForceProbe(Vessel, VesselState, CurrentStep?.GetType().Name);
                 if (_dunaM1.Open && sameContext &&
                     (terminalReason != null || _dunaM1.LiveDue(VesselState.Time, CurrentStep?.GetType().Name)))
                     _dunaM1.Live(Vessel, VesselState, CurrentStep?.GetType().Name, Status, CurrentStep?.TraceDetails + DunaBrakingDetail,

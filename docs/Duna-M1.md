@@ -27,3 +27,5 @@ Run matched saves with capture disabled/enabled, compare phase sequence, steerin
 M1.4 supersedes the historical thrust interpretation: schema-1 thrustVectorNEU was a neutral-gimbal projection, not achieved force. New rows null this field, retain neutralThrustVectorNEU, and add raw runtimeObservation. See [M1.4 scope](Integrated-Landing-Dynamics-M1.md). The current callback has unverified physics timing.
 
 M1.5: additional raw part/cube/resource and controller observations plus diagnostic frame consistency audit. Drive timing is unverified; no actual force integration or closure from schema 1. See [M1.5 contract](Integrated-Landing-Dynamics-M1.md).
+
+M1.6 adds optional separately armed selected-phase 0.5 s Integrate callback probe via already loaded Harmony. Pending holders and wrapper routes are raw observations, never measured net force; see [M1.6 contract](Integrated-Landing-Dynamics-M1.md). No installation authorization.

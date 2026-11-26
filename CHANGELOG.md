@@ -45,3 +45,7 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 ## 2.16.0-landing.20261126.duna-dynamics-m1.5
 
 - Add bounded raw loaded aero/part/resource/controller observations and engine accepted-request percentage, session-local part identity, and candidate frame audit; reject mismatched live capture contexts. Preserve distinction between asynchronous raw fields and integrated force. No guidance change; CI verification pending.
+
+## 2.16.0-landing.20261126.duna-dynamics-m1.6
+
+- Add separately armed short Harmony observer for stock/MFI Integrate callbacks, pending force holder snapshots, route and Drive sequence observations, explicit caps, cleanup and offline probe audit. No MFI override, force mutation or solver-completion claim; verification pending.
