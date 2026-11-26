@@ -5,7 +5,7 @@ using D=MuMech.Landing.AtmosphericLandingDynamics;
 
 namespace MuMech.Landing
 {
-    // 2.16.0-landing.20261126.duna-dynamics-m1.2
+    // 2.16.0-landing.20261126.duna-dynamics-m1.3
     // Non-actuating replay of an explicitly supplied command history.
     // No reset to observations, no inferred commands between intervals,
     // no acceptance of low-speed capture as a touchdown.
@@ -87,7 +87,7 @@ namespace MuMech.Landing
         {
             var comparisons=new List<Comparison>();
             D.State state=initial;
-            double minimum=env==null?double.NaN:env.Clearance(initial.R);
+            double minimum=env==null?double.NaN:env.PhysicalClearance(initial);
             int steps=0,segments=0,index=0;
             Report Finish(D.Outcome outcome,bool completed=false)=>
                 new Report(outcome,state,minimum,steps,segments,completed,comparisons);

@@ -3,9 +3,9 @@ using System.Threading;
 
 namespace MuMech.Landing
 {
-    // 2.16.0-landing.20261126.duna-dynamics-m1.2
+    // 2.16.0-landing.20261126.duna-dynamics-m1.3
     // Independent SI, body-centred inertial, non-actuating reference model.
-    // Fixed spherical terrain and collinear fixed engines only. No KSP APIs.
+    // Explicit terrain support/corridor adapter, or synthetic sphere. No KSP APIs.
     internal static class AtmosphericLandingDynamics
     {
         internal readonly struct V
@@ -160,6 +160,32 @@ namespace MuMech.Landing
             }
         }
 
+        // Surface geometry is not the controller's altitude estimate.
+        // Physical clearance includes the supplied attained-attitude support
+        // offset. ControllerClearance mirrors the live altitude/deck rule.
+        // MinASLTrue is separately required for the live attitude gate.
+        internal readonly struct SurfaceSample
+        {
+            internal readonly bool Known,Landable;
+            internal readonly double Clearance,ControllerClearance,MinASLTrue;
+            internal readonly V Normal;
+            internal SurfaceSample(double clearance,double controller,double minASLTrue,V normal,bool landable)
+            {Known=true;Clearance=clearance;ControllerClearance=controller;MinASLTrue=minASLTrue;Normal=normal;Landable=landable;}
+            internal bool Valid=>Known&&Finite(Clearance)&&Finite(ControllerClearance)&&
+                Finite(MinASLTrue)&&Normal.Valid&&Math.Abs(Normal.Length-1)<1e-6;
+        }
+        internal sealed class TerrainModel
+        {
+            internal readonly Func<State,SurfaceSample> Sample;
+            // Must supply a conservative lower clearance bound over the ENTIRE
+            // numerical interval (not just endpoint samples). Caller must
+            // include terrain, changing support geometry and path uncertainty.
+            // NaN means not resolved. No automatic sphere fallback.
+            internal readonly Func<State,State,Command,double> LowerBound;
+            internal TerrainModel(Func<State,SurfaceSample> sample,Func<State,State,Command,double> lowerBound)
+            {Sample=sample;LowerBound=lowerBound;}
+            internal bool Valid=>Sample!=null&&LowerBound!=null;
+        }
         internal sealed class Environment
         {
             internal readonly double Radius,Mu,AtmosphereTop,TerrainRadius,DragArea,BottomOffset;
@@ -168,6 +194,7 @@ namespace MuMech.Landing
             internal readonly Func<V,V,V,double,double,V> PassiveLift;
             internal readonly Func<double,V,AirSample> Atmosphere;
             internal readonly Func<double,V,V,V,double,double,AeroSample> Aerodynamics;
+            internal readonly TerrainModel Terrain;
             // DragArea = Cd*A m², constant synthetic/passive adapter. Lift is
             // NOT assumed zero for a real vessel; unsupported unless supplied
             // via an explicitly supplied deterministic force model (r, air-relative
@@ -177,15 +204,15 @@ namespace MuMech.Landing
                 Curve pressure,Curve density,double dragArea,double terrainRadius,double bottomOffset,
                 Func<V,V,V,double,double,V> passiveLift=null,
                 Func<double,V,AirSample> atmosphere=null,
-                Func<double,V,V,V,double,double,AeroSample> aerodynamics=null)
+                Func<double,V,V,V,double,double,AeroSample> aerodynamics=null,TerrainModel terrain=null)
             {Radius=radius;Mu=mu;Omega=omega;AtmosphereTop=atmosphereTop;Pressure=pressure;Density=density;
                 DragArea=dragArea;TerrainRadius=terrainRadius;BottomOffset=bottomOffset;PassiveLift=passiveLift;
-                Atmosphere=atmosphere;Aerodynamics=aerodynamics;}
+                Atmosphere=atmosphere;Aerodynamics=aerodynamics;Terrain=terrain;}
             internal bool Valid => Finite(Radius)&&Radius>0&&Finite(Mu)&&Mu>=0&&Omega.Valid&&
                 Finite(AtmosphereTop)&&AtmosphereTop>=0&&Finite(TerrainRadius)&&TerrainRadius>0&&
                 Finite(BottomOffset)&&BottomOffset>=0&&Finite(DragArea)&&DragArea>=0&&
                 (AtmosphereTop==0||Atmosphere!=null||Pressure!=null&&Density!=null)&&
-                (Aerodynamics==null||PassiveLift==null&&DragArea==0);
+                (Aerodynamics==null||PassiveLift==null&&DragArea==0)&&(Terrain==null||Terrain.Valid);
             internal bool Air(double ut,V r,out double p,out double rho)
             {
                 p=rho=0;
@@ -216,6 +243,24 @@ namespace MuMech.Landing
             }
             internal V Surface(V r,V v)=>v-V.Cross(Omega,r);
             internal double Clearance(V r)=>r.Length-TerrainRadius-BottomOffset;
+            internal SurfaceSample SurfaceAt(State state)
+            {
+                if(!state.Valid)return default;
+                if(Terrain!=null)
+                {
+                    SurfaceSample result;
+                    try {result=Terrain.Sample(state);}catch(Exception){return default;}
+                    return result.Valid?result:default;
+                }
+                double asl=state.R.Length-Radius,clearance=Clearance(state.R);
+                return new SurfaceSample(clearance,Math.Min(asl,clearance),
+                    Math.Min(asl,state.R.Length-TerrainRadius),state.R.Unit,true);
+            }
+            internal double PhysicalClearance(State state)
+            {
+                SurfaceSample surface=SurfaceAt(state);
+                return surface.Valid?surface.Clearance:double.NaN;
+            }
         }
         internal sealed class Limits
         {
@@ -246,7 +291,7 @@ namespace MuMech.Landing
             internal bool Valid=>Finite(Throttle)&&Throttle>=0&&Throttle<=1&&Direction.Valid&&Direction.Length>0;
         }
         internal enum Outcome { Advanced, CaptureEnvelope, ContactWithinLimits, ContactUnsafe,
-            ReserveExhausted, UnknownCapability, InvalidInput, Horizon, Cancelled, NoControllableThrust }
+            ReserveExhausted, UnknownCapability, InvalidInput, Horizon, Cancelled, NoControllableThrust, UnknownTerrain }
         internal readonly struct Result
         {
             internal readonly Outcome Status;
@@ -339,6 +384,11 @@ namespace MuMech.Landing
                 !Finite(safeVertical)||safeVertical<0||!Finite(safeHorizontal)||safeHorizontal<0||
                 !Finite(safeAngle)||safeAngle<0||!Finite(safeRate)||safeRate<0)
                 return new Result(Outcome.InvalidInput,s,double.NaN);
+            if(env.Terrain!=null)
+            {
+                int budget=512;
+                return AdvanceTerrain(env,propulsion,lim,s,c,dt,safeVertical,safeHorizontal,safeAngle,safeRate,ref budget);
+            }
             double initial=env.Clearance(s.R);
             if(initial<=0)return Contact(env,s,initial,safeVertical,safeHorizontal,safeAngle,safeRate);
             if(!RawStep(env,propulsion,lim,s,c,dt,out State end))return new Result(Outcome.UnknownCapability,s,initial);
@@ -366,6 +416,68 @@ namespace MuMech.Landing
             }
             return new Result(Outcome.Advanced,end,minimum);
         }
+        // Resolve earliest contact/reserve event left-to-right. Unknown
+        // corridor or support geometry may never become an accepted landing.
+        // The bound is supplied by an immutable terrain/geometry adapter;
+        // endpoint samples alone cannot certify a clear swept path.
+        private static Result AdvanceTerrain(Environment env,Propulsion propulsion,Limits lim,State s,Command c,double dt,
+            double maxV,double maxH,double maxAngle,double maxRate,ref int budget)
+        {
+            SurfaceSample a=env.SurfaceAt(s);
+            if(!a.Valid||budget--<=0)return new Result(Outcome.UnknownTerrain,s,double.NaN);
+            if(a.Clearance<=0)return TerrainContact(env,s,a,maxV,maxH,maxAngle,maxRate);
+            if(!RawStep(env,propulsion,lim,s,c,dt,out State end))
+            {
+                // Subdivide instead of extrapolating an atmosphere curve
+                // beyond contact or jumping past a propellant boundary.
+                if(dt<=1e-7||s.UT+dt*.5==s.UT)return new Result(Outcome.UnknownCapability,s,a.Clearance);
+                return SplitTerrain(env,propulsion,lim,s,c,dt,maxV,maxH,maxAngle,maxRate,ref budget);
+            }
+            SurfaceSample z=env.SurfaceAt(end);
+            double lower=double.NaN;
+            if(z.Valid)
+            {
+                try{lower=env.Terrain.LowerBound(s,end,c);}catch(Exception){}
+                if(Finite(lower)&&lower>Math.Min(a.Clearance,z.Clearance)+1e-8)
+                    return new Result(Outcome.UnknownTerrain,s,double.NaN);
+            }
+            bool bounded=z.Valid&&Finite(lower);
+            if(bounded&&lower>0&&end.Mass>=lim.ReserveMass)
+                return new Result(Outcome.Advanced,end,lower);
+            if(dt<=1e-7||s.UT+dt*.5==s.UT)
+            {
+                // Earliest event resolved only to this bracket; if ambiguous
+                // reserve/contact order, fail closed. An unresolved interior
+                // crossing is unknown, not safe endpoint contact.
+                if(!bounded)return new Result(Outcome.UnknownTerrain,s,double.NaN);
+                if(end.Mass<lim.ReserveMass)
+                    return z.Clearance<=0?new Result(Outcome.UnknownTerrain,s,lower):
+                        lower>0?new Result(Outcome.ReserveExhausted,end,lower):
+                        new Result(Outcome.UnknownTerrain,s,lower);
+                if(z.Clearance<=0)return TerrainContact(env,end,z,maxV,maxH,maxAngle,maxRate);
+                return new Result(Outcome.UnknownTerrain,s,lower);
+            }
+            return SplitTerrain(env,propulsion,lim,s,c,dt,maxV,maxH,maxAngle,maxRate,ref budget);
+        }
+        private static Result SplitTerrain(Environment env,Propulsion propulsion,Limits lim,State s,Command c,double dt,
+            double maxV,double maxH,double maxAngle,double maxRate,ref int budget)
+        {
+            double half=dt*.5;
+            Result left=AdvanceTerrain(env,propulsion,lim,s,c,half,maxV,maxH,maxAngle,maxRate,ref budget);
+            if(left.Status!=Outcome.Advanced)return left;
+            double remaining=(s.UT+dt)-left.End.UT;
+            if(remaining<=0)return left;
+            Result right=AdvanceTerrain(env,propulsion,lim,left.End,c,remaining,maxV,maxH,maxAngle,maxRate,ref budget);
+            return new Result(right.Status,right.End,Math.Min(left.MinimumClearance,right.MinimumClearance));
+        }
+        private static Result TerrainContact(Environment env,State s,SurfaceSample surface,double maxV,double maxH,double maxAngle,double maxRate)
+        {
+            V w=env.Surface(s.R,s.Velocity);
+            double normal=V.Dot(w,surface.Normal),tangent=(w-surface.Normal*normal).Length;
+            bool valid=surface.Landable&&normal<=0&&normal>=-maxV&&tangent<=maxH&&
+                V.Dot(s.Forward,surface.Normal)>=Math.Cos(maxAngle)&&s.PointingRate<=maxRate&&surface.Clearance>=-1e-5;
+            return new Result(valid?Outcome.ContactWithinLimits:Outcome.ContactUnsafe,s,surface.Clearance);
+        }
         private static Result Contact(Environment env,State s,double clearance,double maxV,double maxH,double maxAngle,double maxRate)
         {
             V up=s.R.Unit,w=env.Surface(s.R,s.Velocity);
@@ -388,13 +500,14 @@ namespace MuMech.Landing
                 horizon>1800||!Finite(captureClearance)||captureClearance<0||!Finite(captureSpeed)||captureSpeed<=0)
                 return new Result(Outcome.InvalidInput,initial,double.NaN);
             State state=initial;
-            double minimum=env.Clearance(initial.R),first=double.NaN;
+            double minimum=env.PhysicalClearance(initial),first=double.NaN;
+            if(!Finite(minimum))return new Result(Outcome.UnknownTerrain,initial,double.NaN);
             double correctionEnd=initial.UT+correctionSeconds,ignition=initial.UT+ignitionDelay,end=initial.UT+horizon;
             for(int i=0;i<100000&&state.UT<end;i++)
             {
                 if(cancellation.IsCancellationRequested)return new Result(Outcome.Cancelled,state,minimum,first);
                 V w=env.Surface(state.R,state.Velocity);
-                if(state.UT>=ignition&&w.Length<=captureSpeed&&minimum>=captureClearance&&env.Clearance(state.R)>0)
+                if(state.UT>=ignition&&w.Length<=captureSpeed&&minimum>=captureClearance&&env.PhysicalClearance(state)>0)
                 {
                     if(!env.Air(state.UT,state.R,out double p,out _))
                         return new Result(Outcome.UnknownCapability,state,minimum,first);
@@ -440,11 +553,11 @@ namespace MuMech.Landing
             if(now+correctionAndTail+brakingPreparation>testedIgnitionUT)return Window.TestedBrakingPreparationDoesNotFit;
             bool Candidate(Result r)=>r.Status==Outcome.CaptureEnvelope||r.Status==Outcome.ContactWithinLimits;
             if(Candidate(delayed))return Window.CandidateFits;
-            bool unresolved=delayed.Status==Outcome.UnknownCapability||delayed.Status==Outcome.InvalidInput||
+            bool unresolved=delayed.Status==Outcome.UnknownCapability||delayed.Status==Outcome.UnknownTerrain||delayed.Status==Outcome.InvalidInput||
                 delayed.Status==Outcome.Horizon||delayed.Status==Outcome.Cancelled||delayed.Status==Outcome.Advanced;
             if(unresolved)return Window.Unresolved;
             if(Candidate(immediate))return Window.EarlierCandidateOnly;
-            if(immediate.Status==Outcome.UnknownCapability||immediate.Status==Outcome.InvalidInput||
+            if(immediate.Status==Outcome.UnknownCapability||immediate.Status==Outcome.UnknownTerrain||immediate.Status==Outcome.InvalidInput||
                 immediate.Status==Outcome.Horizon||immediate.Status==Outcome.Cancelled||immediate.Status==Outcome.Advanced)return Window.Unresolved;
             return Window.NoDemonstratedCandidate;
         }
