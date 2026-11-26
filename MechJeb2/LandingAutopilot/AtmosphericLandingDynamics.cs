@@ -417,7 +417,7 @@ namespace MuMech.Landing
                 Result step=Advance(env,propulsion,lim,state,cmd,dt);
                 minimum=Math.Min(minimum,step.MinimumClearance);
                 if(double.IsNaN(first)&&step.End.UT>state.UT&&(state.Throttle>0||step.End.Throttle>0)&&
-                    env.Air(state.R,out double pressure,out _)&&propulsion.At(pressure).Force>0)
+                    env.Air(state.UT,state.R,out double pressure,out _)&&propulsion.At(pressure).Force>0)
                     first=state.UT; // first powered integration interval start, not exact ignition
                 state=step.End;
                 if(step.Status!=Outcome.Advanced)return new Result(step.Status,state,minimum,first);
