@@ -43,7 +43,7 @@ namespace MuMech.Landing
             internal readonly double Preparation,EngagementLead,MaxWait,MaxBurn;
             internal readonly int Epochs,MaxPrefixes,MaxSteps,ApproachCandidates;
             internal Settings(F.Settings approach,double preparation=35,double maxWait=3600,double maxBurn=180,
-                int epochs=8,int maxPrefixes=48,int maxSteps=800000,int approachCandidates=12,double engagementLead=0)
+                int epochs=8,int maxPrefixes=48,int maxSteps=800000,int approachCandidates=24,double engagementLead=0)
             {Approach=approach;Preparation=preparation;EngagementLead=engagementLead;MaxWait=maxWait;MaxBurn=maxBurn;Epochs=epochs;
                 MaxPrefixes=maxPrefixes;MaxSteps=maxSteps;ApproachCandidates=approachCandidates;}
             internal bool Valid=>Approach!=null&&Approach.Valid&&D.Finite(Preparation)&&Preparation>=0&&
@@ -189,7 +189,7 @@ namespace MuMech.Landing
                 safeVertical:common.SafeVertical,safeHorizontal:common.SafeHorizontal,safeAngle:common.SafeAngle,
                 safeRate:common.SafeRate,commandCap:common.CommandCap);
             return new F.Settings(rebased,old.TargetSurfaceRadius,old.ApproachHeight,old.ApproachSpeed,
-                min,max,old.ControlTick,coastIntervals:2,durationIntervals:3,refinements:1,
+                min,max,old.ControlTick,coastIntervals:2,durationIntervals:3,refinements:2,
                 terminalHorizontal:old.TerminalHorizontal,terminalVertical:old.TerminalVertical);
         }
 
@@ -227,7 +227,9 @@ namespace MuMech.Landing
                     " fineMiss="+P.Miss(env,initial,replay.End,common.TargetAtInitialUT)+
                     " positionError="+(replay.End.R-approach.Result.End.R).Length+
                     " massError="+Math.Abs(replay.End.Mass-approach.Result.End.Mass)+
-                    " timeError="+Math.Abs(replay.End.UT-approach.Result.End.UT));
+                    " timeError="+Math.Abs(replay.End.UT-approach.Result.End.UT)+
+                    " endClearance="+env.PhysicalClearance(replay.End)+
+                    " endSpeed="+env.Surface(replay.End.R,replay.End.Velocity).Length);
                 return null;
             }
             var profile=new F.Profile(prefix.End.UT-initial.UT+approach.Profile.Coast,approach.Profile.Duration);
@@ -337,7 +339,7 @@ namespace MuMech.Landing
                                 " endMass="+c.Result.End.Mass+" elapsed="+(c.Result.End.UT-prefix.End.UT)+
                                 " endMiss="+P.Miss(env,prefix.End,c.Result.End,approachSettings.Common.TargetAtInitialUT)+
                                 " terminal="+c.Result.TerminalStartUT+" saturation="+c.MaxSaturation);
-                        var report=F.Search(env,propulsion,limits,prefix.End,approachSettings,token,diagnostic:describe);
+                        var report=F.Search(env,propulsion,limits,prefix.End,approachSettings,token,diagnostic:describe,refineNearContact:true);
                         approaches+=report.Attempts;steps+=report.Steps;
                         diagnostic?.Invoke("approach "+report.Status+" attempts="+report.Attempts+
                             " nominal="+report.Feasible+" unresolved="+report.Unresolved+

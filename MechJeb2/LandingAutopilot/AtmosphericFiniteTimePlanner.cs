@@ -255,9 +255,10 @@ namespace MuMech.Landing
         // including reconstruction and independent validation, not wall time.
         internal static Report Search(D.Environment env,D.Propulsion propulsion,D.Limits limits,D.State initial,
             Settings settings,CancellationToken cancellation=default,Profile? warmStart=null,bool convex=false,
-            Action<Candidate> diagnostic=null)
+            Action<Candidate> diagnostic=null,bool refineNearContact=false)
         {
-            var clock=Stopwatch.StartNew();Candidate best=null;
+            var clock=Stopwatch.StartNew();Candidate best=null,nearContact=null;
+            double nearScore=double.PositiveInfinity;
             int attempts=0,steps=0,feasible=0,unresolved=0;
             var visited=new HashSet<(double,double)>();
             var ranked=new List<Candidate>();
@@ -286,6 +287,28 @@ namespace MuMech.Landing
                     feasible++;ranked.Add(c);
                     if(best==null||P.Better(c.Result,best.Result,common.TargetTolerance))best=c;
                 }
+                else if(refineNearContact&&c.Result.Outcome==D.Outcome.ContactUnsafe&&
+                    D.Finite(c.Result.TerminalStartUT)&&c.Result.End.Valid)
+                {
+                    // A low-speed terminal contact is a search seed ONLY.
+                    // It is never admitted or counted as feasible. Prefer
+                    // candidates close to target with small constraint
+                    // violation rather than refining fast impact paths.
+                    var end=c.Result.End;
+                    var surface=env.SurfaceAt(end);
+                    if(surface.Valid)
+                    {
+                        D.V w=env.Surface(end.R,end.Velocity);
+                        double v=D.V.Dot(w,surface.Normal),h=(w-surface.Normal*v).Length;
+                        double miss=P.Miss(env,initial,end,common.TargetAtInitialUT);
+                        double speedViolation=Math.Max(0,Math.Abs(v)-common.SafeVertical)+Math.Max(0,h-common.SafeHorizontal);
+                        double angle=Math.Acos(Math.Max(-1,Math.Min(1,D.V.Dot(end.Forward,surface.Normal))));
+                        double score=miss/Math.Max(1,common.TargetTolerance)+10*speedViolation+
+                            10*Math.Max(0,angle-common.SafeAngle)+10*Math.Max(0,end.PointingRate-common.SafeRate);
+                        if(D.Finite(score)&&score<nearScore)
+                        {nearScore=score;nearContact=c;}
+                    }
+                }
                 else if(c.Result.Outcome==D.Outcome.UnknownCapability||c.Result.Outcome==D.Outcome.UnknownTerrain||
                     c.Result.Outcome==D.Outcome.Horizon||c.Result.Outcome==D.Outcome.Cancelled||
                     c.Result.Outcome==D.Outcome.InvalidInput)unresolved++;
@@ -306,9 +329,9 @@ namespace MuMech.Landing
                 for(int j=0;j<=settings.DurationIntervals&&!exhausted;j++)
                     Try(i==settings.CoastIntervals?common.MaxIgnitionDelay:settings.MinCoast+i*dc,
                         j==settings.DurationIntervals?settings.MaxPoweredSeconds:settings.MinPoweredSeconds+j*dt);
-            for(int n=0;n<settings.Refinements&&!exhausted&&best!=null&&!cancellation.IsCancellationRequested;n++)
+            for(int n=0;n<settings.Refinements&&!exhausted&&(best!=null||nearContact!=null)&&!cancellation.IsCancellationRequested;n++)
             {
-                dc*=.5;dt*=.5;Profile center=best.Profile;
+                dc*=.5;dt*=.5;Profile center=(best??nearContact).Profile;
                 for(int i=-1;i<=1&&!exhausted;i++)
                     for(int j=-1;j<=1&&!exhausted;j++)
                         Try(center.Coast+i*dc,center.Duration+j*dt);
