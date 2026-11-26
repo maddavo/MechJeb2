@@ -34,17 +34,6 @@ namespace MuMech
                 InitLandingSitesList();
         }
 
-        protected override void OnModuleDisabled()
-        {
-            base.OnModuleDisabled();
-        }
-
-        public override void OnDestroy()
-        {
-            _integratedPreview.Cancel();
-            base.OnDestroy();
-        }
-
         protected override GUILayoutOption[] WindowOptions() => new[] { GuiUtils.LayoutWidth(200), GUILayout.Height(150) };
 
         private void MoveByMeter(ref EditableAngle angle, double distance, double alt)
