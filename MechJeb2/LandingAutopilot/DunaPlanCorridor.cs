@@ -10,6 +10,7 @@ namespace MuMech.Landing
     {
         private readonly D.Environment environment;
         private readonly AtmosphericPlanTracker tracker;
+        private readonly DunaLandingAdmission.SolverFrame frame;
         private int index,queries,footprintIndex;
         private readonly bool requireFootprint;
         private double contactGround;
@@ -17,8 +18,8 @@ namespace MuMech.Landing
         internal bool Passed {get;private set;}
         internal bool Finished {get;private set;}
         internal string Status {get;private set;}="Checking sampled terrain";
-        internal DunaPlanCorridor(D.Environment env,AtmosphericPlanTracker tracker,bool requireFootprint=false)
-        {environment=env;this.tracker=tracker;this.requireFootprint=requireFootprint;}
+        internal DunaPlanCorridor(D.Environment env,AtmosphericPlanTracker tracker,DunaLandingAdmission.SolverFrame frame,bool requireFootprint=false)
+        {environment=env;this.tracker=tracker;this.frame=frame;this.requireFootprint=requireFootprint;}
         private void Reject(string reason){Status="Rejected: "+reason;Finished=true;}
         internal void Advance(MechJebCore core)
         {
@@ -45,8 +46,7 @@ namespace MuMech.Landing
                     if(!contact&&i%stride!=0&&modelClearance>300)continue;
                     if(++queries>512){Reject("corridor sample budget");return;}
                     work++;
-                    D.V radial=P.RotateTarget(pt.R.Unit,environment.Omega,now-pt.UT);
-                    Vector3d world=body.position+DunaIntegratedPreview.World(radial*body.Radius);
+                    Vector3d world=body.position+DunaIntegratedPreview.WorldAt(body,frame,pt.R.Unit*body.Radius,pt.UT);
                     double lat=body.GetLatitude(world),lon=body.GetLongitude(world);
                     double ground=body.TerrainAltitude(lat,lon);
                     if(contact||modelClearance<=300)
@@ -78,9 +78,8 @@ namespace MuMech.Landing
                     D.V across=D.V.Cross(up,tangent).Unit;
                     D.V axis=footprintIndex<2?tangent:across;
                     double angle=(footprintIndex%2==0?1:-1)*25/environment.Radius;
-                    D.V radial=P.RotateTarget((up*Math.Cos(angle)+axis*Math.Sin(angle)).Unit,
-                        environment.Omega,now-end.UT);
-                    Vector3d world=body.position+DunaIntegratedPreview.World(radial*body.Radius);
+                    D.V radial=(up*Math.Cos(angle)+axis*Math.Sin(angle)).Unit;
+                    Vector3d world=body.position+DunaIntegratedPreview.WorldAt(body,frame,radial*body.Radius,end.UT);
                     double lat=body.GetLatitude(world),lon=body.GetLongitude(world);
                     double ground=body.TerrainAltitude(lat,lon);
                     if(++queries>512){Reject("footprint sample budget");return;}

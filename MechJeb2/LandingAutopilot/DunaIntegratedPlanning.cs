@@ -41,7 +41,7 @@ namespace MuMech.Landing
                 if(reason!=null)return Finish(reason);
                 Core.Thrust.Tmode=MechJebModuleThrustController.TMode.OFF;
                 Core.Thrust.TransKillH=false;
-                Core.Attitude.attitudeTo(DunaIntegratedPreview.World(pointing),AttitudeReference.INERTIAL,Core.Landing);
+                Core.Attitude.attitudeTo(DunaIntegratedPreview.WorldAt(Vessel.mainBody,preview.Input.Frame,pointing,VesselState.Time),AttitudeReference.INERTIAL,Core.Landing);
                 Core.Thrust.RequestActiveThrottle(0,false,true);
                 return this;
             }

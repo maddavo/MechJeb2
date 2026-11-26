@@ -244,3 +244,5 @@ Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m
 Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m5.5`. Bounded validation-aware selection and terminal replay completion.
 
 Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m5.6`. Normal Land at target workflow on Duna; automatic admission and planning, prospective drag-cube model. Installation readiness not established.
+
+Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m5.7` — fixed-inertial/world-frame boundary conversion and rotating-world regression, atmospheric temperature acquisition investigation. Vessel-independent and high-crossrange requirements documented in SPEC and the binding plan. Not installation validated.

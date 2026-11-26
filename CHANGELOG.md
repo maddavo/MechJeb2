@@ -110,3 +110,9 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 - Use ordinary Land at target to automatically select and engage integrated Duna orbital/descent planning; no separate preview/execute interaction; explicit cancellation and refusal.
 - Obtain prospective drag from stock drag-cube geometry rather than instantaneous vacuum drag, and admit default parachute settings on craft without parachutes.
 - Share numerical admission and lifecycle decisions with representative offline tests and record capture inputs in ordinary KSP logs.
+
+## 2.16.0-landing.20261127.duna-integrated-m5.7
+
+- Establish capture-epoch solver frame using body-fixed basis; transform live vectors, attitude commands, terrain/forecast/fallback locations and replacement corridors. Add recorded Eagle rotating-world regression.
+- Sample atmospheric temperature using the existing world-position FlightGlobals API and log temperature knots; runtime density parity remains unverified.
+- Document vessel-independent runtime capability acquisition and high-crossrange targeting requirements; actual Eagle end-to-end feasibility remains open.

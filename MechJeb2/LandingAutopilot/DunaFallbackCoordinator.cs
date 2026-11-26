@@ -95,8 +95,8 @@ namespace MuMech.Landing
                 D.V radial=radials[index++];
                 // These input radials refer to observed UT; sample their
                 // body-fixed locations at the present body orientation.
-                D.V currentRadial=P.RotateTarget(radial,snapshot.Environment.Omega,now-request.Observed.UT);
-                Vector3d world=body.position+DunaIntegratedPreview.World(currentRadial*body.Radius);
+                Vector3d world=body.position+DunaIntegratedPreview.WorldAt(body,snapshot.Frame,
+                    radial*body.Radius,request.Observed.UT);
                 double lat=body.GetLatitude(world),lon=body.GetLongitude(world);
                 double ground=body.TerrainAltitude(lat,lon);
                 if(D.Finite(ground)&&ground>=0)sites.Add(new Fallback.Site(radial,body.Radius+ground));
@@ -117,7 +117,7 @@ namespace MuMech.Landing
                 finally{job=null;cancel?.Dispose();cancel=null;}
                 if(pending==null||pending.Generation!=generation||pending.Tracker==null)
                 {Reject(pending?.Reason??"no candidate",now);return null;}
-                corridor=new DunaPlanCorridor(pending.Environment,pending.Tracker,true);
+                corridor=new DunaPlanCorridor(pending.Environment,pending.Tracker,snapshot.Frame,true);
                 Status="screening local-site trajectory";
             }
             if(pending!=null)

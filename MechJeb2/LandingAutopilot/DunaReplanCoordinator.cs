@@ -53,7 +53,7 @@ namespace MuMech.Landing
                 finally{job=null;cancel?.Dispose();cancel=null;}
                 if(candidate==null||candidate.Generation!=generation||candidate.Tracker==null)
                 {Reject(candidate?.Reason??"no candidate",now);return current;}
-                corridor=new DunaPlanCorridor(snapshot.Environment,candidate.Tracker);
+                corridor=new DunaPlanCorridor(snapshot.Environment,candidate.Tracker,snapshot.Frame);
                 status="screening replacement";
             }
             if(candidate!=null)

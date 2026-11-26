@@ -14,6 +14,54 @@ namespace MuMech.Landing
     {
         internal enum Mode { Legacy, Orbit, Descent, Refused }
 
+        // Fixed inertial solver axes at capture. KSP world axes can rotate
+        // with the body. Three body-fixed axes identify current orientation.
+        internal readonly struct BodyBasis
+        {
+            internal readonly D.V A,B,C;
+            internal BodyBasis(D.V a,D.V b,D.V c){A=a.Unit;B=b.Unit;C=c.Unit;}
+            internal double Handedness=>D.V.Dot(D.V.Cross(A,B),C);
+            internal bool Valid=>A.Valid&&B.Valid&&C.Valid&&
+                Math.Abs(Math.Abs(Handedness)-1)<1e-5&&
+                Math.Abs(D.V.Dot(A,B))<1e-5&&Math.Abs(D.V.Dot(A,C))<1e-5&&Math.Abs(D.V.Dot(B,C))<1e-5;
+            internal D.V MapTo(BodyBasis other,D.V v)=>
+                other.A*D.V.Dot(v,A)+other.B*D.V.Dot(v,B)+other.C*D.V.Dot(v,C);
+        }
+
+        internal sealed class SolverFrame
+        {
+            internal readonly BodyBasis AtCapture;
+            internal readonly D.V Omega;
+            internal readonly double Epoch;
+            internal SolverFrame(BodyBasis basis,D.V omega,double epoch)
+            {
+                if(!basis.Valid||!omega.Valid||!D.Finite(epoch))throw new ArgumentException("invalid solver frame");
+                AtCapture=basis;Omega=omega;Epoch=epoch;
+            }
+            private void Check(BodyBasis current,double ut)
+            {
+                if(!current.Valid||current.Handedness*AtCapture.Handedness<0||!D.Finite(ut))
+                    throw new ArgumentException("invalid live body basis or epoch");
+            }
+            // Orbital velocity already includes physical body rotation;
+            // rotate components only, never add omega cross r again.
+            internal D.V ToSolver(BodyBasis current,D.V world,double ut)
+            {
+                Check(current,ut);
+                return P.RotateTarget(current.MapTo(AtCapture,world),Omega,ut-Epoch);
+            }
+            // Current UT for commands; predicted UT for a future ground
+            // position queried against the CURRENT body axes.
+            internal D.V ToWorld(BodyBasis current,D.V solver,double vectorUT)
+            {
+                Check(current,vectorUT);
+                return AtCapture.MapTo(current,P.RotateTarget(solver,Omega,Epoch-vectorUT));
+            }
+            internal bool TargetMatches(BodyBasis current,D.V world,D.V initial,double ut)
+                =>world.Valid&&initial.Valid&&
+                    (ToSolver(current,world,ut)-P.RotateTarget(initial,Omega,ut-Epoch)).Length<=1e-5;
+        }
+
         internal static bool UsesIntegratedTargeted(string body,bool atmosphere,bool targeted)
             =>body=="Duna"&&atmosphere&&targeted;
 

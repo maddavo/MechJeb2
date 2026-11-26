@@ -31,8 +31,8 @@ namespace MuMech.Landing
             double now=VesselState.Time;
             if(terminalExtension||now>=tracker.EndUT)return "Integrated contact epoch expired; terminal extension";
             var end=tracker.Plan.Result.End;
-            var radial=AtmosphericFeasibleRangePlanner.RotateTarget(end.R.Unit,activeEnvironment.Omega,now-end.UT);
-            Vector3d world=MainBody.position+DunaIntegratedPreview.World(radial*MainBody.Radius);
+            Vector3d world=MainBody.position+DunaIntegratedPreview.WorldAt(MainBody,snapshot.Frame,
+                end.R.Unit*MainBody.Radius,end.UT);
             double miss=AtmosphericFeasibleRangePlanner.Miss(snapshot.Environment,snapshot.Initial,end,
                 snapshot.Settings.Common.TargetAtInitialUT);
             return "Integrated trajectory (model only)"+(emergency?"; alternative site":"")+
@@ -87,7 +87,7 @@ namespace MuMech.Landing
                 }
                 clearance-=deckOffset;
                 double cap=Math.Min(snapshot.Cap,Math.Min(s.ThrottleLimit,s.ThrottleFixedLimit));
-                var actual=DunaIntegratedPreview.LiveState(Core);
+                var actual=DunaIntegratedPreview.LiveState(Core,snapshot);
                 var decision=tracker.Track(actual,clearance,s.MaxThrustAcceleration,cap,
                     s.LocalGravity,s.MaxEngineResponseTime);
                 bool orbitalPrefix=snapshot.Strategic&&s.Time<snapshot.ApproachStartUT;
@@ -117,7 +117,7 @@ namespace MuMech.Landing
                             s.LocalGravity,s.MaxEngineResponseTime);
                     }
                 }
-                var velocity=DunaIntegratedPreview.V(s.SurfaceVelocity);
+                var velocity=activeEnvironment.Surface(actual.R,actual.Velocity);
                 // Before an irreversible orbital burn, retain the existing
                 // abort policy. In descent, the independent supervisor may
                 // invalidate even a nominally valid tracker.
@@ -167,7 +167,7 @@ namespace MuMech.Landing
                 // when it has an engaged consumer; no competing speed PID.
                 Core.Thrust.Tmode=MechJebModuleThrustController.TMode.OFF;
                 Core.Thrust.TransKillH=false;
-                Core.Attitude.attitudeTo(DunaIntegratedPreview.World(command.Direction.Unit),
+                Core.Attitude.attitudeTo(DunaIntegratedPreview.WorldAt(MainBody,snapshot.Frame,command.Direction.Unit,s.Time),
                     AttitudeReference.INERTIAL,Core.Landing);
                 Core.Thrust.RequestActiveThrottle((float)command.Throttle,false,true);
                 if(orbitalPrefix&&command.Throttle>0)orbitalBurnRequested=true;

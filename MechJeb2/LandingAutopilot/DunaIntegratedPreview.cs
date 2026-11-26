@@ -31,6 +31,7 @@ namespace MuMech.Landing
             internal string EngineConfiguration;
             internal double Latitude,Longitude,UT,Mass,Cap,Warp,DragArea,UsableFuel;
             internal D.State Initial;
+            internal DunaLandingAdmission.SolverFrame Frame;
             internal D.Environment Environment;
             internal D.Propulsion Propulsion;
             internal D.Limits Limits;
@@ -83,13 +84,20 @@ namespace MuMech.Landing
                 }
             return text.ToString();
         }
-        internal static D.State LiveState(MechJebCore core)
+        internal static DunaLandingAdmission.BodyBasis BodyBasis(CelestialBody body)
+            =>new DunaLandingAdmission.BodyBasis(V(body.GetSurfaceNVector(0,0)),
+                V(body.GetSurfaceNVector(0,90)),V(body.GetSurfaceNVector(90,0)));
+        internal static Vector3d WorldAt(CelestialBody body,DunaLandingAdmission.SolverFrame frame,D.V vector,double ut)
+            =>World(frame.ToWorld(BodyBasis(body),vector,ut));
+        internal static D.State LiveState(MechJebCore core,Snapshot snap)
         {
             var s=core.VesselState;
             double attained=s.MaxThrustAcceleration>0?
                 Math.Max(0,Math.Min(1,s.CurrentThrustAcceleration/s.MaxThrustAcceleration)):double.NaN;
-            return new D.State(s.Time,V(s.OrbitalPosition),V(s.OrbitalVelocity),s.Mass*1000,
-                V(s.Forward).Unit,attained,core.vessel.angularVelocity.magnitude);
+            var basis=BodyBasis(core.vessel.mainBody);
+            return new D.State(s.Time,snap.Frame.ToSolver(basis,V(s.OrbitalPosition),s.Time),
+                snap.Frame.ToSolver(basis,V(s.OrbitalVelocity),s.Time),s.Mass*1000,
+                snap.Frame.ToSolver(basis,V(s.Forward),s.Time).Unit,attained,core.vessel.angularVelocity.magnitude);
         }
 
         // Snapshot uses a reduced-order equivalent axial engine, frozen
@@ -129,7 +137,8 @@ namespace MuMech.Landing
             // Frame sign is checked against the very same sampled inertial
             // and surface velocities; do not silently flip rotation.
             Require((vel-V(s.SurfaceVelocity)-D.V.Cross(omega,pos)).Length<.5,"surface/inertial rotation mismatch");
-            D.V target=V(body.GetWorldSurfacePosition(lat,lon,0)-body.position).Unit;
+            var frame=new DunaLandingAdmission.SolverFrame(BodyBasis(body),omega,s.Time);
+            D.V target=V(body.GetSurfaceNVector(lat,lon)).Unit;
             Require(target.Valid&&Math.Abs(target.Length-1)<1e-6,"invalid target radial");
             double mass=s.Mass*1000;
             double cap=Math.Min(s.ThrottleLimit,s.ThrottleFixedLimit);
@@ -141,17 +150,21 @@ namespace MuMech.Landing
             const int N=64;
             var pressure=new D.Knot[N+1];var density=new D.Knot[N+1];
             var pressures=new double[N+1];double maxP=0;
+            var temperatures=new System.Text.StringBuilder();
             for(int i=0;i<=N;i++)
             {
                 double h=top*i/N;
                 double kpa=body.GetPressure(h);
-                double temp=body.GetFullTemperature(body.GetWorldSurfacePosition(lat,lon,h));
+                // Same world-position API as the existing DragLength helper.
+                double temp=FlightGlobals.getExternalTemperature(body.GetWorldSurfacePosition(lat,lon,h),body);
+                temperatures.Append(Num(h,"R")).Append(':').Append(Num(temp,"R")).Append(';');
                 double rho=FlightGlobals.getAtmDensity(kpa,temp,body);
                 Require(D.Finite(kpa)&&kpa>=0&&D.Finite(temp)&&temp>0&&D.Finite(rho)&&rho>=0,"invalid atmosphere sample");
                 pressures[i]=kpa*1000;maxP=Math.Max(maxP,pressures[i]);
                 pressure[i]=new D.Knot(h,pressures[i]);density[i]=new D.Knot(h,rho);
             }
             Require(maxP>0,"atmosphere pressure unavailable");
+            Debug.Log("[DunaIntegratedPreview] atmosphere samples(ASL:K)="+temperatures);
 
             // Common propellant ratio and tank inventory. This is a
             // vessel-wide inventory estimate, not a proof of crossfeed.
@@ -296,7 +309,7 @@ namespace MuMech.Landing
             var partIds=new uint[v.parts.Count];for(int i=0;i<partIds.Length;i++)partIds[i]=v.parts[i].flightID;
             return new Snapshot{Vessel=v.id,Parts=partIds,Latitude=lat,Longitude=lon,UT=s.Time,Mass=mass,
                 Cap=cap,Warp=TimeWarp.CurrentRate,DragArea=area,UsableFuel=usable,Initial=initial,
-                Environment=environment,Propulsion=propulsion,Limits=limits,Settings=settings,
+                Environment=environment,Propulsion=propulsion,Limits=limits,Settings=settings,Frame=frame,
                 Strategic=strategic,ApproachStartUT=initial.UT,
                 ReferencePart=v.GetReferenceTransformPart().flightID,EngineConfiguration=EngineSignature(v)};
         }
@@ -404,12 +417,16 @@ namespace MuMech.Landing
                 return "throttle authority changed";
             if(Math.Abs((double)core.Landing.TouchdownSpeed-snap.Settings.Common.Terminal.TouchdownSpeed)>1e-6)
                 return "touchdown setting changed";
+            var basis=BodyBasis(body);
             D.V pos=V(s.OrbitalPosition),vel=V(s.OrbitalVelocity);
-            if((vel-V(s.SurfaceVelocity)-D.V.Cross(snap.Environment.Omega,pos)).Length>.5)
-                return "inertial frame changed";
-            D.V target=V(body.GetWorldSurfacePosition(snap.Latitude,snap.Longitude,0)-body.position).Unit;
-            D.V expected=P.RotateTarget(snap.Settings.Common.TargetAtInitialUT,snap.Environment.Omega,s.Time-snap.UT);
-            if(!target.Valid||(target-expected).Length>1e-5)return "target frame mismatch";
+            D.V omega=V(body.angularVelocity);
+            if((vel-V(s.SurfaceVelocity)-D.V.Cross(omega,pos)).Length>.5)
+                return "inertial velocity mismatch";
+            if((snap.Frame.ToSolver(basis,omega,s.Time)-snap.Environment.Omega).Length>1e-7)
+                return "body angular velocity changed";
+            D.V target=V(body.GetSurfaceNVector(snap.Latitude,snap.Longitude)).Unit;
+            if(!snap.Frame.TargetMatches(basis,target,snap.Settings.Common.TargetAtInitialUT,s.Time))
+                return "target frame mismatch";
             if(checkEngines&&EngineSignature(v)!=snap.EngineConfiguration)return "engine configuration changed";
             return null;
         }
@@ -434,7 +451,7 @@ namespace MuMech.Landing
                         snapshot.Settings,answer.Validated);
                     if(tracker.TargetMiss>snapshot.Settings.Common.TargetTolerance)
                     {corridorStatus="Rejected: modelled target miss exceeds tolerance";return;}
-                    corridor=new DunaPlanCorridor(snapshot.Environment,tracker);
+                    corridor=new DunaPlanCorridor(snapshot.Environment,tracker,snapshot.Frame);
                 }
                 corridor.Advance(core);
                 corridorPassed=corridor.Passed;
@@ -462,12 +479,12 @@ namespace MuMech.Landing
                 var s=core.VesselState;
                 if(core.vessel.ctrlState.mainThrottle>1e-4||s.CurrentThrustAcceleration>.05)
                 {reason="engagement requires unpowered coast";return false;}
-                var decision=tracker.Track(LiveState(core),s.AltitudeBottom,s.MaxThrustAcceleration,
+                var decision=tracker.Track(LiveState(core,snapshot),s.AltitudeBottom,s.MaxThrustAcceleration,
                     Math.Min(snapshot.Cap,Math.Min(s.ThrottleLimit,s.ThrottleFixedLimit)),s.LocalGravity,s.MaxEngineResponseTime);
                 if(!decision.Valid){reason=decision.Reason;return false;}
                 if(snapshot.Strategic)
                 {
-                    var actual=LiveState(core);
+                    var actual=LiveState(core,snapshot);
                     if(!tracker.ReferenceAt(actual.UT,out var expected,out _)||
                         D.V.Dot(actual.Forward,expected.Forward)<Math.Cos(8*Math.PI/180)||
                         actual.UT>=snapshot.DeorbitStartUT)

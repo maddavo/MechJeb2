@@ -597,6 +597,38 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
+        public void RecordedEagleRotatingWorldFrameDoesNotRejectLandingTarget()
+        {
+            // M5.6 KSP.log lines 156992-157005. Body-fixed basis chosen
+            // arbitrarily at capture: only its relative change matters.
+            double t0=31154879.330809835,t1=31154881.37080979;
+            var omega=new D.V(0,-9.5900344839060708E-05,0);
+            var basis=new MuMech.Landing.DunaLandingAdmission.BodyBasis(X,Y,Z);
+            var frame=new MuMech.Landing.DunaLandingAdmission.SolverFrame(basis,omega,t0);
+            var target=new D.V(-.69844897258755612,.71519480810347258,.025795719668668244);
+            var r0=new D.V(-23186.752291146822,5507.7593945916087,418401.43325474294);
+            var r1=new D.V(-24832.479057560271,5552.9263503960356,418305.91968062142);
+            var v0=new D.V(-846.94362943558008,22.163760722689503,-47.456344131980643);
+            var v1=new D.V(-846.752699715795,22.117567121912728,-50.7850944244766);
+            // Previous check falsely rejected after ~0.149 seconds.
+            Assert.True((target-P.RotateTarget(target,omega,.16)).Length>1e-5);
+            Assert.True(frame.TargetMatches(basis,target,target,t0+.16));
+            Assert.True(frame.TargetMatches(basis,target,target,t1));
+            D.V derivative=(frame.ToSolver(basis,r1,t1)-r0)*(1/(t1-t0));
+            D.V mean=(v0+frame.ToSolver(basis,v1,t1))*.5;
+            Assert.InRange((derivative-mean).Length,0,.005);
+            Assert.InRange((frame.ToWorld(basis,frame.ToSolver(basis,v1,t1),t1)-v1).Length,0,1e-8);
+            // Also exercise a nonrotating world and arbitrary orientation
+            // change, including the future contact-to-ground conversion.
+            var rotated=new MuMech.Landing.DunaLandingAdmission.BodyBasis(
+                P.RotateTarget(X,omega,10),P.RotateTarget(Y,omega,10),P.RotateTarget(Z,omega,10));
+            var future=P.RotateTarget(target,omega,80);
+            Assert.InRange((frame.ToWorld(rotated,future,t0+80)-P.RotateTarget(target,omega,10)).Length,0,1e-10);
+            Assert.True(frame.TargetMatches(rotated,P.RotateTarget(target,omega,10),target,t0+10));
+            Assert.False(frame.TargetMatches(basis,(target+X*.01).Unit,target,t1));
+        }
+
+        [Fact]
         public void RepresentativeDunaOrbitToTouchdownThroughProductionAdmission()
         {
             // Fixed target set before search. Enough propellant and thrust
