@@ -192,6 +192,20 @@ namespace MuMech.Landing
             return settings.Valid?settings:null;
         }
 
+        // Shared live/orbital acceptance decisions. A safe unpowered
+        // bound orbit may abort; once committed, the independent hazard
+        // supervisor can take over. No separate test-only policy.
+        internal static bool OrbitalPreburn(D.Environment env,D.State actual,bool strategic,bool burnRequested)
+            =>strategic&&(!burnRequested||
+                AtmosphericStrategicPlanner.TryOrbit(env,actual,out var orbit)&&
+                orbit.Periapsis>env.Radius+env.AtmosphereTop);
+
+        internal static bool OrbitalBurnAligned(AtmosphericPlanTracker tracker,D.State actual,
+            bool orbitalPrefix,double start,double end)
+            =>!orbitalPrefix||actual.UT<start||actual.UT>=end||
+                tracker.ReferenceAt(actual.UT,out _,out var planned)&&
+                D.V.Dot(actual.Forward,planned.Direction.Unit)>=.995;
+
         internal static bool OwnsActuators(int attitudeUsers,bool landingAttitude,int thrustUsers,
             bool thrustSelf,bool landingThrust,bool pending)
             =>pending?attitudeUsers==1&&landingAttitude&&thrustUsers==2&&thrustSelf&&landingThrust:

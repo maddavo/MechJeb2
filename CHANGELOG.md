@@ -125,3 +125,4 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 - Add stock Duna reference fixture from KittopiaTech export, validate captured pressure keys, require safe targeted contact; add analytic target-periapsis transfer seeds and binary-search curve interpolation.
 - Stabilise low-energy terminal descent and share its state-feedback law with the live/closed-loop tracker; reserve mixed-family search capacity for near-feasible trajectory refinement, preserving contact and replay gates.
 - Preserve lateral tracking bounds during state-based terminal timing recovery; require targeted contact and protected reserve in every recorded Eagle robustness scenario.
+- Exercise existing live orbital alignment, preburn and radial supervisor decisions during strategic closed-loop candidate validation; enforce all targeted strategic scenario misses.

@@ -121,10 +121,8 @@ namespace MuMech.Landing
                 // Before an irreversible orbital burn, retain the existing
                 // abort policy. In descent, the independent supervisor may
                 // invalidate even a nominally valid tracker.
-                bool safeOrbitalCoast=snapshot.Strategic&&
-                    AtmosphericStrategicPlanner.TryOrbit(activeEnvironment,actual,out var orbit)&&
-                    orbit.Periapsis>activeEnvironment.Radius+activeEnvironment.AtmosphereTop;
-                bool preburn=snapshot.Strategic&&(!orbitalBurnRequested||safeOrbitalCoast);
+                bool preburn=DunaLandingAdmission.OrbitalPreburn(activeEnvironment,actual,
+                    snapshot.Strategic,orbitalBurnRequested);
                 double maxFlow=double.NaN;
                 if(activeEnvironment.Air(actual.UT,actual.R,out double p,out _))
                 {
@@ -156,9 +154,8 @@ namespace MuMech.Landing
                         return Finish("hazard control unavailable: "+hazardReason+"; manual control required");
                 }
                 else if(decision.Valid)command=decision.Command;
-                if(!hazardMode&&orbitalPrefix&&s.Time>=snapshot.DeorbitStartUT&&s.Time<snapshot.DeorbitEndUT&&
-                    (!tracker.ReferenceAt(actual.UT,out _,out var plannedBurn)||
-                     D.V.Dot(actual.Forward,plannedBurn.Direction.Unit)<.995))
+                if(!hazardMode&&!DunaLandingAdmission.OrbitalBurnAligned(tracker,actual,orbitalPrefix,
+                    snapshot.DeorbitStartUT,snapshot.DeorbitEndUT))
                     return Finish("orbital burn alignment not demonstrated; manual control required");
                 if(!command.Valid||!D.Finite(cap)||command.Throttle>cap+1e-8)
                     return Finish("invalid live command");

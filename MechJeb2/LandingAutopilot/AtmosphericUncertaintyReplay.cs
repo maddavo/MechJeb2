@@ -12,6 +12,16 @@ namespace MuMech.Landing
     // the perturbations are provisional, not measured uncertainty bounds.
     internal static class AtmosphericUncertaintyReplay
     {
+        // The real strategic execution boundaries, not inferred from the
+        // first nonzero throttle in an independently perturbed history.
+        internal readonly struct OrbitalExecution
+        {
+            internal readonly double BurnStart,BurnEnd,Handoff;
+            internal OrbitalExecution(double start,double end,double handoff)
+            {BurnStart=start;BurnEnd=end;Handoff=handoff;}
+            internal bool Valid=>D.Finite(BurnStart)&&D.Finite(BurnEnd)&&D.Finite(Handoff)&&
+                BurnEnd>BurnStart&&Handoff>=BurnEnd;
+        }
         internal readonly struct Scenario
         {
             internal readonly string Name;
@@ -111,15 +121,17 @@ namespace MuMech.Landing
         }
 
         internal static Trial Run(D.Environment model,D.Propulsion propulsion,D.Limits limits,
-            AtmosphericPlanTracker tracker,Scenario scenario,int budget,CancellationToken token=default)
+            AtmosphericPlanTracker tracker,Scenario scenario,int budget,CancellationToken token=default,
+            OrbitalExecution? execution=null)
         {
             D.State state=tracker==null?default:tracker.Plan.Reference[0].State;
-            D.State initial=state;int steps=0;
+            D.State initial=state;int steps=0;bool burnRequested=false;
             Trial Finish(D.Outcome status,string reason)=>new Trial(scenario.Name,reason,status,
                 status==D.Outcome.ContactWithinLimits?P.Miss(model,initial,state,tracker.Settings.Common.TargetAtInitialUT):double.NaN,
                 state.Mass,state.UT,steps);
             if(model==null||!model.Valid||propulsion==null||limits==null||!limits.Valid||tracker==null||
                 model.Terrain!=null||model.PassiveLift!=null||model.Aerodynamics!=null||
+                execution.HasValue&&!execution.Value.Valid||
                 !D.Finite(scenario.ImpulseScale)||scenario.ImpulseScale<=0||
                 !D.Finite(scenario.DragScale)||scenario.DragScale<0||
                 !D.Finite(scenario.ResponseScale)||scenario.ResponseScale<=0||
@@ -149,6 +161,24 @@ namespace MuMech.Landing
                     env.Surface(state.R,state.Velocity),clearance,raw,cap,g,out var t))command=t;
                 else return Finish(D.Outcome.UnknownCapability,"tracking: "+d.Reason+" at UT "+state.UT+
                     " clearance="+clearance+" positionError="+d.PositionError+" velocityError="+d.VelocityError+" massError="+d.MassError);
+                if(execution.HasValue)
+                {
+                    var timing=execution.Value;
+                    bool prefix=state.UT<timing.Handoff;
+                    bool preburn=DunaLandingAdmission.OrbitalPreburn(model,state,true,burnRequested);
+                    if(!preburn)
+                    {
+                        var safety=AtmosphericRecoverability.Assess(state,env.Surface(state.R,state.Velocity),
+                            clearance,raw,cap,g,limits.TurnRate,lim.EngineRise,a.Flow,
+                            tracker.ReserveMass,common.Terminal.TouchdownSpeed);
+                        if(safety.Status==AtmosphericRecoverability.Level.Hazard)
+                            return Finish(D.Outcome.UnknownCapability,"live supervisor: "+safety.Reason+" at UT "+state.UT+
+                                " clearance="+clearance+" down="+safety.DownSpeed);
+                    }
+                    if(!DunaLandingAdmission.OrbitalBurnAligned(tracker,state,prefix,timing.BurnStart,timing.BurnEnd))
+                        return Finish(D.Outcome.UnknownCapability,"live orbital burn alignment at UT "+state.UT);
+                    if(prefix&&command.Throttle>0)burnRequested=true;
+                }
                 // Re-evaluate feedback at <=0.2s intervals, split at
                 // every command boundary and integrate with <=half step.
                 double boundary=Math.Min(end,state.UT+.2);
@@ -183,7 +213,8 @@ namespace MuMech.Landing
         }
 
         internal static Report Validate(D.Environment env,D.Propulsion propulsion,D.Limits limits,
-            AtmosphericPlanTracker tracker,int budget,CancellationToken token=default)
+            AtmosphericPlanTracker tracker,int budget,CancellationToken token=default,
+            OrbitalExecution? execution=null)
         {
             var trials=new List<Trial>();int steps=0;
             if(budget<1||budget>1000000)return new Report(trials,false,"invalid scenario budget",steps);
@@ -191,12 +222,12 @@ namespace MuMech.Landing
             {
                 if(token.IsCancellationRequested)return new Report(trials,false,"cancelled",steps);
                 if(steps>=budget)return new Report(trials,false,"scenario budget exhausted",steps);
-                Trial t=Run(env,propulsion,limits,tracker,scenario,budget-steps,token);
+                Trial t=Run(env,propulsion,limits,tracker,scenario,budget-steps,token,execution);
                 trials.Add(t);steps+=t.Steps;
                 if(!t.Passed)return new Report(trials,false,t.Name+": "+t.Reason,steps);
-                if(trials.Count==1&&tracker.TargetMiss<=tracker.Settings.Common.TargetTolerance&&
+                if((trials.Count==1||execution.HasValue)&&tracker.TargetMiss<=tracker.Settings.Common.TargetTolerance&&
                     t.Miss>tracker.Settings.Common.TargetTolerance)
-                    return new Report(trials,false,"nominal closed-loop target miss exceeds tolerance",steps);
+                    return new Report(trials,false,t.Name+": closed-loop target miss exceeds tolerance",steps);
             }
             return new Report(trials,true,"all sampled scenarios reached model contact within limits",steps);
         }

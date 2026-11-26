@@ -542,8 +542,11 @@ namespace MuMech.Landing
                             if(joined==null){unresolved++;continue;}
                             if(steps>=settings.MaxSteps){exhausted=true;break;}
                             var tracker=new AtmosphericPlanTracker(env,propulsion,limits,settings.Approach,joined.Combined);
+                            var execution=new AtmosphericUncertaintyReplay.OrbitalExecution(
+                                initial.UT+joined.Deorbit.Delay,
+                                initial.UT+joined.Deorbit.Delay+joined.Deorbit.Duration,joined.HandoffUT);
                             var screen=AtmosphericUncertaintyReplay.Validate(env,propulsion,limits,tracker,
-                                Math.Min(240000,settings.MaxSteps-steps),token);
+                                Math.Min(240000,settings.MaxSteps-steps),token,execution);
                             steps+=screen.Steps;
                             if(!screen.Passed){diagnostic?.Invoke("scenario rejected: "+screen.Reason);unresolved++;continue;}
                             if(token.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);

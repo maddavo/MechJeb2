@@ -257,6 +257,18 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
+        public void OrbitalBurnAlignmentUsesActualAttitudeAndExactBurnWindow()
+        {
+            var tracker=PoweredTracker();
+            Assert.True(tracker.ReferenceAt(0,out var state,out _));
+            var wrong=new D.State(state.UT,state.R,state.Velocity,state.Mass,Y);
+            Assert.True(MuMech.Landing.DunaLandingAdmission.OrbitalBurnAligned(tracker,state,true,0,1));
+            Assert.False(MuMech.Landing.DunaLandingAdmission.OrbitalBurnAligned(tracker,wrong,true,0,1));
+            Assert.True(MuMech.Landing.DunaLandingAdmission.OrbitalBurnAligned(tracker,wrong,true,.1,1));
+            Assert.True(MuMech.Landing.DunaLandingAdmission.OrbitalBurnAligned(tracker,wrong,false,0,1));
+        }
+
+        [Fact]
         public void TrackerRejectsMalformedPlanHistory()
         {
             var t=PoweredTracker();
