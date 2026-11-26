@@ -360,7 +360,7 @@ namespace MuMech.Landing
             replay=R.Run(env,propulsion,fine,initial,history,Array.Empty<R.Observation>(),
                 common.SafeVertical,common.SafeHorizontal,common.SafeAngle,common.SafeRate,maxSteps,token,continuation);
             if(replay.Outcome!=D.Outcome.ContactWithinLimits){reason="replay "+replay.Outcome;return false;}
-            double p=(reference.Result.End.R-replay.End.R).Length;
+            double p=P.ContactPositionDifference(env,reference.Result.End,replay.End);
             double m=Math.Abs(reference.Result.End.Mass-replay.End.Mass);
             double t=Math.Abs(reference.Result.End.UT-replay.End.UT);
             double miss=P.Miss(env,initial,replay.End,common.TargetAtInitialUT);

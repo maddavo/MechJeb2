@@ -113,8 +113,17 @@ namespace MuMech.Landing
             // at altitude. These are experimental tracking limits.
             double positionLimit=Math.Min(200,Math.Max(3,refClearance*.02));
             double velocityLimit=Math.Min(15,Math.Max(.75,refClearance*.005));
-            double massLimit=Math.Max(10,plan.Reference[0].State.Mass*.01);
+            double initialMass=plan.Reference[0].State.Mass;
+            // A 5% lower impulse per kg requires up to 1/.95 times
+            // the propellant for the same impulse. Allow the associated
+            // cumulative consumption difference in addition to the
+            // original measurement allowance, not arbitrary mass loss.
+            double consumed=Math.Max(0,initialMass-reference.Mass);
+            double massLimit=Math.Max(10,initialMass*.01)+consumed*(1/.95-1);
             if(pe>positionLimit||ve>velocityLimit||me>massLimit)return Reject("trajectory deviation");
+            double remaining=Math.Max(0,reference.Mass-plan.Result.End.Mass);
+            if(actual.Mass-remaining<limits.ReserveMass)
+                return Reject("projected propellant reserve threatened");
             if(clearance<refClearance-TerrainTolerance(refClearance))
                 return Reject("terrain clearance below trajectory");
             double vertical=D.V.Dot(environment.Surface(actual.R,actual.Velocity),actual.R.Unit);

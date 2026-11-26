@@ -191,6 +191,28 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
+        public void TrackerAllowsExpectedImpulseLossFuelButProtectsReserve()
+        {
+            var a=new D.State(0,X*321000,X*(-20),1000,X);
+            var b=new D.State(100,X*320000,X*(-.5),600,X);
+            var command=new D.Command(.5,X);
+            var points=new System.Collections.Generic.List<F.Point>{new F.Point(a,command,100)};
+            var history=new System.Collections.Generic.List<R.Segment>{new R.Segment(0,100,command)};
+            var result=new P.Candidate(new P.Profile(0,0,new D.Command(0,X)),D.Outcome.ContactWithinLimits,
+                b,0,0,0,0,1);
+            var candidate=new F.Candidate(new F.Profile(0,.5),result,0,0,0,points,history);
+            var t=new Tracker(Env(),Engine(),Limits(reserve:590),Settings(cap:1),candidate);
+            Assert.True(t.ReferenceAt(50,out var st,out _));
+            D.State WithMass(double m)=>new D.State(st.UT,st.R,st.Velocity,m,st.Forward,st.Throttle,st.PointingRate);
+            // 200kg nominal consumption: 5% lower impulse permits an
+            // additional 10.53kg plus existing observation allowance.
+            var wide=new Tracker(Env(),Engine(),Limits(reserve:100),Settings(cap:1),candidate);
+            Assert.True(wide.Track(WithMass(785),500,8,1,0,0).Valid);
+            Assert.Equal("trajectory deviation",wide.Track(WithMass(770),500,8,1,0,0).Reason);
+            Assert.Equal("projected propellant reserve threatened",t.Track(WithMass(785),500,8,1,0,0).Reason);
+        }
+
+        [Fact]
         public void TrackerConvertsModelThrustToLiveAccelerationAndGatesAlignment()
         {
             var t=PoweredTracker();

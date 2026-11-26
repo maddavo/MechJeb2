@@ -102,6 +102,14 @@ namespace MuMech.Landing
             D.V a=RotateTarget(target,env.Omega,contact.UT-initial.UT).Unit,b=contact.R.Unit;
             return env.Radius*Math.Atan2(D.V.Cross(a,b).Length,D.V.Dot(a,b));
         }
+        // Contact states can be at different epochs. Compare their
+        // body-fixed positions at a common epoch, not the motion of
+        // the surface through inertial space between those epochs.
+        internal static double ContactPositionDifference(D.Environment env,D.State a,D.State b)
+        {
+            if(env==null||!a.Valid||!b.Valid)return double.NaN;
+            return (a.R-RotateTarget(b.R,env.Omega,a.UT-b.UT)).Length;
+        }
         // Lexicographic: within tolerance prefer fuel, otherwise reduce miss.
         // Only actual model contact within limits may enter the feasible set.
         internal static bool Better(Candidate a,Candidate b,double tolerance)

@@ -216,6 +216,7 @@ namespace MuMech.Landing
             var replay=R.Run(env,propulsion,fine,initial,commands.ToArray(),Array.Empty<R.Observation>(),
                 common.SafeVertical,common.SafeHorizontal,common.SafeAngle,common.SafeRate,budget,token,
                 D.Finite(approach.Result.TerminalStartUT)&&commands[commands.Count-1].StartUT>=approach.Result.TerminalStartUT ? .5 : 0);
+            double historyMass=replay.End.Mass;
             bool continued=false;
             if(replay.Outcome==D.Outcome.Advanced&&replay.HistoryCompleted&&
                 D.Finite(approach.Result.TerminalStartUT)&&commands[commands.Count-1].StartUT>=approach.Result.TerminalStartUT&&
@@ -234,15 +235,21 @@ namespace MuMech.Landing
             replaySteps=replay.Steps;
             bool passed=replay.Outcome==D.Outcome.ContactWithinLimits&&
                 (miss>common.TargetTolerance||P.Miss(env,initial,replay.End,common.TargetAtInitialUT)<=common.TargetTolerance)&&
-                (replay.End.R-approach.Result.End.R).Length<=20&&
-                Math.Abs(replay.End.Mass-approach.Result.End.Mass)<=Math.Max(.5,initial.Mass*.0005)&&
+                P.ContactPositionDifference(env,approach.Result.End,replay.End)<=20&&
+                // Numerical mass consistency is measured at the end of
+                // the recorded history; additional extension fuel is real
+                // consumption, not integration error. Final reserve remains
+                // mandatory and the extension itself is fully propagated.
+                Math.Abs((continued?historyMass:replay.End.Mass)-approach.Result.End.Mass)<=Math.Max(.5,initial.Mass*.0005)&&
+                replay.End.Mass>=limits.ReserveMass&&
                 Math.Abs(replay.End.UT-approach.Result.End.UT)<=(continued?5:1);
             if(!passed)
             {
                 diagnostic?.Invoke("join replay="+replay.Outcome+" miss="+miss+
                     " fineMiss="+P.Miss(env,initial,replay.End,common.TargetAtInitialUT)+
-                    " positionError="+(replay.End.R-approach.Result.End.R).Length+
+                    " positionError="+P.ContactPositionDifference(env,approach.Result.End,replay.End)+
                     " massError="+Math.Abs(replay.End.Mass-approach.Result.End.Mass)+
+                    " historyMassError="+Math.Abs(historyMass-approach.Result.End.Mass)+
                     " timeError="+Math.Abs(replay.End.UT-approach.Result.End.UT)+
                     " endClearance="+env.PhysicalClearance(replay.End)+
                     " endSpeed="+env.Surface(replay.End.R,replay.End.Velocity).Length);

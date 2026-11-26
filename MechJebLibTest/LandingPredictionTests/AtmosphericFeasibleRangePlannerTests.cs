@@ -39,6 +39,19 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.Equal(Math.PI*320000,P.Miss(Env(new D.V(0,0,-.01)),Start(),end,X),7);
         }
         [Fact]
+        public void RotatingContactConsistencyRemovesOnlyExpectedSurfaceRotation()
+        {
+            var env=Env(new D.V(0,0,-9.5900344839e-5));
+            var a=new D.State(100,X*320000,default,1000,X);
+            var rotated=P.RotateTarget(a.R,env.Omega,1.6);
+            var b=new D.State(101.6,rotated,default,1000,rotated.Unit);
+            Assert.True((a.R-b.R).Length>40);
+            Assert.InRange(P.ContactPositionDifference(env,a,b),0,1e-8);
+            var raised=new D.State(b.UT,b.R+b.R.Unit*2,default,1000,b.Forward);
+            Assert.Equal(2,P.ContactPositionDifference(env,a,raised),7);
+        }
+
+        [Fact]
         public void SweepIncludesAllCoarseAndRefinedTimingNodes()
         {
             var r=P.Search(Env(),Engines(),Limits(),Start(),Settings(),0,Coast());
