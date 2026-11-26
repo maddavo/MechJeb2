@@ -238,7 +238,7 @@ namespace MechJebLibTest.LandingPredictionTests
                         (c.Result.Miss>common.TargetTolerance||P.Miss(f.env,f.state,replay.End,common.TargetAtInitialUT)<=common.TargetTolerance);
                     if(!valid)continue;
                     finePassed++;
-                    var tracker=new AtmosphericPlanTracker(f.env,f.engine,f.limits,set,c);
+                    var tracker=new MuMech.Landing.AtmosphericPlanTracker(f.env,f.engine,f.limits,set,c);
                     var screen=Uncertainty.Validate(f.env,f.engine,f.limits,tracker,80000);
                     if(screen.Passed)allPassed++;
                     rows.Add(label+" alternate coast="+N(profile.Coast)+" duration="+N(profile.Duration)+
