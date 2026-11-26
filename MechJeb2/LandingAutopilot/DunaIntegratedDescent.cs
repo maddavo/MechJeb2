@@ -12,7 +12,10 @@ namespace MuMech.Landing
         private readonly DunaIntegratedPreview.Snapshot snapshot;
         private AtmosphericPlanTracker tracker;
         private readonly DunaReplanCoordinator replanner=new DunaReplanCoordinator();
-        internal void CancelReplanning()=>replanner.Cancel();
+        private readonly DunaFallbackCoordinator fallback=new DunaFallbackCoordinator();
+        private D.Environment activeEnvironment;
+        private bool emergency;
+        internal void CancelReplanning(){replanner.Cancel();fallback.Cancel();}
         private double nextEngineUT=double.NegativeInfinity,nextLogUT=double.NegativeInfinity,lastUT=double.NegativeInfinity;
         private bool terminalExtension;
         private double nextSurfaceUT=double.NegativeInfinity,deckOffset;
@@ -21,7 +24,7 @@ namespace MuMech.Landing
         internal DunaIntegratedDescent(MechJebCore core,DunaIntegratedPreview.Snapshot snapshot,
             AtmosphericPlanTracker tracker):base(core)
         {
-            this.snapshot=snapshot;this.tracker=tracker;
+            this.snapshot=snapshot;this.tracker=tracker;activeEnvironment=snapshot.Environment;
             Status="Integrated descent (experimental)";
         }
         private string Num(double x)=>x.ToString("F3",CultureInfo.InvariantCulture);
@@ -67,13 +70,31 @@ namespace MuMech.Landing
                 var actual=DunaIntegratedPreview.LiveState(Core);
                 var decision=tracker.Track(actual,clearance,s.MaxThrustAcceleration,cap,
                     s.LocalGravity,s.MaxEngineResponseTime);
-                var replacement=replanner.Tick(Core,snapshot,tracker,actual,decision,clearance,
-                    s.MaxThrustAcceleration,cap,s.LocalGravity,s.MaxEngineResponseTime);
-                if(!ReferenceEquals(replacement,tracker))
+                if(!emergency)
                 {
-                    tracker=replacement;terminalExtension=false;
-                    decision=tracker.Track(actual,clearance,s.MaxThrustAcceleration,cap,
-                        s.LocalGravity,s.MaxEngineResponseTime);
+                    // Alternate background work. A ready contingency is not
+                    // busy; a pending local terrain screen and nominal solve
+                    // do not compete for the same physics-tick budget.
+                    var local=decision.Valid?fallback.Tick(Core,snapshot,tracker,actual,decision,clearance,
+                        s.MaxThrustAcceleration,cap,s.LocalGravity,s.MaxEngineResponseTime,!replanner.Busy):null;
+                    var replacement=replanner.Tick(Core,snapshot,tracker,actual,decision,clearance,
+                        s.MaxThrustAcceleration,cap,s.LocalGravity,s.MaxEngineResponseTime,!fallback.Busy);
+                    if(!ReferenceEquals(replacement,tracker))
+                    {
+                        fallback.Cancel();tracker=replacement;terminalExtension=false;
+                        decision=tracker.Track(actual,clearance,s.MaxThrustAcceleration,cap,
+                            s.LocalGravity,s.MaxEngineResponseTime);
+                    }
+                    if(!decision.Valid)
+                        local=fallback.Tick(Core,snapshot,tracker,actual,decision,clearance,
+                            s.MaxThrustAcceleration,cap,s.LocalGravity,s.MaxEngineResponseTime,false);
+                    if(local!=null)
+                    {
+                        replanner.Cancel();tracker=local.Tracker;activeEnvironment=local.Environment;
+                        emergency=true;terminalExtension=false;
+                        decision=tracker.Track(actual,clearance,s.MaxThrustAcceleration,cap,
+                            s.LocalGravity,s.MaxEngineResponseTime);
+                    }
                 }
                 D.Command command;
                 if(decision.Valid)command=decision.Command;
@@ -88,12 +109,12 @@ namespace MuMech.Landing
                         s.SpeedVertical>0||s.SpeedVertical< -2||s.SpeedSurfaceHorizontal>1||
                         D.V.Dot(actual.Forward,actual.R.Unit)<Math.Cos(Math.PI/6)||
                         s.MaxThrustAcceleration*cap<=s.LocalGravity)
-                        return Finish(decision.Reason+"; manual control required");
+                        return Finish(decision.Reason+"; "+(emergency?"local contingency lost":fallback.Status)+"; manual control required");
                     terminalExtension=true;
                     var surface=new D.SurfaceSample(clearance,clearance,clearance,actual.R.Unit,true);
-                    var t=AtmosphericFiniteTimePlanner.TerminalCommand(snapshot.Environment,snapshot.Propulsion,
-                        actual,snapshot.Settings,surface);
-                    if(!t.Valid||!snapshot.Environment.Air(actual.UT,actual.R,out double pressure,out _))
+                    var t=AtmosphericFiniteTimePlanner.TerminalCommand(activeEnvironment,snapshot.Propulsion,
+                        actual,tracker.Settings,surface);
+                    if(!t.Valid||!activeEnvironment.Air(actual.UT,actual.R,out double pressure,out _))
                         return Finish("terminal extension capability unknown");
                     var a=snapshot.Propulsion.At(pressure);
                     if(!a.Known||a.Force<=0)return Finish("terminal extension authority unknown");
@@ -110,15 +131,19 @@ namespace MuMech.Landing
                 Core.Attitude.attitudeTo(DunaIntegratedPreview.World(command.Direction.Unit),
                     AttitudeReference.INERTIAL,Core.Landing);
                 Core.Thrust.RequestActiveThrottle((float)command.Throttle,false,true);
-                bool degraded=tracker.TargetMiss>tracker.Settings.Common.TargetTolerance;
-                Status=terminalExtension?"Integrated terminal extension":
-                    "Integrated "+(degraded?"degraded ":"")+(command.Throttle>0?"powered":"coast")+
-                    "; model miss "+(tracker.TargetMiss/1000).ToString("F2",CultureInfo.InvariantCulture)+" km"+
-                    "\n"+replanner.Status;
+                double originalMiss=AtmosphericFeasibleRangePlanner.Miss(snapshot.Environment,snapshot.Initial,
+                    tracker.Plan.Result.End,snapshot.Settings.Common.TargetAtInitialUT);
+                bool degraded=emergency||originalMiss>snapshot.Settings.Common.TargetTolerance;
+                Status=(emergency?"Emergency local-site ":terminalExtension?"Integrated terminal extension ":
+                    "Integrated "+(degraded?"degraded ":""))+(command.Throttle>0?"powered":"coast")+
+                    "; original target model miss "+(originalMiss/1000).ToString("F2",CultureInfo.InvariantCulture)+" km"+
+                    (emergency?"\nFallback site model miss "+(tracker.TargetMiss/1000).ToString("F2",CultureInfo.InvariantCulture)+" km":
+                    "\n"+replanner.Status+"; "+fallback.Status);
                 detail=" planEndUT="+Num(tracker.EndUT)+" clearance="+Num(clearance)+
                     " positionError="+Num(decision.PositionError)+" velocityError="+Num(decision.VelocityError)+
                     " massErrorKg="+Num(decision.MassError)+" throttle="+Num(command.Throttle)+
-                    " acceptedReplans="+replanner.Accepted+" rejectedReplans="+replanner.Rejected;
+                    " acceptedReplans="+replanner.Accepted+" rejectedReplans="+replanner.Rejected+
+                    " preparedFallbacks="+fallback.Prepared+" emergency="+emergency+" originalMiss="+Num(originalMiss);
                 if(s.Time>=nextLogUT)
                 {
                     nextLogUT=s.Time+1;

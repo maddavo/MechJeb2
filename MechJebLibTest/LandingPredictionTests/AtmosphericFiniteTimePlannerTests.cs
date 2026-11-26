@@ -8,6 +8,7 @@ using T=MuMech.Landing.AtmosphericTerminalReplay;
 using F=MuMech.Landing.AtmosphericFiniteTimePlanner;
 using Tracker=MuMech.Landing.AtmosphericPlanTracker;
 using Replanning=MuMech.Landing.AtmosphericReplanning;
+using Fallback=MuMech.Landing.AtmosphericFallbackPlanner;
 using R=MuMech.Landing.AtmosphericLandingReplay;
 
 namespace MechJebLibTest.LandingPredictionTests
@@ -376,6 +377,81 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.Equal(Math.Cos(.002),rebased.Common.TargetAtInitialUT.X,10);
             Assert.Equal(Math.Sin(.002),rebased.Common.TargetAtInitialUT.Y,10);
             Assert.Equal(0,rebased.MinCoast);
+        }
+
+        [Fact]
+        public void FallbackSitesFollowSurfaceMotionAndRemainUnitRadials()
+        {
+            var env=Env();
+            var s=new D.State(0,X*321000,X*(-20)+Y*100,1000,X);
+            var sites=Fallback.SiteRadials(env,s,5,5);
+            Assert.Equal(5,sites.Length);
+            Assert.All(sites,radial=>Assert.InRange(radial.Length,.999999,1.000001));
+            Assert.True(sites[0].Y>0);
+            Assert.True(sites[2].Y>sites[0].Y);
+            Assert.Equal(0,sites[4].Y);
+            Assert.Single(Fallback.SiteRadials(env,Initial(),5,5));
+            Assert.Empty(Fallback.SiteRadials(env,s,0,5));
+        }
+
+        [Fact]
+        public void SiteEnvironmentUsesOwnTerrainHeightAndRetainsOriginalPhysics()
+        {
+            var env=Env(301363211975.0978);
+            var site=new Fallback.Site(X,320250);
+            var alternative=Fallback.SiteEnvironment(env,site);
+            Assert.NotNull(alternative);
+            Assert.Equal(env.Mu,alternative.Mu);
+            Assert.Equal(env.Radius,alternative.Radius);
+            Assert.Equal(750,alternative.PhysicalClearance(Initial(1000)),7);
+            Assert.Equal(1000,env.PhysicalClearance(Initial(1000)),7);
+            Assert.Null(Fallback.SiteEnvironment(env,new Fallback.Site(Y,-1)));
+        }
+
+        [Fact]
+        public void FallbackSearchReplaysDifferentSiteWithoutRelabellingOriginalTarget()
+        {
+            var request=ReplanRequest(target:Y);
+            var result=Fallback.Solve(request,new[]{new Fallback.Site(X,320000)});
+            Assert.NotNull(result.Tracker);
+            Assert.Equal("local-site candidate",result.Reason);
+            Assert.Equal(request.SwitchUT,result.Tracker.StartUT);
+            Assert.Equal(request.Limits.ReserveMass,result.Tracker.ReserveMass);
+            Assert.InRange(result.Tracker.TargetMiss,0,1);
+            Assert.InRange(result.OriginalMiss,502654,502656);
+            Assert.Equal(D.Outcome.ContactWithinLimits,result.Tracker.Plan.Result.Outcome);
+            Assert.True(result.Tracker.Plan.Result.End.Mass>request.Limits.ReserveMass);
+        }
+
+        [Fact]
+        public void FallbackRejectsUnknownSiteImpossibleTerrainAndCancelledWork()
+        {
+            var request=ReplanRequest();
+            Assert.Null(Fallback.Solve(request,Array.Empty<Fallback.Site>()).Tracker);
+            Assert.Null(Fallback.Solve(request,new[]{new Fallback.Site(X,320100)}).Tracker);
+            Assert.Null(Fallback.Solve(request,new[]{new Fallback.Site(X,320000)},
+                new CancellationToken(true)).Tracker);
+        }
+
+        [Fact]
+        public void FallbackAdmissionChecksEpochGenerationStateAndOriginalReserve()
+        {
+            var request=ReplanRequest(target:Y);
+            var result=Fallback.Solve(request,new[]{new Fallback.Site(X,320000)});
+            Assert.NotNull(result.Tracker);
+            Assert.True(result.Tracker.ReferenceAt(result.SwitchUT,out var state,out _));
+            string Check(int generation,D.State s,double reserve=100)=>
+                Fallback.Admission(result,generation,s,result.Environment.PhysicalClearance(s),4,1,0,0,reserve);
+            Assert.Null(Check(request.Generation,state));
+            Assert.Equal("stale fallback",Check(request.Generation+1,state));
+            Assert.Equal("fallback activation window missed",Check(request.Generation,request.Observed));
+            Assert.Equal("fallback activation window missed",Check(request.Generation,
+                new D.State(state.UT+3,state.R,state.Velocity,state.Mass,state.Forward)));
+            Assert.Equal("fallback state mismatch",Check(request.Generation,
+                new D.State(state.UT,state.R,state.Velocity,state.Mass,Y)));
+            Assert.Equal("fallback reserve or epoch mismatch",Check(request.Generation,state,101));
+            Assert.True(result.Tracker.ReferenceAt(result.SwitchUT+.1,out var later,out _));
+            Assert.Null(Check(request.Generation,later));
         }
 
         [Fact]

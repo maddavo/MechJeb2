@@ -18,6 +18,7 @@ namespace MuMech.Landing
         private double switchUT,nextRequestUT;
         private string status="initial plan";
         internal string Status=>status;
+        internal bool Busy=>job!=null||candidate!=null;
         internal int Accepted {get;private set;}
         internal int Rejected {get;private set;}
         private void Clear()
@@ -40,7 +41,7 @@ namespace MuMech.Landing
         }
         internal AtmosphericPlanTracker Tick(MechJebCore core,DunaIntegratedPreview.Snapshot snapshot,
             AtmosphericPlanTracker current,D.State actual,AtmosphericPlanTracker.Decision oldDecision,
-            double clearance,double rawAccel,double cap,double gravity,double response)
+            double clearance,double rawAccel,double cap,double gravity,double response,bool allowNew=true)
         {
             double now=actual.UT;
             // Never delay a loss-of-control decision waiting for a worker.
@@ -86,7 +87,7 @@ namespace MuMech.Landing
             else if(job!=null&&now>=switchUT)
             {Reject("worker exceeded handoff deadline",now);return current;}
 
-            if(job==null&&candidate==null&&oldDecision.Valid&&now>=nextRequestUT&&
+            if(allowNew&&job==null&&candidate==null&&oldDecision.Valid&&now>=nextRequestUT&&
                 clearance>500&&current.EndUT-now>25&&
                 (!D.Finite(current.Plan.Result.TerminalStartUT)||current.Plan.Result.TerminalStartUT-now>15))
             {

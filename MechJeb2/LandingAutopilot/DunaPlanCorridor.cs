@@ -10,13 +10,15 @@ namespace MuMech.Landing
     {
         private readonly D.Environment environment;
         private readonly AtmosphericPlanTracker tracker;
-        private int index,queries;
+        private int index,queries,footprintIndex;
+        private readonly bool requireFootprint;
+        private double contactGround;
         private double nextUT=double.NegativeInfinity;
         internal bool Passed {get;private set;}
         internal bool Finished {get;private set;}
         internal string Status {get;private set;}="Checking sampled terrain";
-        internal DunaPlanCorridor(D.Environment env,AtmosphericPlanTracker tracker)
-        {environment=env;this.tracker=tracker;}
+        internal DunaPlanCorridor(D.Environment env,AtmosphericPlanTracker tracker,bool requireFootprint=false)
+        {environment=env;this.tracker=tracker;this.requireFootprint=requireFootprint;}
         private void Reject(string reason){Status="Rejected: "+reason;Finished=true;}
         internal void Advance(MechJebCore core)
         {
@@ -54,6 +56,7 @@ namespace MuMech.Landing
                         {Reject("local collider surface query saturated");return;}
                     }
                     if(!D.Finite(ground)){Reject("unknown terrain");return;}
+                    if(contact)contactGround=ground;
                     double sampledClearance=pt.R.Length-body.Radius-ground-environment.BottomOffset;
                     if(contact||modelClearance<=300)
                     {
@@ -63,7 +66,31 @@ namespace MuMech.Landing
                     else if(sampledClearance<modelClearance-Math.Min(100,Math.Max(2,modelClearance*.1)))
                     {Reject("terrain rises into model corridor");return;}
                 }
-                Passed=index>points.Count;Finished=Passed;
+                // Additional local footprint samples for a fallback site.
+                // This 25m cross is a screening heuristic, not a swept
+                // collider or slope certification for the vessel footprint.
+                if(index>points.Count&&requireFootprint&&footprintIndex<4&&work<8&&
+                    (work==0||clock.Elapsed.TotalMilliseconds<1))
+                {
+                    D.State end=tracker.Plan.Result.End;
+                    D.V up=end.R.Unit;
+                    D.V tangent=D.V.Cross(up,Math.Abs(up.X)<.8?new D.V(1,0,0):new D.V(0,1,0)).Unit;
+                    D.V across=D.V.Cross(up,tangent).Unit;
+                    D.V axis=footprintIndex<2?tangent:across;
+                    double angle=(footprintIndex%2==0?1:-1)*25/environment.Radius;
+                    D.V radial=P.RotateTarget((up*Math.Cos(angle)+axis*Math.Sin(angle)).Unit,
+                        environment.Omega,now-end.UT);
+                    Vector3d world=body.position+DunaIntegratedPreview.World(radial*body.Radius);
+                    double lat=body.GetLatitude(world),lon=body.GetLongitude(world);
+                    double ground=body.TerrainAltitude(lat,lon);
+                    if(++queries>512){Reject("footprint sample budget");return;}
+                    ground=core.Landing.LandingSurface.Altitude(body,lat,lon,ground);
+                    if(core.Landing.LandingSurface.LastQuerySaturated||!D.Finite(ground)||
+                        Math.Abs(ground-contactGround)>2)
+                    {Reject("fallback footprint height variation or unknown collider");return;}
+                    footprintIndex++;
+                }
+                Passed=index>points.Count&&(!requireFootprint||footprintIndex==4);Finished=Passed;
                 Status=Passed?"Sampled corridor passed (not swept validation)":
                     "Checking sampled terrain ("+queries+")";
             }

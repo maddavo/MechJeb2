@@ -72,3 +72,7 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Add measured-state prefix projection, warm-start bounded remaining-trajectory search, finer-step replay, generation and scheduled-epoch admission, shared incremental terrain screen and original reserve preservation.
 - Refresh the active experimental trajectory asynchronously; keep tracking during solve and reject stale/unsafe replacements. Distinguish degraded off-target model candidate and cancel pending work on abort/teardown.
+
+## 2.16.0-landing.20261126.duna-integrated-m4.2
+
+- Add independent alternative local-site search, per-site terrain model, reserve-preserving ranking, finer-step replay, sampled corridor and footprint screen, bounded precomputation and strict current-state fallback admission. Preserve original target separately; no legacy fallback or claimed guaranteed recovery.

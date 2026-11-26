@@ -228,3 +228,5 @@ Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m
 Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m4.0`. Experimental Duna descent prototype: evaluate a descending unpowered snapshot at 1×, then explicitly execute the model plan only if finer-step replay, model miss and sampled terrain/current-state admission pass. Existing Land at target remains legacy. Actual model/flight parity, safety and full orbit-to-surface integration unverified.
 
 Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m4.1`. Explicit experimental descent now performs bounded background replanning and guarded trajectory replacement; normal Land at target remains unchanged.
+
+Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m4.2`. Experimental descent now prepares bounded local-site contingencies; adoption requires a failed nominal tracker and current replayed/corridor-screened contingency. Coverage and real-game parity remain unverified; ordinary landing unchanged.
