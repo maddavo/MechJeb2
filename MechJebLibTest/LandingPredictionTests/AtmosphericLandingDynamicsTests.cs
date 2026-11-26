@@ -157,6 +157,35 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
+        public void ContactLocalisationSurvivesPositionAndAbsoluteEpochRounding()
+        {
+            var p=new D.Curve(new D.Knot(0,20000),new D.Knot(1000,0));
+            var rho=new D.Curve(new D.Knot(0,.15),new D.Knot(1000,0));
+            var env=new D.Environment(320000,0,default,1000,p,rho,0,320000,0);
+            const double ut=31154879;
+            // Two radial double-precision ULPs above the surface. The
+            // physical time to contact is below one absolute-epoch ULP.
+            var start=new D.State(ut,X*(320000+1.1641532182693481e-10),X*(-.5),1000,X);
+            Assert.True(env.PhysicalClearance(start)>0);
+            var result=D.Advance(env,Engines(),Limits(dt:.2),start,new D.Command(0,X),.2);
+            Assert.Equal(D.Outcome.ContactWithinLimits,result.Status);
+            Assert.InRange(result.End.UT,ut,ut+1e-7);
+            Assert.InRange(env.PhysicalClearance(result.End),-1e-5,0);
+            Assert.Equal(-.5,result.End.Velocity.X,9);
+        }
+
+        [Fact]
+        public void UnresolvedAtmosphereAboveSurfaceIsNotContact()
+        {
+            var env=new D.Environment(320000,0,default,1000,null,null,0,320000,0,
+                atmosphere:(ut,r)=>r.Length>=320000.1?new D.AirSample(20000,.15):default);
+            var start=State(.13,-1.6);
+            var result=D.Advance(env,Engines(),Limits(dt:.2),start,new D.Command(0,X),.2);
+            Assert.Equal(D.Outcome.UnknownCapability,result.Status);
+            Assert.True(env.PhysicalClearance(result.End)>0);
+        }
+
+        [Fact]
         public void EndpointPointingRateDoesNotDependOnAverageOverStep()
         {
             var env=Vacuum();var engine=Engines();

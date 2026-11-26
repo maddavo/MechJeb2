@@ -478,6 +478,55 @@ namespace MuMech.Landing
             return AdvanceSphere(env,propulsion,lim,s,c,dt,safeVertical,safeHorizontal,safeAngle,safeRate,ref work);
         }
 
+        // The integration floor is NOT an event localisation floor.
+        // Near a dyadic crossing, rounded position can remain one ULP
+        // above ground while every ordinary midpoint is below the
+        // atmosphere domain. Search trial durations from the last known
+        // state. An undefined force sample is only a search upper bound,
+        // never evidence of contact. Require a valid propagated crossing
+        // on the final upper side of the bracket.
+        private static Result LocateSphereEvent(Environment env,Propulsion propulsion,Limits lim,State s,Command c,
+            double dt,double maxV,double maxH,double maxAngle,double maxRate,ref int work)
+        {
+            double initial=env.Clearance(s.R),lo=0,hi=dt,hitTime=double.NaN;
+            State hit=s;
+            for(int i=0;i<48&&work>0;i++)
+            {
+                double trialTime=i==0?hi:lo+(hi-lo)*.5;
+                if(trialTime<=lo||trialTime<=0)break;
+                work--;
+                if(!RawStep(env,propulsion,lim,s,c,trialTime,out State trial))
+                {
+                    hi=trialTime;
+                    continue;
+                }
+                double clearance=env.Clearance(trial.R);
+                if(clearance<=0||trial.Mass<lim.ReserveMass)
+                {
+                    hit=trial;hitTime=trialTime;hi=trialTime;
+                }
+                else
+                {
+                    lo=trialTime;
+                    if(i==0)break; // no crossing in this valid full trial
+                }
+                // Do not stop merely because the bracket is tiny if no
+                // valid crossing has yet been found. It can be smaller
+                // than one absolute-UT ULP. A terminal event may round
+                // to the starting epoch; an Advanced result never does.
+                if(hitTime==hi&&hi-lo<=1e-10)break;
+            }
+            if(hitTime!=hi||hi-lo>1e-10)
+                return new Result(Outcome.UnknownCapability,s,initial);
+            double z=env.Clearance(hit.R);
+            double minimum=Math.Min(initial,z);
+            if(hit.Mass<lim.ReserveMass)
+                return z<=0?new Result(Outcome.UnknownCapability,s,minimum):
+                    new Result(Outcome.ReserveExhausted,hit,minimum);
+            if(z<=0)return Contact(env,hit,z,maxV,maxH,maxAngle,maxRate);
+            return new Result(Outcome.UnknownCapability,s,initial);
+        }
+
         // Resolve sphere events in chronological order. Never extrapolate
         // pressure below its domain to make a contact appear successful.
         // If a trial midpoint is outside the domain, retry a shorter
@@ -503,15 +552,8 @@ namespace MuMech.Landing
             double half=dt*.5;
             if(dt<=1e-7||s.UT+half<=s.UT||work<=0)
             {
-                if(!known)return new Result(Outcome.UnknownCapability,s,minimum);
-                double clearance=env.Clearance(end.R);
-                // Ambiguous simultaneous reserve and contact: never claim
-                // a safe landing by spending the protected reserve.
-                if(end.Mass<lim.ReserveMass)
-                    return clearance<=0?new Result(Outcome.UnknownCapability,s,minimum):
-                        new Result(Outcome.ReserveExhausted,end,minimum);
-                if(clearance<=0)return Contact(env,end,clearance,maxV,maxH,maxAngle,maxRate);
-                return new Result(Outcome.UnknownCapability,s,minimum);
+                return LocateSphereEvent(env,propulsion,lim,s,c,dt,
+                    maxV,maxH,maxAngle,maxRate,ref work);
             }
             Result left=AdvanceSphere(env,propulsion,lim,s,c,half,maxV,maxH,maxAngle,maxRate,ref work);
             if(left.Status!=Outcome.Advanced)return left;
