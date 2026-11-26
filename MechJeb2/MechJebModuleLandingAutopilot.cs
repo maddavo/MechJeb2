@@ -574,6 +574,7 @@ namespace MuMech
         }
         private void ReleaseIntegratedDescent()
         {
+            if(CurrentStep is DunaIntegratedDescent integrated)integrated.CancelReplanning();
             if(Core.Thrust.Users.Contains(this)&&Core.Thrust.Users.Count<=2)
                 Core.Thrust.ThrustOff();
             Core.Thrust.Users.Remove(this);

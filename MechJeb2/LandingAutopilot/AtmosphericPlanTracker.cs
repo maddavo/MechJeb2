@@ -19,6 +19,7 @@ namespace MuMech.Landing
         internal double TargetMiss => plan.Result.Miss;
         internal double ReserveMass => limits.ReserveMass;
         internal F.Candidate Plan => plan;
+        internal F.Settings Settings => settings;
 
         internal AtmosphericPlanTracker(D.Environment environment,D.Propulsion propulsion,D.Limits limits,
             F.Settings settings,F.Candidate replayedPlan)

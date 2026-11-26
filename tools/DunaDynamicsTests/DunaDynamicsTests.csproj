@@ -16,5 +16,6 @@
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericFiniteTimePlanner.cs" Link="AtmosphericFiniteTimePlanner.cs"/>
     <Compile Include="../../MechJebLibTest/LandingPredictionTests/AtmosphericFiniteTimePlannerTests.cs" Link="AtmosphericFiniteTimePlannerTests.cs"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericPlanTracker.cs" Link="AtmosphericPlanTracker.cs"/>
+    <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericReplanning.cs" Link="AtmosphericReplanning.cs"/>
   </ItemGroup>
 </Project>

@@ -10,7 +10,9 @@ namespace MuMech.Landing
     internal sealed class DunaIntegratedDescent : AutopilotStep
     {
         private readonly DunaIntegratedPreview.Snapshot snapshot;
-        private readonly AtmosphericPlanTracker tracker;
+        private AtmosphericPlanTracker tracker;
+        private readonly DunaReplanCoordinator replanner=new DunaReplanCoordinator();
+        internal void CancelReplanning()=>replanner.Cancel();
         private double nextEngineUT=double.NegativeInfinity,nextLogUT=double.NegativeInfinity,lastUT=double.NegativeInfinity;
         private bool terminalExtension;
         private double nextSurfaceUT=double.NegativeInfinity,deckOffset;
@@ -65,6 +67,14 @@ namespace MuMech.Landing
                 var actual=DunaIntegratedPreview.LiveState(Core);
                 var decision=tracker.Track(actual,clearance,s.MaxThrustAcceleration,cap,
                     s.LocalGravity,s.MaxEngineResponseTime);
+                var replacement=replanner.Tick(Core,snapshot,tracker,actual,decision,clearance,
+                    s.MaxThrustAcceleration,cap,s.LocalGravity,s.MaxEngineResponseTime);
+                if(!ReferenceEquals(replacement,tracker))
+                {
+                    tracker=replacement;terminalExtension=false;
+                    decision=tracker.Track(actual,clearance,s.MaxThrustAcceleration,cap,
+                        s.LocalGravity,s.MaxEngineResponseTime);
+                }
                 D.Command command;
                 if(decision.Valid)command=decision.Command;
                 else
@@ -100,11 +110,15 @@ namespace MuMech.Landing
                 Core.Attitude.attitudeTo(DunaIntegratedPreview.World(command.Direction.Unit),
                     AttitudeReference.INERTIAL,Core.Landing);
                 Core.Thrust.RequestActiveThrottle((float)command.Throttle,false,true);
+                bool degraded=tracker.TargetMiss>tracker.Settings.Common.TargetTolerance;
                 Status=terminalExtension?"Integrated terminal extension":
-                    "Integrated "+(command.Throttle>0?"powered":"coast")+"; miss "+(tracker.TargetMiss/1000).ToString("F2",CultureInfo.InvariantCulture)+" km";
+                    "Integrated "+(degraded?"degraded ":"")+(command.Throttle>0?"powered":"coast")+
+                    "; model miss "+(tracker.TargetMiss/1000).ToString("F2",CultureInfo.InvariantCulture)+" km"+
+                    "\n"+replanner.Status;
                 detail=" planEndUT="+Num(tracker.EndUT)+" clearance="+Num(clearance)+
                     " positionError="+Num(decision.PositionError)+" velocityError="+Num(decision.VelocityError)+
-                    " massErrorKg="+Num(decision.MassError)+" throttle="+Num(command.Throttle);
+                    " massErrorKg="+Num(decision.MassError)+" throttle="+Num(command.Throttle)+
+                    " acceptedReplans="+replanner.Accepted+" rejectedReplans="+replanner.Rejected;
                 if(s.Time>=nextLogUT)
                 {
                     nextLogUT=s.Time+1;

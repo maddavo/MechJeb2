@@ -67,3 +67,8 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Implement trajectory interpolation, live position/velocity tracking and explicit reserve/authority/clearance/expiry guard.
 - Publish replayed model candidate with bounded sampled corridor checks and coast preparation; add isolated experimental Duna powered-descent engagement, single MechJeb ownership, direct attitude/throttle requests and explicit manual-abort/lifecycle release. No default guidance change; no automatic replanning or strategic deorbit.
+
+## 2.16.0-landing.20261126.duna-integrated-m4.1
+
+- Add measured-state prefix projection, warm-start bounded remaining-trajectory search, finer-step replay, generation and scheduled-epoch admission, shared incremental terrain screen and original reserve preservation.
+- Refresh the active experimental trajectory asynchronously; keep tracking during solve and reject stale/unsafe replacements. Distinguish degraded off-target model candidate and cancel pending work on abort/teardown.

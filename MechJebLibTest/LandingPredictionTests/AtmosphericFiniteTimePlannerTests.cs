@@ -7,6 +7,7 @@ using P=MuMech.Landing.AtmosphericFeasibleRangePlanner;
 using T=MuMech.Landing.AtmosphericTerminalReplay;
 using F=MuMech.Landing.AtmosphericFiniteTimePlanner;
 using Tracker=MuMech.Landing.AtmosphericPlanTracker;
+using A=MuMech.Landing.AtmosphericReplanning;
 using R=MuMech.Landing.AtmosphericLandingReplay;
 
 namespace MechJebLibTest.LandingPredictionTests
@@ -274,6 +275,107 @@ namespace MechJebLibTest.LandingPredictionTests
             var report=F.Search(Env(),Engine(),Limits(),Initial(),set);
             Assert.NotNull(report.Best);
             Assert.True(report.Best.Profile.Coast>=.2);
+        }
+
+        private static A.Request ReplanRequest(double altitude=.53,double switchUT=.2,int generation=7,
+            double reserve=100,D.V? target=null)
+        {
+            var env=Env();var propulsion=Engine();var limits=Limits();var initial=Initial();
+            var settings=Settings(cap:1,target:target);
+            var candidate=F.Evaluate(env,propulsion,limits,initial,settings,new F.Profile(0,.5),10000,true);
+            Assert.True(candidate.Result.Feasible);
+            var old=new Tracker(env,propulsion,limits,settings,candidate);
+            return new A.Request(generation,Initial(altitude),switchUT,1,env,propulsion,Limits(reserve),settings,old);
+        }
+
+        [Fact]
+        public void ReplanPrefixUsesMeasuredStateRatherThanFutureReference()
+        {
+            var request=ReplanRequest(altitude:.55);
+            Assert.True(A.Project(request,out var anchor,out string reason),reason);
+            Assert.Equal(.2,anchor.UT);
+            Assert.True(request.Previous.ReferenceAt(.2,out var nominal,out _));
+            Assert.InRange((anchor.R-nominal.R).Length,.01999,.02001);
+            Assert.Equal(request.Observed.Mass,anchor.Mass,8);
+        }
+
+        [Fact]
+        public void PrefixRejectsInvalidEpochReserveAndCancellation()
+        {
+            Assert.False(A.Project(ReplanRequest(switchUT:2),out _,out _));
+            Assert.False(A.Project(ReplanRequest(reserve:99),out _,out _));
+            Assert.False(A.Project(ReplanRequest(),out _,out string reason,new CancellationToken(true)));
+            Assert.Equal("cancelled",reason);
+            var result=A.Solve(ReplanRequest(),new CancellationToken(true));
+            Assert.Null(result.Tracker);
+        }
+
+        [Fact]
+        public void WarmStartIsEvaluatedBeforeLatticeWhenBudgetIsOneCandidate()
+        {
+            var settings=Settings(cap:1,candidates:1);
+            var result=F.Search(Env(),Engine(),Limits(),Initial(),settings,default,new F.Profile(.2,.75));
+            Assert.Equal(P.SearchStatus.BudgetExhausted,result.Status);
+            Assert.Equal(1,result.Attempts);
+            Assert.NotNull(result.Best);
+            Assert.Equal(.2,result.Best.Profile.Coast);
+            Assert.Equal(.75,result.Best.Profile.Duration);
+        }
+
+        [Fact]
+        public void ReplanPublishesReplayedReplacementAtScheduledEpoch()
+        {
+            var r=ReplanRequest(altitude:.55);
+            var result=A.Solve(r);
+            Assert.NotNull(result.Tracker);
+            Assert.Equal("target candidate",result.Reason);
+            Assert.Equal(r.SwitchUT,result.Tracker.StartUT);
+            Assert.Equal(r.Limits.ReserveMass,result.Tracker.ReserveMass);
+            Assert.True(result.Tracker.Plan.Result.Feasible);
+            Assert.Null(A.Admission(result,r.Generation,result.Anchor,
+                r.Environment.PhysicalClearance(result.Anchor),4,1,0,0,true,1,r.Limits.ReserveMass));
+        }
+
+        [Fact]
+        public void AdmissionRejectsStaleLateAndDiscontinuousReplacement()
+        {
+            var r=ReplanRequest();var result=A.Solve(r);
+            Assert.NotNull(result.Tracker);
+            var state=result.Anchor;
+            string Check(int generation,D.State s,double reserve=100)=>
+                A.Admission(result,generation,s,.5,4,1,0,0,true,1,reserve);
+            Assert.Equal("stale or absent candidate",Check(r.Generation+1,state));
+            Assert.Equal("handoff epoch missed",Check(r.Generation,r.Observed));
+            Assert.Equal("handoff epoch missed",Check(r.Generation,new D.State(.3,state.R,state.Velocity,state.Mass,state.Forward)));
+            Assert.Equal("handoff state differs from projected anchor",Check(r.Generation,
+                new D.State(state.UT,state.R+Y*2,state.Velocity,state.Mass,state.Forward)));
+            Assert.Equal("handoff state differs from projected anchor",Check(r.Generation,
+                new D.State(state.UT,state.R,state.Velocity,state.Mass,Y)));
+            Assert.Equal("candidate reserve or epoch mismatch",Check(r.Generation,state,101));
+        }
+
+        [Fact]
+        public void OffTargetReplacementCannotDisplaceValidTargetTrajectory()
+        {
+            var r=ReplanRequest(target:Y);var result=A.Solve(r);
+            Assert.NotNull(result.Tracker);
+            Assert.Equal("degraded candidate",result.Reason);
+            double clearance=r.Environment.PhysicalClearance(result.Anchor);
+            Assert.Equal("retain current plan over degraded candidate",
+                A.Admission(result,r.Generation,result.Anchor,clearance,4,1,0,0,true,1,100));
+            Assert.Null(A.Admission(result,r.Generation,result.Anchor,clearance,4,1,0,0,false,1,100));
+        }
+
+        [Fact]
+        public void RebaseUsesCurrentPlanEpochForRotatingTarget()
+        {
+            var r=ReplanRequest();var env=new D.Environment(320000,0,new D.V(0,0,.01),0,null,null,0,320000,0);
+            var rotated=new A.Request(r.Generation,r.Observed,.2,r.Cap,env,r.Propulsion,r.Limits,r.Settings,r.Previous);
+            var anchor=new D.State(.2,r.Observed.R,r.Observed.Velocity,r.Observed.Mass,r.Observed.Forward);
+            var rebased=A.Rebase(rotated,anchor);
+            Assert.Equal(Math.Cos(.002),rebased.Common.TargetAtInitialUT.X,10);
+            Assert.Equal(Math.Sin(.002),rebased.Common.TargetAtInitialUT.Y,10);
+            Assert.Equal(0,rebased.MinCoast);
         }
 
         [Fact]

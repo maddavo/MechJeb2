@@ -235,7 +235,7 @@ namespace MuMech.Landing
         // seed. No early assumption of monotonicity. Budget counts integrations,
         // including reconstruction and independent validation, not wall time.
         internal static Report Search(D.Environment env,D.Propulsion propulsion,D.Limits limits,D.State initial,
-            Settings settings,CancellationToken cancellation=default)
+            Settings settings,CancellationToken cancellation=default,Profile? warmStart=null)
         {
             var clock=Stopwatch.StartNew();Candidate best=null;
             int attempts=0,steps=0,feasible=0,unresolved=0;
@@ -261,6 +261,16 @@ namespace MuMech.Landing
                 else if(c.Result.Outcome==D.Outcome.UnknownCapability||c.Result.Outcome==D.Outcome.UnknownTerrain||
                     c.Result.Outcome==D.Outcome.Horizon||c.Result.Outcome==D.Outcome.Cancelled||
                     c.Result.Outcome==D.Outcome.InvalidInput)unresolved++;
+            }
+            // Warm seed first, then its local neighbourhood, before the full lattice.
+            // Budget exhaustion still reports incomplete search, never global infeasibility.
+            if(warmStart.HasValue)
+            {
+                var w=warmStart.Value;
+                Try(w.Coast,w.Duration);
+                foreach(double factor in new[]{.9,1.1,.75,1.25})
+                    Try(w.Coast,Math.Max(settings.MinPoweredSeconds,Math.Min(settings.MaxPoweredSeconds,w.Duration*factor)));
+                Try(settings.MinCoast,w.Duration);
             }
             double dc=(common.MaxIgnitionDelay-settings.MinCoast)/settings.CoastIntervals,
                 dt=(settings.MaxPoweredSeconds-settings.MinPoweredSeconds)/settings.DurationIntervals;

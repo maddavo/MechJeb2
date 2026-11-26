@@ -226,3 +226,5 @@ Current integrated landing research increment: `2.16.0-landing.20261126.duna-pla
 Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m3.0`. Duna Landing Guidance: **Evaluate integrated descent (preview)** on an unpacked descending vessel at 1× with a selected target. Preview only; normal CKAN launch; no new live guidance enabled.
 
 Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m4.0`. Experimental Duna descent prototype: evaluate a descending unpowered snapshot at 1×, then explicitly execute the model plan only if finer-step replay, model miss and sampled terrain/current-state admission pass. Existing Land at target remains legacy. Actual model/flight parity, safety and full orbit-to-surface integration unverified.
+
+Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m4.1`. Explicit experimental descent now performs bounded background replanning and guarded trajectory replacement; normal Land at target remains unchanged.

@@ -52,8 +52,6 @@ namespace MuMech.Landing
         private string status="Not evaluated";
         private bool logged;
         private AtmosphericPlanTracker tracker;
-        private int corridorIndex,corridorQueries;
-        private double nextCorridorUT;
         private string corridorStatus;
         private bool corridorPassed;
         private string executionStatus;
@@ -333,7 +331,7 @@ namespace MuMech.Landing
         {
             if(cancel!=null){cancel.Cancel();cancel.Dispose();cancel=null;}
             job=null;snapshot=null;answer=null;logged=false;status="Not evaluated";
-            tracker=null;corridorIndex=corridorQueries=0;nextCorridorUT=double.NegativeInfinity;
+            tracker=null;corridor=null;
             corridorStatus=null;corridorPassed=false;executionStatus=null;
         }
         private static string CandidateText(P.Candidate? c,double initialMass)
@@ -379,10 +377,7 @@ namespace MuMech.Landing
             return null;
         }
 
-        // Main-thread sampled corridor review, not a swept-terrain proof.
-        // Check all near-ground reference states, plus bounded coarse
-        // samples at altitude. Reproject future body-fixed locations at
-        // the current UT, never retain floating-origin world positions.
+        private DunaPlanCorridor corridor;
         private void AdvanceCorridor(MechJebCore core)
         {
             if(answer?.Validated==null||corridorPassed||corridorStatus!=null&&corridorStatus.StartsWith("Rejected:"))return;
@@ -394,48 +389,11 @@ namespace MuMech.Landing
                         snapshot.Settings,answer.Validated);
                     if(tracker.TargetMiss>snapshot.Settings.Common.TargetTolerance)
                     {corridorStatus="Rejected: modelled target miss exceeds tolerance";return;}
+                    corridor=new DunaPlanCorridor(snapshot.Environment,tracker);
                 }
-                double now=core.VesselState.Time;
-                if(now>=tracker.EndUT){corridorStatus="Rejected: trajectory expired";return;}
-                if(now<nextCorridorUT)return;
-                nextCorridorUT=now+.02;
-                var points=tracker.Plan.Reference;
-                int stride=Math.Max(1,(points.Count+127)/128);
-                var body=core.vessel.mainBody;
-                int work=0,scanned=0;
-                while(corridorIndex<=points.Count&&work<8&&scanned++<128)
-                {
-                    int i=corridorIndex++;
-                    bool contact=i==points.Count;
-                    D.State pt=contact?tracker.Plan.Result.End:points[i].State;
-                    double modelClearance=snapshot.Environment.PhysicalClearance(pt);
-                    if(!contact&&i%stride!=0&&modelClearance>300)continue;
-                    if(++corridorQueries>512){corridorStatus="Rejected: corridor sample budget";return;}
-                    work++;
-                    D.V radial=P.RotateTarget(pt.R.Unit,snapshot.Environment.Omega,now-pt.UT);
-                    Vector3d world=body.position+World(radial*body.Radius);
-                    double lat=body.GetLatitude(world),lon=body.GetLongitude(world);
-                    double ground=body.TerrainAltitude(lat,lon);
-                    if(contact||modelClearance<=300)
-                    {
-                        ground=core.Landing.LandingSurface.Altitude(body,lat,lon,ground);
-                        if(core.Landing.LandingSurface.LastQuerySaturated)
-                        {corridorStatus="Rejected: local collider surface query saturated";return;}
-                    }
-                    if(!D.Finite(ground)||!D.Finite(modelClearance))
-                    {corridorStatus="Rejected: unknown terrain";return;}
-                    double sampledClearance=pt.R.Length-body.Radius-ground-snapshot.Environment.BottomOffset;
-                    if(contact||modelClearance<=300)
-                    {
-                        if(Math.Abs(sampledClearance-modelClearance)>2)
-                        {corridorStatus="Rejected: near-ground terrain differs from model";return;}
-                    }
-                    else if(sampledClearance<modelClearance-Math.Min(100,Math.Max(2,modelClearance*.1)))
-                    {corridorStatus="Rejected: terrain rises into model corridor";return;}
-                }
-                corridorPassed=corridorIndex>points.Count;
-                corridorStatus=corridorPassed?"Sampled corridor passed (not swept validation)":
-                    "Checking sampled terrain ("+corridorQueries+")";
+                corridor.Advance(core);
+                corridorPassed=corridor.Passed;
+                corridorStatus=corridor.Status;
             }
             catch(Exception ex){corridorStatus="Rejected: "+ex.Message;}
         }
