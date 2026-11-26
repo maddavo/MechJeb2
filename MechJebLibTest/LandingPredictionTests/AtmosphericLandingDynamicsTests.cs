@@ -550,5 +550,27 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.InRange(fine.End.UT,.999999,1.000001);
             Assert.InRange(Math.Abs(coarse.Memory.Integral-fine.Memory.Integral),0,.011);
         }
+
+        [Fact]
+        public void TerrainRoundedBoundCannotHideSampledContact()
+        {
+            // Lower bound off by tolerated floating point roundoff at
+            // exact contact: still must stop rather than advance through.
+            var env=Terrain(s=>PlaneSample(s),(a,b,c)=>Math.Min(a.R.X,b.R.X)-320005+1e-9);
+            var result=D.Advance(env,Engines(),Limits(dt:1),State(5.5,-.5),new D.Command(0,X),1);
+            Assert.Equal(D.Outcome.ContactWithinLimits,result.Status);
+        }
+
+        [Fact]
+        public void TerminalIntegrationBudgetBoundsSubstepsIndependentlyOfControllerTicks()
+        {
+            var m=new T.Memory(T.Phase.FinalDescent,T.Mode.KeepVertical,0,0,0,0);
+            var run=T.Run(Vacuum(),Engines(),Limits(dt:.001),TerminalSettings(tick:.2,cap:0),
+                State(100,-.5),m,10,1,1,.1,.1,maxIntegrationSteps:3);
+            Assert.Equal(D.Outcome.Horizon,run.Outcome);
+            Assert.Equal(1,run.Ticks);
+            Assert.Equal(3,run.IntegrationSteps);
+            Assert.Equal(.003,run.End.UT,12);
+        }
     }
 }

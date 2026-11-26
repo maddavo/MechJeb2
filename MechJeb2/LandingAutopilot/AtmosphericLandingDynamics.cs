@@ -438,8 +438,15 @@ namespace MuMech.Landing
             if(z.Valid)
             {
                 try{lower=env.Terrain.LowerBound(s,end,c);}catch(Exception){}
-                if(Finite(lower)&&lower>Math.Min(a.Clearance,z.Clearance)+1e-8)
-                    return new Result(Outcome.UnknownTerrain,s,double.NaN);
+                if(Finite(lower))
+                {
+                    double endpointMinimum=Math.Min(a.Clearance,z.Clearance);
+                    if(lower>endpointMinimum+1e-8)
+                        return new Result(Outcome.UnknownTerrain,s,double.NaN);
+                    // Even tolerated rounding cannot turn a sampled contact
+                    // into positive clearance.
+                    lower=Math.Min(lower,endpointMinimum);
+                }
             }
             bool bounded=z.Valid&&Finite(lower);
             if(bounded&&lower>0&&end.Mass>=lim.ReserveMass)

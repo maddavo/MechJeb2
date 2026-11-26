@@ -110,6 +110,7 @@ namespace MuMech.Landing
             Mode mode=memory.Mode;Phase phase=memory.Phase;
             double requested=0,setpoint=0,error=memory.PreviousError,integral=memory.Integral,
                 previous=memory.PreviousThrottle;
+            bool verticalToDirect=false;
             D.V direction=up;
             if(phase==Phase.HorizontalKill)
             {
@@ -153,13 +154,13 @@ namespace MuMech.Landing
                 {
                     direction=(up*Math.Max(Math.Abs(vertical),20*settings.GeeASL)-horizontal).Unit;
                     if(surface.MinASLTrue>5000&&horizontal.Length>Math.Max(Math.Abs(vertical),100*settings.GeeASL)*2)
-                    {mode=Mode.Direct;setpoint=100;direction=horizontal.Unit*(-1);}
+                    {mode=Mode.Direct;setpoint=100;direction=horizontal.Unit*(-1);verticalToDirect=true;}
                     if(direction.Length==0)direction=up;
                 }
                 if(mode!=memory.Mode){error=0;integral=0;}
                 // Cumulative PID uses previous requested speed throttle, not
                 // the achieved engine throttle. Source: PIDController.Compute.
-                double controlled=mode==Mode.KeepSurface?speed:mode==Mode.KeepVertical?vertical:0;
+                double controlled=mode==Mode.KeepSurface?speed:mode==Mode.KeepVertical||verticalToDirect?vertical:0;
                 double e=(setpoint-controlled)/authority.RawAcceleration;
                 if(mode==Mode.KeepSurface&&D.V.Dot(state.Forward,w)<0)e=-e;
                 integral+=e*settings.Tick;
@@ -194,20 +195,23 @@ namespace MuMech.Landing
             internal readonly D.State End;
             internal readonly Memory Memory;
             internal readonly double MinimumClearance;
-            internal readonly int Ticks;
-            internal Report(D.Outcome outcome,D.State end,Memory memory,double clearance,int ticks)
-            {Outcome=outcome;End=end;Memory=memory;MinimumClearance=clearance;Ticks=ticks;}
+            internal readonly int Ticks,IntegrationSteps;
+            internal Report(D.Outcome outcome,D.State end,Memory memory,double clearance,int ticks,int steps)
+            {Outcome=outcome;End=end;Memory=memory;MinimumClearance=clearance;Ticks=ticks;IntegrationSteps=steps;}
         }
         internal static Report Run(D.Environment env,D.Propulsion propulsion,D.Limits limits,Settings settings,
             D.State initial,Memory memory,int maxTicks,double safeVertical,double safeHorizontal,double safeAngle,double safeRate,
-            CancellationToken cancellation=default)
+            CancellationToken cancellation=default,int maxIntegrationSteps=1000000)
         {
             D.State state=initial;
             double minimum=env==null?double.NaN:env.PhysicalClearance(state);
-            int ticks=0;
-            Report Finish(D.Outcome outcome)=>new Report(outcome,state,memory,minimum,ticks);
+            int ticks=0,steps=0;
+            Report Finish(D.Outcome outcome)=>new Report(outcome,state,memory,minimum,ticks,steps);
             if(env==null||propulsion==null||limits==null||settings==null||!env.Valid||!limits.Valid||!settings.Valid||
-                !initial.Valid||!memory.Valid||initial.Mass<limits.ReserveMass||maxTicks<=0||maxTicks>1000000)
+                !initial.Valid||!memory.Valid||initial.Mass<limits.ReserveMass||maxTicks<=0||maxTicks>1000000||
+                maxIntegrationSteps<=0||maxIntegrationSteps>1000000||
+                !D.Finite(safeVertical)||safeVertical<0||!D.Finite(safeHorizontal)||safeHorizontal<0||
+                !D.Finite(safeAngle)||safeAngle<0||!D.Finite(safeRate)||safeRate<0)
                 return Finish(D.Outcome.InvalidInput);
             if(!D.Finite(minimum))return Finish(D.Outcome.UnknownTerrain);
             // Tick the legacy controller at its own cadence; integration
@@ -222,9 +226,11 @@ namespace MuMech.Landing
                 while(state.UT<endUT)
                 {
                     if(cancellation.IsCancellationRequested)return Finish(D.Outcome.Cancelled);
+                    if(steps>=maxIntegrationSteps)return Finish(D.Outcome.Horizon);
                     double dt=Math.Min(limits.Step,endUT-state.UT);
                     if(dt<=0||state.UT+dt<=state.UT)return Finish(D.Outcome.InvalidInput);
                     D.Result step=D.Advance(env,propulsion,limits,state,decision.Command,dt,safeVertical,safeHorizontal,safeAngle,safeRate);
+                    steps++;
                     minimum=Math.Min(minimum,step.MinimumClearance);state=step.End;
                     if(step.Status!=D.Outcome.Advanced)return Finish(step.Status);
                 }
