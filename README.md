@@ -218,3 +218,5 @@ Integrated landing research branch: `2.16.0-landing.20261126.duna-dynamics-m1.4`
 Current integrated landing research increment: `2.16.0-landing.20261126.duna-dynamics-m1.5` (passive raw observations, no flight validation or install authorization).
 
 Current integrated landing research increment: `2.16.0-landing.20261126.duna-dynamics-m1.6` (optional bounded integrator callback calibration, not flight validated or authorized for installation).
+
+Current integrated landing research increment: `2.16.0-landing.20261126.duna-dynamics-m1.7` (normal CKAN launch, one-shot diagnostic request file; see [M1.7 contract](docs/Integrated-Landing-Dynamics-M1.md)).

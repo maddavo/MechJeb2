@@ -49,3 +49,7 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 ## 2.16.0-landing.20261126.duna-dynamics-m1.6
 
 - Add separately armed short Harmony observer for stock/MFI Integrate callbacks, pending force holder snapshots, route and Drive sequence observations, explicit caps, cleanup and offline probe audit. No MFI override, force mutation or solver-completion claim; verification pending.
+
+## 2.16.0-landing.20261126.duna-dynamics-m1.7
+
+- Replace environment-variable diagnostic arming with a persistent one-shot request file for normal CKAN launches; explicit readiness/rejection logs, eligible landing retry, persistent receipt and immediate header flush. Correct probe state callback label; no change to guidance. Add request tests and MVID to CI manifest.

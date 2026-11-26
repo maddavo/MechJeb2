@@ -84,13 +84,13 @@ namespace MuMech.Landing
         internal const int MaxRecords = 20000;
         internal const long MaxBytes = 128L * 1024 * 1024;
         private bool runtimeModelAttempted;
-        private readonly string forceProbePhase = Environment.GetEnvironmentVariable("MECHJEB_DUNA_M1_FORCE") == "1"
-            ? Environment.GetEnvironmentVariable("MECHJEB_DUNA_M1_FORCE_PHASE") : null;
+        private readonly string forceProbePhase;
+        private static DunaM1DiagnosticsRequest request;
+        private bool forceProbeWarpWaitLogged;
         private bool forceProbeAttempted;
         private DunaM1ForceProbe forceProbe;
         private double forceProbeStartUT, forceProbeLastUT;
         private double nextPartObservationUT = double.NegativeInfinity;
-        private static bool claimed;
         private readonly string session = Guid.NewGuid().ToString("N");
         private readonly Guid vessel;
         private readonly double latitude, longitude;
@@ -101,9 +101,11 @@ namespace MuMech.Landing
         private string lastPhase;
         internal bool Open => writer != null;
 
-        private DunaM1Capture(Guid vessel, double latitude, double longitude, double ut, double touchdown)
+        private DunaM1Capture(Guid vessel, double latitude, double longitude, double ut, double touchdown,
+            string forcePhase, string receipt)
         {
             this.vessel = vessel; this.latitude = latitude; this.longitude = longitude; lastLive = ut;
+            forceProbePhase = forcePhase;
             string path = MuUtils.GetCfgPath("DunaM1-" + session + ".jsonl");
             string directory = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(directory)) Directory.CreateDirectory(directory);
@@ -111,18 +113,36 @@ namespace MuMech.Landing
                 new UTF8Encoding(false));
             Write("session_start", ",\"ut\":" + N(ut) + ",\"touchdownSetpoint\":" + N(touchdown) +
                 ",\"maxRecords\":" + MaxRecords + ",\"maxBytes\":" + MaxBytes +
-                ",\"runtimeObservationRevision\":3,\"thrustVectorMeaning\":\"neutral_projection_not_actual\"" +
+                ",\"runtimeObservationRevision\":4,\"thrustVectorMeaning\":\"neutral_projection_not_actual\"" +
+                ",\"activationSource\":\"one_shot_config\",\"requestReceipt\":" + Q(Path.GetFileName(receipt)) +
                 ",\"forceProbeRequestedPhase\":" + Q(forceProbePhase) +
                 ",\"assemblyVersion\":" + Q(DunaM1RuntimeObservation.BuildVersion()) +
                 ",\"assemblyMvid\":" + Q(typeof(DunaM1Capture).Assembly.ManifestModule.ModuleVersionId.ToString("D")));
-            Debug.Log("[DunaM1] " + path);
+            if (Open) Debug.Log("[DunaM1] capture started: " + path + "; forcePhase=" + (forceProbePhase ?? "disabled"));
         }
+
+        internal static void Initialize()
+        {
+            if (request != null) return;
+            string path = MuUtils.GetCfgPath(DunaM1DiagnosticsRequest.FileName);
+            request = DunaM1DiagnosticsRequest.Load(path);
+            Debug.Log("[DunaM1] request " + request.Status + "; forcePhase=" +
+                (request.ForcePhase ?? "disabled") + "; path=" + path);
+        }
+
+        internal static bool Armed => request != null && request.Armed;
 
         internal static DunaM1Capture TryOpen(Guid vessel, double latitude, double longitude, double ut, double touchdown)
         {
-            if (claimed || Environment.GetEnvironmentVariable("MECHJEB_DUNA_M1") != "1") return null;
-            claimed = true;
-            return new DunaM1Capture(vessel, latitude, longitude, ut, touchdown);
+            if (!Armed) return null;
+            if (!request.TryConsume(out string receipt, out string reason))
+            {
+                Debug.Log("[DunaM1] activation rejected: " + reason);
+                return null;
+            }
+            Debug.Log("[DunaM1] request consumed: " + receipt);
+            var capture = new DunaM1Capture(vessel, latitude, longitude, ut, touchdown, request.ForcePhase, receipt);
+            return capture.Open ? capture : null;
         }
 
         internal bool Matches(Guid id, double lat, double lon, double ut) =>
@@ -242,17 +262,24 @@ namespace MuMech.Landing
                 ",\"predictionEndpoint\":" + (prediction != null && prediction.Outcome == ReentrySimulation.Outcome.LANDED ? A(prediction.EndPosition) : "null"));
         }
 
-        // Observe every eligible Drive callback during a separately armed short
+        // Observe every eligible landing OnFixedUpdate callback during a separately armed short
         // calibration burst, not only the slower ordinary live sampling cadence.
         internal void ObserveForceProbe(Vessel v, VesselState s, string phase)
         {
             if (!Open || string.IsNullOrEmpty(forceProbePhase)) return;
+            if (!forceProbeAttempted && phase == forceProbePhase && TimeWarp.CurrentRate != 1 &&
+                !forceProbeWarpWaitLogged)
+            {
+                forceProbeWarpWaitLogged = true;
+                Debug.Log("[DunaM1] force probe waiting: requested phase reached, warp not 1x");
+            }
             if (!forceProbeAttempted && phase == forceProbePhase && TimeWarp.CurrentRate == 1)
             {
                 forceProbeAttempted = true;
                 forceProbeStartUT = forceProbeLastUT = s.Time;
                 forceProbe = DunaM1ForceProbe.Start(v.id, out string status);
                 Write("force_probe_start", ",\"ut\":" + N(s.Time) + ",\"phase\":" + Q(phase) + ",\"probe\":" + status);
+                Debug.Log("[DunaM1] force probe start: " + status);
             }
             DunaM1ForceProbe p = forceProbe;
             if (!Open || p == null) return;
@@ -277,6 +304,7 @@ namespace MuMech.Landing
             Write("force_probe_batch", ",\"ut\":" + N(ut) + ",\"batch\":" + p.Drain());
             Write("force_probe_end", ",\"ut\":" + N(ut) + ",\"reason\":" + Q(reason) +
                 ",\"cleanupOk\":" + (clean ? "true" : "false"));
+            Debug.Log("[DunaM1] force probe ended: " + reason + "; unpatchCallsOk=" + clean);
         }
 
         private string PredictionId(ReentrySimulation.Result result) =>
@@ -286,7 +314,13 @@ namespace MuMech.Landing
         internal void Close(string reason)
         {
             if (!Open) return;
-            try { FinishForceProbe(reason, lastLive); Write("session_end", ",\"reason\":" + Q(reason)); }
+            try
+            {
+                FinishForceProbe(reason, lastLive);
+                Write("session_end", ",\"reason\":" + Q(reason) + ",\"forceProbeAttempted\":" +
+                    (forceProbeAttempted ? "true" : "false"));
+                Debug.Log("[DunaM1] capture ended: " + reason + "; forceProbeAttempted=" + forceProbeAttempted);
+            }
             finally { DisposeWriter(); }
         }
 
@@ -321,7 +355,8 @@ namespace MuMech.Landing
                 }
                 writer.Write(line);
                 records++; bytes += size;
-                if (records % 10 == 0 || kind == "session_end") writer.Flush();
+                if (records % 10 == 0 || kind == "session_start" || kind == "session_end" ||
+                    kind == "force_probe_start" || kind == "force_probe_end") writer.Flush();
             }
             catch (Exception ex) { Fail(ex); }
         }

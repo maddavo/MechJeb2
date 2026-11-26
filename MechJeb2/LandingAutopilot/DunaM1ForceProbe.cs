@@ -144,7 +144,7 @@ namespace MuMech.Landing
             p.vessel!=null && p.vessel.id==vessel && p.vessel.mainBody!=null &&
             p.vessel.mainBody.bodyName=="Duna";
 
-        // The hook stops collecting even if the Drive callback stalls or
+        // The hook stops collecting even if the landing OnFixedUpdate callback stalls or
         // goes away; the next normal lifecycle callback removes the patches.
         private bool InsideWindow()
         {
@@ -258,7 +258,7 @@ namespace MuMech.Landing
             try
             {
                 if(!enabled || v.id!=vessel || Thread.CurrentThread.ManagedThreadId!=thread)return;
-                var b=Begin("drive_state",++seq);
+                var b=Begin("landing_fixed_update_state",++seq);
                 Field(b,"phase",Q(phase)); Field(b,"stateUT",N(s.Time));
                 Field(b,"coMWorld",V(s.CoM)); Field(b,"positionBCIWorldAxes",V(s.OrbitalPosition));
                 Field(b,"orbitalVelocityWorld",V(s.OrbitalVelocity));

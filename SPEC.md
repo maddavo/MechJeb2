@@ -29,3 +29,5 @@ M1.4 adds explicitly armed bounded raw runtime observations and rejects neutral 
 M1.5 extends explicitly armed passive capture of raw loaded model/controller and resource fields; validates candidate frame consistency only. No actuation or verified force-epoch parity. See [M1.5 contract](docs/Integrated-Landing-Dynamics-M1.md).
 
 M1.6: optional bounded passive callback calibration probe; no MFI override or force mutation, no certified solver completion, no actual-vector force closure. Existing non-actuating plan and separate deployment gates retained. See [M1.6 contract](docs/Integrated-Landing-Dynamics-M1.md).
+
+M1.7 diagnostic activation uses an explicit one-shot bounded request file in existing PluginData, fail-closed parsing and persistent consumption before capture. No environment dependency; initial ineligibility retries only during the requested targeted landing; readiness and failure reasons logged. Existing guidance and acceptance gates unchanged.

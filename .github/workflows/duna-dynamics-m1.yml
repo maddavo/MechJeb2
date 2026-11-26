@@ -119,6 +119,7 @@ jobs:
           $manifest = @("Source commit: $env:GITHUB_SHA", "KSP reference archive: KSP-1.12.5.zip", 'Non-actuating atmospheric dynamics test build only; broader regression status is recorded in the test artifact and run.', 'Companions are identified for review only; not packaged or authorised for installation.')
           $asm = [Reflection.Assembly]::ReflectionOnlyLoadFrom((Resolve-Path $plugin).Path)
           $manifest += "Plugin: $($asm.FullName)"
+          $manifest += "MVID: $($asm.ManifestModule.ModuleVersionId)"
           $manifest += "Product version: $([Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path $plugin).Path).ProductVersion)"
           $manifest += "SHA-256: $((Get-FileHash $plugin -Algorithm SHA256).Hash)"
           foreach ($ref in $asm.GetReferencedAssemblies()) {

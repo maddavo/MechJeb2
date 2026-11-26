@@ -29,3 +29,5 @@ M1.4 supersedes the historical thrust interpretation: schema-1 thrustVectorNEU w
 M1.5: additional raw part/cube/resource and controller observations plus diagnostic frame consistency audit. Drive timing is unverified; no actual force integration or closure from schema 1. See [M1.5 contract](Integrated-Landing-Dynamics-M1.md).
 
 M1.6 adds optional separately armed selected-phase 0.5 s Integrate callback probe via already loaded Harmony. Pending holders and wrapper routes are raw observations, never measured net force; see [M1.6 contract](Integrated-Landing-Dynamics-M1.md). No installation authorization.
+
+M1.7: normal CKAN launch; use the one-shot DunaM1Diagnostics.cfg request described in [the diagnostics contract](Integrated-Landing-Dynamics-M1.md). Environment arming retired. Configuration is consumed on eligible capture activation and preserved as a receipt. Verify [DunaM1] readiness before the calibration flight.

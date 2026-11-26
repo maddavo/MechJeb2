@@ -467,7 +467,7 @@ def force_probe_audit(rows):
                 paired.add(pre)
                 flag=e.get("harmonyRunOriginalFlag")
                 counts["pairedOriginalFlagTrue" if flag is True else "pairedOriginalFlagFalse" if flag is False else "pairedOriginalFlagUnknown"]+=1
-            elif k!="drive_state":
+            elif k not in ("drive_state","landing_fixed_update_state"):
                 fault("Unknown event kind")
         c=tuple(b.get(k) for k in ("acceptedTotal","droppedTotal","errorsTotal","lastSequence"))
         if not all(count_int(x) for x in c) or any(x<y for x,y in zip(c,counters)):
@@ -667,7 +667,7 @@ class Tests(unittest.TestCase):
                   pendingHolders=[{"forceRawKspKn":[1,2,3],"positionWorld":[0,0,0]}]),
                 e("stock_integrate_postfix",3,prefixSequence=2,harmonyRunOriginalFlag=True),
                 e("mfi_integrate_postfix",4,prefixSequence=1,harmonyRunOriginalFlag=True),
-                e("drive_state",5)]
+                e("landing_fixed_update_state",5)]
         p=self.write([h,dict(h,recordType="force_probe_start",probe={"status":"armed_unvalidated"}),
             dict(h,recordType="force_probe_batch",batch={"events":events,"acceptedTotal":5,
                 "droppedTotal":0,"errorsTotal":0,"lastSequence":5}),

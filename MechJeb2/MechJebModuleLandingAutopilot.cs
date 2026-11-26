@@ -31,6 +31,8 @@ namespace MuMech
         }
         public bool LandAtTarget;
         private DunaM1Capture _dunaM1;
+        private bool _dunaM1Pending;
+        private string _dunaM1LastRejection;
 
         internal DunaM1Capture DunaM1 => _dunaM1;
 
@@ -301,8 +303,49 @@ namespace MuMech
             Core.Target.targetBody == MainBody && !DeployChutes && !VesselState.ParachuteDeployed &&
             !RCSAdjustment && !Core.Thrust.LimiterMinThrottle;
 
+        // Diagnostic only: do not change DunaM1Eligible(), which also gates guidance.
+        private string DunaM1Rejection()
+        {
+            if (!Active) return "landing_not_active";
+            if (!LandAtTarget) return "not_targeted";
+            if (MainBody == null || MainBody.bodyName != "Duna" || !MainBody.atmosphere) return "not_duna_atmosphere";
+            if (!Core.Target.PositionTargetExists) return "no_position_target";
+            if (Core.Target.targetBody != MainBody) return "target_body_mismatch";
+            if (DeployChutes) return "deploy_chutes_enabled";
+            if (VesselState.ParachuteDeployed) return "parachute_deployed";
+            if (RCSAdjustment) return "rcs_adjustment_enabled";
+            if (Core.Thrust.LimiterMinThrottle) return "minimum_throttle_limiter_enabled";
+            return "eligibility_not_ready";
+        }
+
+        private void TryActivateDunaM1()
+        {
+            if (!_dunaM1Pending || _dunaM1 != null) return;
+            try
+            {
+                if (!DunaM1Capture.Armed) { _dunaM1Pending = false; return; }
+                if (!DunaM1Eligible())
+                {
+                    string reason = DunaM1Rejection();
+                    if (reason != _dunaM1LastRejection)
+                        Debug.Log("[DunaM1] activation waiting: " + reason);
+                    _dunaM1LastRejection = reason;
+                    return;
+                }
+                _dunaM1Pending = false;
+                _dunaM1 = DunaM1Capture.TryOpen(Vessel.id, Core.Target.targetLatitude,
+                    Core.Target.targetLongitude, VesselState.Time, TouchdownSpeed);
+            }
+            catch (Exception ex)
+            {
+                _dunaM1Pending = false;
+                Debug.Log("[DunaM1] capture start failed: " + ex.Message);
+            }
+        }
+
         private void ObserveDunaM1(string terminalReason = null)
         {
+            if (terminalReason != null) _dunaM1Pending = false;
             if (_dunaM1 == null) return;
             try
             {
@@ -479,7 +522,15 @@ namespace MuMech
         {
         }
 
-        public override void OnStart(PartModule.StartState state) => _predictor = Core.GetComputerModule<MechJebModuleLandingPredictions>();
+        public override void OnStart(PartModule.StartState state)
+        {
+            _predictor = Core.GetComputerModule<MechJebModuleLandingPredictions>();
+            if (HighLogic.LoadedSceneIsFlight)
+            {
+                try { DunaM1Capture.Initialize(); }
+                catch (Exception ex) { Debug.Log("[DunaM1] request initialization failed: " + ex.Message); }
+            }
+        }
 
         //public interface:
         public void LandAtPositionTarget(object controller)
@@ -509,14 +560,10 @@ namespace MuMech
                 SetStep(new PlaneChange(Core));
             else
                 SetStep(new DeorbitBurn(Core));
-            // Explicit one-shot process opt-in; no UI or controller configuration changes.
-            try
-            {
-                if (DunaM1Eligible())
-                    _dunaM1 = DunaM1Capture.TryOpen(Vessel.id, Core.Target.targetLatitude,
-                        Core.Target.targetLongitude, VesselState.Time, TouchdownSpeed);
-            }
-            catch (Exception ex) { Debug.Log("[DunaM1] capture start failed: " + ex.Message); }
+            // Explicit one-shot file opt-in; retry only within this targeted landing.
+            _dunaM1Pending = DunaM1Capture.Armed;
+            _dunaM1LastRejection = null;
+            TryActivateDunaM1();
         }
 
         public void LandUntargeted(object controller)
@@ -595,6 +642,7 @@ namespace MuMech
             if (previousPhase != CurrentStep?.GetType()) CancelPreparedWarp();
             DeployParachutes();
             ObserveDunaEntry();
+            TryActivateDunaM1();
             ObserveDunaM1();
             TraceLandingState();
         }
