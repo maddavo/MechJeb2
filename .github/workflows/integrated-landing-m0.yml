@@ -21,3 +21,5 @@ jobs:
           python-version: '3.12'
       - name: Verify session identity, impulse and measured-force replay
         run: python tools/integrated_landing_evidence.py self-test
+      - name: Verify TRX diagnostics and outcome comparison
+        run: python tools/integrated_landing_regressions.py --self-test
