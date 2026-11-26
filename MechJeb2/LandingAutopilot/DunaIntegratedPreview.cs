@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
+using MechJebLibBindings;
 using D=MuMech.Landing.AtmosphericLandingDynamics;
 using P=MuMech.Landing.AtmosphericFeasibleRangePlanner;
 using F=MuMech.Landing.AtmosphericFiniteTimePlanner;
