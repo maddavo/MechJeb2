@@ -47,3 +47,5 @@ M5.0 adds bounded strategic orbit/finite vector deorbit and subsequent powered d
 M5.1 adds independent radial recoverability warning/hazard screening and explicit latched best-effort response after plan loss in experimental descent. Require four sampled closed-loop uncertainty contacts for candidate publication in addition to existing finer nominal replay. These are reduced-order screens, not certified recoverability or measured uncertainty. Ordinary landing unchanged.
 
 M5.2 adds a non-actuating local convex minimum-energy acceleration prototype and common A/B/C benchmark with recorded command histories and shared replay/scenario validator. C is not a full SOCP/SCvx implementation. B remains finite-time nonlinear shooting. No production solver selection or live control changes.
+
+M5.3 corrects shared atmospheric integration: analytical first-order throttle moments, adaptive local-error step doubling, chronological surface/reserve event subdivision, endpoint angular rate and strict model domain; touchdown limits unchanged. Numerical validation remains mandatory.

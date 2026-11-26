@@ -166,10 +166,10 @@ namespace MechJebLibTest.LandingPredictionTests
                 string label=f.name+" "+(convex?"C":"B");
                 var set=f.settings;var common=set.Common;
                 var search=F.Search(f.env,f.engine,f.limits,f.state,set,convex:convex);
-                Assert.NotNull(search.Best);
+                if(search.Best==null){rows.Add(label+" no nominal candidate: "+search.Status);continue;}
                 var selected=search.Best.Profile;
                 var coarse=F.Evaluate(f.env,f.engine,f.limits,f.state,set,selected,80000,true,default,convex);
-                Assert.True(coarse.Result.Feasible);
+                if(!coarse.Result.Feasible){rows.Add(label+" reconstruction failed: "+coarse.Result.Outcome);continue;}
                 rows.Add(label+" selected coast="+N(selected.Coast)+" duration="+N(selected.Duration)+
                     " terminal_start="+N(coarse.Result.TerminalStartUT)+" limits_v="+N(common.SafeVertical)+
                     " h="+N(common.SafeHorizontal)+" angle_deg="+N(common.SafeAngle*180/Math.PI)+

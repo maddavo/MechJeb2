@@ -91,3 +91,7 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Implement constrained local fixed-time convex acceleration solver with scaled endpoint constraints, thrust ball/pointing cone projection, residual and cancellation gates.
 - Add common A/B/C nonlinear replay and closed-loop uncertainty benchmark; publish per-fixture net8/net48 outcome, timing, miss, fuel and validation results in CI. No live solver switch.
+
+## 2.16.0-landing.20261126.duna-integrated-m5.3
+
+- Integrate exponential engine response analytically for impulse and mass flow, estimate local numerical errors with adaptive step doubling, and resolve contact before undefined atmosphere evaluation. Use endpoint rather than interval-averaged pointing rate. Preserve contact and reserve gates.

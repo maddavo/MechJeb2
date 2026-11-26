@@ -104,6 +104,71 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.InRange(a.End.PointingRate,.499999,.500001);
         }
         [Fact]
+        public void ExponentialEngineImpulseAndMassAreInvariantToStepPartition()
+        {
+            var env=Vacuum();var engine=Engines(350);
+            var start=State(10000,0,220000);
+            double tau=.1;
+            D.State Run(double dt)
+            {
+                var lim=Limits(turn:10,rise:tau,fall:tau,dt:dt);
+                var s=start;
+                foreach(double throttle in new[]{1.0,0.0,0.65})
+                    for(int i=0;i<(int)Math.Round(.5/dt);i++)
+                    {
+                        var r=D.Advance(env,engine,lim,s,new D.Command(throttle,X),dt);
+                        Assert.Equal(D.Outcome.Advanced,r.Status);s=r.End;
+                    }
+                return s;
+            }
+            var coarse=Run(.5);var fine=Run(.03125);
+            double attained=0,impulseTime=0;
+            foreach(double throttle in new[]{1.0,0.0,.65})
+            {
+                impulseTime+=throttle*.5+(attained-throttle)*tau*(1-Math.Exp(-.5/tau));
+                attained=throttle+(attained-throttle)*Math.Exp(-.5/tau);
+            }
+            double expectedMass=start.Mass-350*impulseTime;
+            double expectedVelocity=400*G0*Math.Log(start.Mass/expectedMass);
+            Assert.Equal(expectedMass,coarse.Mass,7);
+            Assert.Equal(expectedMass,fine.Mass,7);
+            Assert.Equal(attained,coarse.Throttle,12);
+            Assert.InRange(Math.Abs(coarse.Velocity.X-expectedVelocity),0,1e-4);
+            Assert.InRange((coarse.Velocity-fine.Velocity).Length,0,1e-4);
+            Assert.InRange((coarse.R-fine.R).Length,0,1e-3);
+        }
+
+        [Fact]
+        public void AtmosphericContactPrecedesOutOfDomainMidpoint()
+        {
+            var p=new D.Curve(new D.Knot(0,20000),new D.Knot(1000,0));
+            var rho=new D.Curve(new D.Knot(0,.15),new D.Knot(1000,0));
+            var env=new D.Environment(320000,0,default,1000,p,rho,0,320000,0);
+            Assert.False(env.AirAtAltitude(-.001,out _,out _));
+            var lim=Limits(dt:.2);
+            var a=D.Advance(env,Engines(),lim,State(.13,-1.6),new D.Command(0,X),.2);
+            Assert.Equal(D.Outcome.ContactUnsafe,a.Status);
+            Assert.InRange(a.End.UT,.081249,.081251);
+            Assert.InRange(env.PhysicalClearance(a.End),-1e-5,0);
+            Assert.Equal(-1.6,a.End.Velocity.X,9);
+            var b=D.Advance(env,Engines(),lim,State(.02,-.5),new D.Command(0,X),.2);
+            Assert.Equal(D.Outcome.ContactWithinLimits,b.Status);
+            Assert.InRange(b.End.UT,.039999,.040001);
+        }
+
+        [Fact]
+        public void EndpointPointingRateDoesNotDependOnAverageOverStep()
+        {
+            var env=Vacuum();var engine=Engines();
+            var target=new D.V(Math.Cos(.02),Math.Sin(.02),0);
+            var lim=Limits(turn:1,dt:.1);
+            var result=D.Advance(env,engine,lim,State(100,0),new D.Command(0,target),.1);
+            Assert.Equal(D.Outcome.Advanced,result.Status);
+            Assert.Equal(0,result.End.PointingRate);
+            Assert.InRange((result.End.Forward-target).Length,0,1e-8);
+        }
+
+        [Fact]
         public void RotatingAirAtRestHasNoDrag()
         {
             var p=new D.Curve(new D.Knot(0,0),new D.Knot(10000,0));
@@ -238,19 +303,22 @@ namespace MechJebLibTest.LandingPredictionTests
         [Fact]
         public void ExplicitAtmosphereAndAeroAdaptersUseEpochPositionAndAttainedPointing()
         {
-            double sampledUT=-1;
-            D.V sampledForward=default;
+            var samples=new System.Collections.Generic.List<(double ut,D.V forward)>();
             var env=new D.Environment(320000,0,default,10000,null,null,0,320000,0,
                 atmosphere:(ut,r)=>new D.AirSample(ut*1000+r.Length-320000,1),
                 aerodynamics:(ut,r,w,f,p,rho)=>{
-                    sampledUT=ut;sampledForward=f;
+                    samples.Add((ut,f));
                     return new D.AeroSample(w*(-1),new D.V(0,0,f.Y*100));
                 });
             var s=new D.State(10,X*321000,new D.V(0,20,0),1000,X);
             var step=D.Advance(env,Engines(),Limits(turn:1),s,new D.Command(1,new D.V(0,1,0)),.1);
             Assert.Equal(D.Outcome.Advanced,step.Status);
-            Assert.Equal(10.05,sampledUT,8);
-            Assert.Equal(Math.Sin(.05),sampledForward.Y,8);
+            Assert.NotEmpty(samples);
+            Assert.Contains(samples,sample=>Math.Abs(sample.ut-10.05)<1e-9);
+            Assert.All(samples,sample=>{
+                Assert.InRange(sample.ut,10,10.1);
+                Assert.Equal(Math.Sin(sample.ut-10),sample.forward.Y,8);
+            });
             D.ForceSample f1=D.Forces(env,Engines(),step.End);
             Assert.True(f1.Known);
             Assert.Equal(step.End.UT*1000+step.End.R.Length-320000,f1.Pressure,8);

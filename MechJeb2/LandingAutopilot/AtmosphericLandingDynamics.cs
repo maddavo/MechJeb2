@@ -376,26 +376,87 @@ namespace MuMech.Landing
             V gravity=r*(-env.Mu/(r.Length*r.Length*r.Length));
             return new ForceSample(p,density,a.Flow*throttle,air,gravity,f*(a.Force*throttle),drag,lift,mass);
         }
-        // Midpoint integration, time-varying pressure, mass and direction.
-        // Explicitly subdivide events at caller; never clamp away spent fuel.
+        // Exact mean and position-weighted mean of the first-order
+        // throttle response over an interval. Series avoid cancellation
+        // near x=0; no assumption that dt is small relative to tau.
+        private static double MeanThrottle(double initial,double command,double tau,double dt,bool position=false)
+        {
+            if(tau==0)return command;
+            double x=dt/tau;
+            double weight;
+            if(x<1e-3)
+                weight=position?1-x/3+x*x/12-x*x*x/60:1-x/2+x*x/6-x*x*x/24;
+            else
+            {
+                double decay=1-Math.Exp(-x);
+                weight=position?2*(1-decay/x)/x:decay/x;
+            }
+            return Clamp(command+(initial-command)*weight,0,1);
+        }
+        // Exponential-weighted midpoint quadrature. With constant engine
+        // flow, the integral of attained throttle (and thus mass loss) is
+        // exact. Position uses the first moment of the thrust impulse.
+        // Direction, pressure, mass and aero variations remain numerical.
         private static bool RawStep(Environment env,Propulsion propulsion,Limits lim,State s,Command c,double dt,out State next)
         {
             next=s;
             double tau=c.Throttle>=s.Throttle?lim.EngineRise:lim.EngineFall;
-            double midThrottle=Lag(s.Throttle,c.Throttle,tau,dt*.5);
             double endThrottle=Lag(s.Throttle,c.Throttle,tau,dt);
             V midForward=Turn(s.Forward,c.Direction,lim.TurnRate*dt*.5);
             V endForward=Turn(s.Forward,c.Direction,lim.TurnRate*dt);
-            ForceSample a0=Evaluate(env,propulsion,s.UT,s.R,s.Velocity,s.Forward,Lag(s.Throttle,c.Throttle,tau,0),s.Mass);
+            // Evaluate unit-throttle capability, not actual instantaneous
+            // throttle, then integrate the known exponential analytically.
+            ForceSample a0=Evaluate(env,propulsion,s.UT,s.R,s.Velocity,s.Forward,1,s.Mass);
             if(!a0.Known)return false;
-            V midR=s.R+s.Velocity*(dt*.5),midV=s.Velocity+a0.Acceleration*(dt*.5);
-            double midMass=s.Mass-a0.MassFlow*dt*.5;
-            ForceSample am=Evaluate(env,propulsion,s.UT+dt*.5,midR,midV,midForward,midThrottle,midMass);
+            double half=dt*.5;
+            double meanHalf=MeanThrottle(s.Throttle,c.Throttle,tau,half);
+            double weightedHalf=MeanThrottle(s.Throttle,c.Throttle,tau,half,true);
+            V passive0=a0.Gravity+(a0.Drag+a0.Lift)*(1/s.Mass);
+            V thrust0=a0.Thrust*(1/s.Mass);
+            V midR=s.R+s.Velocity*half+(passive0+thrust0*weightedHalf)*(.5*half*half);
+            V midV=s.Velocity+(passive0+thrust0*meanHalf)*half;
+            double midMass=s.Mass-a0.MassFlow*meanHalf*half;
+            ForceSample am=Evaluate(env,propulsion,s.UT+half,midR,midV,midForward,1,midMass);
             if(!am.Known)return false;
-            double turn=Math.Acos(Clamp(V.Dot(s.Forward,endForward),-1,1));
-            next=new State(s.UT+dt,s.R+midV*dt,s.Velocity+am.Acceleration*dt,s.Mass-am.MassFlow*dt,
-                endForward,endThrottle,turn/dt);
+            double mean=MeanThrottle(s.Throttle,c.Throttle,tau,dt);
+            double weighted=MeanThrottle(s.Throttle,c.Throttle,tau,dt,true);
+            V passive=am.Gravity+(am.Drag+am.Lift)*(1/midMass);
+            V thrust=am.Thrust*(1/midMass);
+            // Pointing rate at the endpoint, not the average over the
+            // integration interval. Once the target is reached the model
+            // has no remaining angular motion under this command.
+            double angle=Math.Atan2(V.Cross(s.Forward,c.Direction.Unit).Length,
+                Clamp(V.Dot(s.Forward,c.Direction.Unit),-1,1));
+            double rate=angle>0&&angle>=lim.TurnRate*dt?lim.TurnRate:0;
+            next=new State(s.UT+dt,s.R+s.Velocity*dt+(passive+thrust*weighted)*(.5*dt*dt),
+                s.Velocity+(passive+thrust*mean)*dt,s.Mass-am.MassFlow*mean*dt,
+                endForward,endThrottle,rate);
             return next.Valid;
+        }
+
+        // Error-controlled step doubling. All errors are in SI units.
+        // Scale tolerances by interval duration so merely splitting a
+        // command does not grant a larger cumulative numerical allowance.
+        // The outer step count remains the number of command intervals;
+        // the shared recursion budget bounds internal force evaluations.
+        private static bool AccurateStep(Environment env,Propulsion propulsion,Limits lim,State s,Command c,
+            double dt,out State end,ref int budget)
+        {
+            end=s;
+            if(--budget<0||!RawStep(env,propulsion,lim,s,c,dt,out State full))return false;
+            double half=dt*.5;
+            if(s.UT+half<=s.UT||dt<=1e-7){end=full;return true;}
+            if(!RawStep(env,propulsion,lim,s,c,half,out State left)||
+                !RawStep(env,propulsion,lim,left,c,dt-half,out State right))return false;
+            // Preserve the exact caller's epoch despite split roundoff.
+            right=new State(s.UT+dt,right.R,right.Velocity,right.Mass,right.Forward,right.Throttle,right.PointingRate);
+            double pos=(right.R-full.R).Length,vel=(right.Velocity-full.Velocity).Length;
+            double mass=Math.Abs(right.Mass-full.Mass);
+            if(pos<=2e-4*dt+1e-8&&vel<=2e-5*dt+1e-9&&mass<=1e-8*s.Mass*dt+1e-9)
+            {end=right;return true;}
+            if(!AccurateStep(env,propulsion,lim,s,c,half,out left,ref budget))return false;
+            if(!AccurateStep(env,propulsion,lim,left,c,(s.UT+dt)-left.UT,out right,ref budget))return false;
+            end=right;return true;
         }
         // Spherical contact and reserve crossing are bracketed at substep
         // resolution. Chord check detects interior clearance crossings; no
@@ -413,32 +474,51 @@ namespace MuMech.Landing
                 int budget=512;
                 return AdvanceTerrain(env,propulsion,lim,s,c,dt,safeVertical,safeHorizontal,safeAngle,safeRate,ref budget);
             }
+            int work=512;
+            return AdvanceSphere(env,propulsion,lim,s,c,dt,safeVertical,safeHorizontal,safeAngle,safeRate,ref work);
+        }
+
+        // Resolve sphere events in chronological order. Never extrapolate
+        // pressure below its domain to make a contact appear successful.
+        // If a trial midpoint is outside the domain, retry a shorter
+        // interval from a known above-surface state. Unknown force at the
+        // actual starting state remains unknown immediately.
+        private static Result AdvanceSphere(Environment env,Propulsion propulsion,Limits lim,State s,Command c,double dt,
+            double maxV,double maxH,double maxAngle,double maxRate,ref int work)
+        {
             double initial=env.Clearance(s.R);
-            if(initial<=0)return Contact(env,s,initial,safeVertical,safeHorizontal,safeAngle,safeRate);
-            if(!RawStep(env,propulsion,lim,s,c,dt,out State end))return new Result(Outcome.UnknownCapability,s,initial);
-            V chord=end.R-s.R;
-            double chord2=V.Dot(chord,chord);
-            double fraction=chord2>0?Clamp(-V.Dot(s.R,chord)/chord2,0,1):0;
-            double minimum=Math.Min(initial,Math.Min(env.Clearance(end.R),env.Clearance(s.R+chord*fraction)));
-            bool contact=env.Clearance(end.R)<=0;
-            bool fuel=end.Mass<lim.ReserveMass;
-            if(!contact&&!fuel&&minimum<=0)return new Result(Outcome.UnknownCapability,s,minimum);
-            if(contact||fuel)
+            if(initial<=0)return Contact(env,s,initial,maxV,maxH,maxAngle,maxRate);
+            if(work<=0||dt<=0)return new Result(Outcome.UnknownCapability,s,initial);
+            if(!Forces(env,propulsion,s).Known)return new Result(Outcome.UnknownCapability,s,initial);
+            bool known=AccurateStep(env,propulsion,lim,s,c,dt,out State end,ref work);
+            double minimum=initial;
+            if(known)
             {
-                double lo=0,hi=dt;
-                State hit=end;
-                for(int i=0;i<40;i++)
-                {
-                    double mid=(lo+hi)*.5;
-                    if(!RawStep(env,propulsion,lim,s,c,mid,out State trial))return new Result(Outcome.UnknownCapability,s,minimum);
-                    if(env.Clearance(trial.R)<=0||trial.Mass<lim.ReserveMass){hi=mid;hit=trial;}else lo=mid;
-                }
-                if(hit.Mass<lim.ReserveMass && env.Clearance(hit.R)>0)
-                    return new Result(Outcome.ReserveExhausted,hit,Math.Min(initial,env.Clearance(hit.R)));
-                if(hit.Mass<lim.ReserveMass-1e-6)return new Result(Outcome.ReserveExhausted,hit,Math.Min(initial,env.Clearance(hit.R)));
-                return Contact(env,hit,Math.Min(initial,env.Clearance(hit.R)),safeVertical,safeHorizontal,safeAngle,safeRate);
+                V chord=end.R-s.R;
+                double chord2=V.Dot(chord,chord);
+                double fraction=chord2>0?Clamp(-V.Dot(s.R,chord)/chord2,0,1):0;
+                minimum=Math.Min(initial,Math.Min(env.Clearance(end.R),env.Clearance(s.R+chord*fraction)));
+                if(minimum>0&&end.Mass>=lim.ReserveMass)return new Result(Outcome.Advanced,end,minimum);
             }
-            return new Result(Outcome.Advanced,end,minimum);
+            double half=dt*.5;
+            if(dt<=1e-7||s.UT+half<=s.UT||work<=0)
+            {
+                if(!known)return new Result(Outcome.UnknownCapability,s,minimum);
+                double clearance=env.Clearance(end.R);
+                // Ambiguous simultaneous reserve and contact: never claim
+                // a safe landing by spending the protected reserve.
+                if(end.Mass<lim.ReserveMass)
+                    return clearance<=0?new Result(Outcome.UnknownCapability,s,minimum):
+                        new Result(Outcome.ReserveExhausted,end,minimum);
+                if(clearance<=0)return Contact(env,end,clearance,maxV,maxH,maxAngle,maxRate);
+                return new Result(Outcome.UnknownCapability,s,minimum);
+            }
+            Result left=AdvanceSphere(env,propulsion,lim,s,c,half,maxV,maxH,maxAngle,maxRate,ref work);
+            if(left.Status!=Outcome.Advanced)return left;
+            double remaining=(s.UT+dt)-left.End.UT;
+            if(remaining<=0)return left;
+            Result right=AdvanceSphere(env,propulsion,lim,left.End,c,remaining,maxV,maxH,maxAngle,maxRate,ref work);
+            return new Result(right.Status,right.End,Math.Min(left.MinimumClearance,right.MinimumClearance));
         }
         // Resolve earliest contact/reserve event left-to-right. Unknown
         // corridor or support geometry may never become an accepted landing.
@@ -450,7 +530,7 @@ namespace MuMech.Landing
             SurfaceSample a=env.SurfaceAt(s);
             if(!a.Valid||budget--<=0)return new Result(Outcome.UnknownTerrain,s,double.NaN);
             if(a.Clearance<=0)return TerrainContact(env,s,a,maxV,maxH,maxAngle,maxRate);
-            if(!RawStep(env,propulsion,lim,s,c,dt,out State end))
+            if(!AccurateStep(env,propulsion,lim,s,c,dt,out State end,ref budget))
             {
                 // Subdivide instead of extrapolating an atmosphere curve
                 // beyond contact or jumping past a propellant boundary.

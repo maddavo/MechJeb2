@@ -236,3 +236,5 @@ Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m
 Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m5.1`. Experimental plan admission includes closed-loop model uncertainty screening; descent supervisor reports radial margins and invalidates targeting on best-effort hazard response. Actual flight validation remains outstanding.
 
 Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m5.2`. Non-actuating convex prototype and common solver benchmark; compare synthetic fixtures using actual model contact and shared validation. Experimental live controller remains unchanged.
+
+Current integrated landing increment: `2.16.0-landing.20261126.duna-integrated-m5.3`. Shared integrator and contact-event corrections; no change to ordinary landing dispatch.
