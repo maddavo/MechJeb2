@@ -165,7 +165,20 @@ namespace MuMech.Landing
             double airSpeed=environment.Surface(reference.R,reference.Velocity).Length;
             double dragAcceleration=.5*density*environment.DragArea*airSpeed*airSpeed/reference.Mass;
             double tau=FeedbackTimeConstant(refClearance,positionLimit,dragAcceleration);
-            D.V correction=dr*(1/(tau*tau))+dv*(2/tau);
+            // The reference thrust alone does not reproduce reference
+            // acceleration when mass, density or relative air velocity
+            // have changed. Compensate the predictable passive-force
+            // difference using the SAME nominal model at both states.
+            // Uncertainty replay must not reveal its perturbed model here.
+            var referenceForces=D.Forces(environment,propulsion,reference);
+            var actualForces=D.Forces(environment,propulsion,actual);
+            if(!referenceForces.Known||!actualForces.Known)
+                return Reject("unknown passive acceleration");
+            D.V referencePassive=referenceForces.Gravity+
+                (referenceForces.Drag+referenceForces.Lift)*(1/reference.Mass);
+            D.V actualPassive=actualForces.Gravity+
+                (actualForces.Drag+actualForces.Lift)*(1/actual.Mass);
+            D.V correction=dr*(1/(tau*tau))+dv*(2/tau)+referencePassive-actualPassive;
             double correctionCap=.25*liveMaxAcceleration*cap;
             if(correction.Length>correctionCap)correction=correction.Unit*correctionCap;
             acceleration+=correction;
