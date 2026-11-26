@@ -214,3 +214,5 @@ See the [integrated landing guidance implementation plan](docs/Integrated-Landin
 Current branch experimental version: `2.16.0-landing.20261126.duna-dynamics-m1.3`. This is a non-actuating engineering increment, not a new landing controller or a deployable flight fix. See the [binding implementation plan](docs/Integrated-Landing-Guidance-Plan.md) and [M1 dynamics/replay contract](docs/Integrated-Landing-Dynamics-M1.md). Run the independent model tests with `dotnet test tools/DunaDynamicsTests/DunaDynamicsTests.csproj -c Release`; real KSP-reference and flight validation remain required.
 
 Integrated landing research branch: `2.16.0-landing.20261126.duna-dynamics-m1.4` — passive diagnostic research, not an authorized landing fix or release. See [M1 contracts](docs/Integrated-Landing-Dynamics-M1.md).
+
+Current integrated landing research increment: `2.16.0-landing.20261126.duna-dynamics-m1.5` (passive raw observations, no flight validation or install authorization).

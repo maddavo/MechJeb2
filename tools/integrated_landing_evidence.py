@@ -28,6 +28,7 @@ def add(a,b): return tuple(x+y for x,y in zip(a,b))
 def sub(a,b): return tuple(x-y for x,y in zip(a,b))
 def mul(a,k): return tuple(x*k for x in a)
 def dot(a,b): return sum(x*y for x,y in zip(a,b))
+def cross(a,b): return (a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0])
 def norm(a): return math.sqrt(dot(a,a))
 def unit(a): return mul(a,1/norm(a)) if norm(a)>EPS else None
 
@@ -349,6 +350,64 @@ def measurement_inventory(samples,max_gap):
             "Total mass-loss rate is not engine mass flow; staging/RCS/other resource changes can contribute.",
             "Do not assume fields absent from the schema are zero. Other matching local evidence may supply them."]}
 
+def raw_frame_audit(samples):
+    """Check candidate basis/rotation from raw state and body observations.
+    No automatic sign acceptance, force-epoch validation, or extrapolation.
+    World axes may be reflected relative to the abstract east/north axes.
+    """
+    keys=("surfaceNormalLat0Lon0","surfaceNormalLat0Lon90","surfaceNormalLat90Lon0",
+          "sampledPositionBCIWorldAxes","sampledOrbitalVelocityWorld","sampledSurfaceVelocityWorld",
+          "bodyAngularVelocityWorld","sampledEastWorld","sampledNorthWorld","sampledUpWorld")
+    out=collections.defaultdict(lambda:{"rows":0,"eligible":0,"rejectedMissing":0,
+        "rejectedEpoch":0,"rejectedBasis":0,"rejectedPolar":0,"basisDeterminants":[],
+        "omegaFromBody_rad_s":[],"omegaFromVelocity_rad_s":[],"worldRotationResidual_m_s":[],
+        "geographicRotationResidual_m_s":[],"eastBasisResidual":[],"northBasisResidual":[],"upBasisResidual":[]})
+    for s in samples:
+        d=out[str(s.get("phase"))];d["rows"]+=1
+        r=s.get("runtimeObservation")
+        if not isinstance(r,dict) or r.get("status")!="raw_unvalidated" or not all(vec(r.get(k)) for k in keys):
+            d["rejectedMissing"]+=1;continue
+        if not all(finite(r.get(k)) for k in ("stateUT","readUT")) or not finite(s.get("ut")) or (
+            abs(r["readUT"]-r["stateUT"])>EPS or abs(s["ut"]-r["stateUT"])>EPS):
+            d["rejectedEpoch"]+=1;continue
+        x,y,z,p,vo,vs,w,e,n,u=(r[k] for k in keys)
+        axes=(x,y,z,e,n,u)
+        if any(abs(norm(a)-1)>1e-5 for a in axes) or any(abs(dot(a,b))>1e-5 for a,b in (
+            (x,y),(x,z),(y,z),(e,n),(e,u),(n,u))):
+            d["rejectedBasis"]+=1;continue
+        radial=sub(p,mul(z,dot(p,z)))
+        rr=norm(radial)
+        if rr<1 or norm(p)<1:
+            d["rejectedPolar"]+=1;continue
+        ux,uy=dot(radial,x)/rr,dot(radial,y)/rr
+        east=add(mul(x,-uy),mul(y,ux))
+        up=unit(p)
+        north=unit(sub(z,mul(up,dot(z,up))))
+        if north is None:
+            d["rejectedPolar"]+=1;continue
+        dv=sub(vo,vs)
+        omega_body=dot(cross(w,x),y)
+        omega_velocity=dot(dv,east)/rr
+        d["eligible"]+=1
+        d["basisDeterminants"].append(dot(cross(x,y),z))
+        d["omegaFromBody_rad_s"].append(omega_body)
+        d["omegaFromVelocity_rad_s"].append(omega_velocity)
+        d["worldRotationResidual_m_s"].append(norm(sub(dv,cross(w,p))))
+        d["geographicRotationResidual_m_s"].append(norm(sub(dv,mul(east,rr*omega_body))))
+        d["eastBasisResidual"].append(norm(sub(e,east)))
+        d["northBasisResidual"].append(norm(sub(n,north)))
+        d["upBasisResidual"].append(norm(sub(u,up)))
+    for d in out.values():
+        for k,v in list(d.items()):
+            if isinstance(v,list):
+                d[k]={"count":len(v),"min":min(v) if v else None,
+                      "max":max(v) if v else None,"mean":sum(v)/len(v) if v else None}
+    return {"status":"diagnostic_only_not_verified","byPhase":dict(out),
+            "limitations":["Same numeric UT does not establish a completed physics interval.",
+                "Body-derived sign uses cross(world omega, longitude-zero axis) projected onto east.",
+                "Velocity-derived sign uses observed orbital minus surface velocity and geometric east.",
+                "Check residuals and geographic basis against source/epoch before accepting omega; no automatic sign selection."]}
+
 def m1_report(path,radius,omega,mu,max_gap):
     before=fingerprint(path)
     header,samples,terminal=load_m1(path)
@@ -366,6 +425,7 @@ def m1_report(path,radius,omega,mu,max_gap):
         p["atmosphereModelRows"]+=isinstance(r.get("atmosphereModel"),dict)
     report={"identity":"guid_identified_capture", "session":header,
         "rawRuntimeCoverage":dict(raw_by_phase),
+        "rawFrameAudit":raw_frame_audit(samples),
         "thrustVectorStatus":"neutral_projection_or_unverified_raw_modules_not_actual",
         "sourceSHA256":file_digest(path),"samples":len(samples),
         "firstLive":samples[0],"lastLive":samples[-1],"sessionEndReason":terminal,
@@ -474,6 +534,36 @@ class Tests(unittest.TestCase):
         c=dict(a,ut=1.2,mass=1.8)
         p=measurement_inventory([a,b,c],1.25)["byPhase"]["CourseCorrection"]
         self.assertEqual(p["observedTotalMassLossRate_kg_s"]["count"],0)
+    def test_raw_frame_audit_handles_reflected_world_axes(self):
+        for handedness in (1,-1):
+            r={"status":"raw_unvalidated","stateUT":1,"readUT":1,
+               "surfaceNormalLat0Lon0":[1,0,0],"surfaceNormalLat0Lon90":[0,handedness,0],
+               "surfaceNormalLat90Lon0":[0,0,1],"sampledPositionBCIWorldAxes":[320000,0,0],
+               "sampledOrbitalVelocityWorld":[0,32*handedness,0],"sampledSurfaceVelocityWorld":[0,0,0],
+               "bodyAngularVelocityWorld":[0,0,.0001*handedness],
+               "sampledEastWorld":[0,handedness,0],"sampledNorthWorld":[0,0,1],"sampledUpWorld":[1,0,0]}
+            d=raw_frame_audit([{"ut":1,"phase":"Coast","runtimeObservation":r}])["byPhase"]["Coast"]
+            self.assertEqual(d["eligible"],1)
+            self.assertEqual(d["basisDeterminants"]["mean"],handedness)
+            self.assertAlmostEqual(d["omegaFromBody_rad_s"]["mean"],.0001)
+            self.assertAlmostEqual(d["omegaFromVelocity_rad_s"]["mean"],.0001)
+            self.assertAlmostEqual(d["geographicRotationResidual_m_s"]["max"],0)
+            r["readUT"]=2
+            self.assertEqual(raw_frame_audit([{"ut":1,"phase":"Coast","runtimeObservation":r}])["byPhase"]["Coast"]["rejectedEpoch"],1)
+    def test_raw_frame_audit_reports_missing_and_wrong_sign(self):
+        d=raw_frame_audit([{"ut":1,"phase":"Coast"}])["byPhase"]["Coast"]
+        self.assertEqual(d["rejectedMissing"],1)
+        self.assertIsNone(d["omegaFromBody_rad_s"]["mean"])
+        r={"status":"raw_unvalidated","stateUT":1,"readUT":1,
+            "surfaceNormalLat0Lon0":[1,0,0],"surfaceNormalLat0Lon90":[0,1,0],
+            "surfaceNormalLat90Lon0":[0,0,1],"sampledPositionBCIWorldAxes":[320000,0,0],
+            "sampledOrbitalVelocityWorld":[0,32,0],"sampledSurfaceVelocityWorld":[0,0,0],
+            "bodyAngularVelocityWorld":[0,0,-.0001],"sampledEastWorld":[0,1,0],
+            "sampledNorthWorld":[0,0,1],"sampledUpWorld":[1,0,0]}
+        d=raw_frame_audit([{"ut":1,"phase":"Coast","runtimeObservation":r}])["byPhase"]["Coast"]
+        self.assertAlmostEqual(d["worldRotationResidual_m_s"]["max"],64)
+        self.assertLess(d["omegaFromBody_rad_s"]["mean"],0)
+        self.assertGreater(d["omegaFromVelocity_rad_s"]["mean"],0)
     def test_m1_neutral_thrust_never_used_as_delivered(self):
         h={"recordType":"session_start","schemaVersion":1,"session":"s","vessel":"v","body":"Duna","targetLat":1,"targetLon":2}
         a=dict(h,recordType="live",ut=1,phase="DecelerationBurn",warpRate=1,mass=2,

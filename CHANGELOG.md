@@ -41,3 +41,7 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 ## 2.16.0-landing.20261126.duna-dynamics-m1.4
 
 - Extend explicitly armed capture with bounded raw engine/nozzle/frame and initial curve observations. Correct neutral thrust provenance and fail closed for actual-vector closure in schema 1. No new guidance commands. Verification pending.
+
+## 2.16.0-landing.20261126.duna-dynamics-m1.5
+
+- Add bounded raw loaded aero/part/resource/controller observations and engine accepted-request percentage, session-local part identity, and candidate frame audit; reject mismatched live capture contexts. Preserve distinction between asynchronous raw fields and integrated force. No guidance change; CI verification pending.

@@ -84,6 +84,7 @@ namespace MuMech.Landing
         internal const int MaxRecords = 20000;
         internal const long MaxBytes = 128L * 1024 * 1024;
         private bool runtimeModelAttempted;
+        private double nextPartObservationUT = double.NegativeInfinity;
         private static bool claimed;
         private readonly string session = Guid.NewGuid().ToString("N");
         private readonly Guid vessel;
@@ -105,7 +106,7 @@ namespace MuMech.Landing
                 new UTF8Encoding(false));
             Write("session_start", ",\"ut\":" + N(ut) + ",\"touchdownSetpoint\":" + N(touchdown) +
                 ",\"maxRecords\":" + MaxRecords + ",\"maxBytes\":" + MaxBytes +
-                ",\"runtimeObservationRevision\":1,\"thrustVectorMeaning\":\"neutral_projection_not_actual\"" +
+                ",\"runtimeObservationRevision\":2,\"thrustVectorMeaning\":\"neutral_projection_not_actual\"" +
                 ",\"assemblyVersion\":" + Q(DunaM1RuntimeObservation.BuildVersion()));
             Debug.Log("[DunaM1] " + path);
         }
@@ -196,13 +197,16 @@ namespace MuMech.Landing
 
         internal void Live(Vessel v, VesselState s, string phase, string status, string detail,
             long version, ReentrySimulation.Result prediction, double throttle, double attitudeError,
-            string thrustMode, double speedSetpoint, bool killHorizontal, string terminalReason)
+            string thrustMode, double speedSetpoint, bool killHorizontal, string terminalReason,
+            MechJebModuleThrustController thrust, MechJebModuleAttitudeController attitude)
         {
             lastLive = s.Time; lastPhase = phase;
             nextLive = s.Time + (phase == "CourseCorrection" || phase == "DecelerationBurn" ||
                 phase == "KillHorizontalVelocity" || phase == "FinalDescent" ? .1 : 1);
             // Raw observations at this callback, not a verified post-physics boundary.
-            string runtime = DunaM1RuntimeObservation.Read(v, s, !runtimeModelAttempted);
+            bool includeParts = !runtimeModelAttempted || s.Time >= nextPartObservationUT || terminalReason != null;
+            string runtime = DunaM1RuntimeObservation.Read(v, s, !runtimeModelAttempted, includeParts, thrust, attitude);
+            if (includeParts) nextPartObservationUT = s.Time + 1;
             runtimeModelAttempted = true;
             Write("live", ",\"ut\":" + N(s.Time) + ",\"phase\":" + Q(phase) +
                 ",\"status\":" + Q(status) + ",\"controllerDetail\":" + Q(detail) +

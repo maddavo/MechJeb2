@@ -25,3 +25,5 @@ M1.2 (`2.16.0-landing.20261126.duna-dynamics-m1.2`): non-actuating shared force 
 M1.3 (`2.16.0-landing.20261126.duna-dynamics-m1.3`): offline explicit surface/contact model with independent physical/control clearance, conservative interval bound and unknown terrain rejection; source-derived KHV/FinalDescent replay including distinct control/PID/actual-throttle states, bounded steps and explicit contact. Caller-supplied model fidelity remains unvalidated; no live controller dispatch change or flight safety claim. See [M1 contracts](docs/Integrated-Landing-Dynamics-M1.md).
 
 M1.4 adds explicitly armed bounded raw runtime observations and rejects neutral thrust as actual measured force. No new actuation, frame/force epoch parity or flight validation. See [M1 contract](docs/Integrated-Landing-Dynamics-M1.md).
+
+M1.5 extends explicitly armed passive capture of raw loaded model/controller and resource fields; validates candidate frame consistency only. No actuation or verified force-epoch parity. See [M1.5 contract](docs/Integrated-Landing-Dynamics-M1.md).
