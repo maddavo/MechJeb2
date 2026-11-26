@@ -262,6 +262,159 @@ namespace MuMech.Landing
             internal bool Valid=>Known&&Finite(Clearance)&&Finite(ControllerClearance)&&
                 Finite(MinASLTrue)&&Normal.Valid&&Math.Abs(Normal.Length-1)<1e-6;
         }
+        // Body-fixed cubed-sphere terrain sampled from KSP. Each face
+        // shares its boundary nodes with neighbouring faces. A local
+        // gnomonic patch is blended at its outer edge, with exact samples
+        // retained in its interior. The bounds are for the interpolated
+        // numerical surface, NOT a claim to know unsampled PQS/collider
+        // detail. The live terrain screen refines discrepancies.
+        internal sealed class TerrainGrid
+        {
+            internal sealed class Patch
+            {
+                internal readonly V Centre,A,B;
+                internal readonly double Half;
+                internal readonly int N;
+                private readonly double[] heights;
+                internal readonly double Min,Max,Slope;
+                internal Patch(V centre,double half,int intervals,double[] data)
+                {
+                    if(!centre.Valid||centre.Length<.5||!Finite(half)||half<=0||half>=1||
+                        intervals<2||data==null||data.Length!=(intervals+1)*(intervals+1))
+                        throw new ArgumentException("invalid terrain patch");
+                    Centre=centre.Unit;A=V.Cross(Centre,Math.Abs(Centre.X)<.8?new V(1,0,0):new V(0,1,0)).Unit;
+                    B=V.Cross(Centre,A).Unit;Half=half;N=intervals;heights=(double[])data.Clone();
+                    Extents(heights,N,out Min,out Max,out double derivative);
+                    Slope=derivative*N/(2*half);
+                }
+                internal V Direction(int i,int j)=> (Centre+A*(Half*(2.0*i/N-1))+
+                    B*(Half*(2.0*j/N-1))).Unit;
+                internal double Blend(V unit,double background)
+                {
+                    double axial=V.Dot(unit,Centre);
+                    if(axial<=0)return background;
+                    double x=V.Dot(unit,A)/axial/Half,y=V.Dot(unit,B)/axial/Half;
+                    double edge=Math.Max(Math.Abs(x),Math.Abs(y));
+                    if(edge>=1)return background;
+                    double weight=Clamp((1-edge)*4,0,1);
+                    return background+(Interpolate(heights,0,N,x,y)-background)*weight;
+                }
+            }
+            private readonly double[] heights;
+            private readonly Patch[] patches;
+            internal readonly int N;
+            internal readonly double Min,Max;
+            private readonly double slope;
+            internal TerrainGrid(int intervals,double[] data,params Patch[] refinements)
+            {
+                if(intervals<2||intervals>128||data==null||data.Length!=6*(intervals+1)*(intervals+1))
+                    throw new ArgumentException("invalid terrain grid");
+                N=intervals;heights=(double[])data.Clone();patches=refinements==null?Array.Empty<Patch>():(Patch[])refinements.Clone();
+                double min=double.PositiveInfinity,max=double.NegativeInfinity,s=0;
+                int count=(N+1)*(N+1);
+                for(int face=0;face<6;face++)
+                {
+                    Extents(heights,N,out double low,out double high,out double derivative,face*count);
+                    min=Math.Min(min,low);max=Math.Max(max,high);s=Math.Max(s,derivative*N*4);
+                }
+                foreach(var patch in patches)
+                {
+                    if(patch==null)throw new ArgumentException("null terrain patch");
+                    min=Math.Min(min,patch.Min);max=Math.Max(max,patch.Max);
+                    // Derivative of blended interpolant, including edge weight.
+                    s+=4*patch.Slope+8*(max-min)/patch.Half;
+                }
+                Min=min;Max=max;slope=s;
+            }
+            private static void Extents(double[] data,int n,out double min,out double max,out double derivative,int start=0)
+            {
+                min=double.PositiveInfinity;max=double.NegativeInfinity;derivative=0;int stride=n+1;
+                for(int j=0;j<=n;j++)for(int i=0;i<=n;i++)
+                {
+                    int k=start+j*stride+i;double z=data[k];
+                    if(!Finite(z))throw new ArgumentException("unknown terrain sample");
+                    min=Math.Min(min,z);max=Math.Max(max,z);
+                    if(i<n)derivative=Math.Max(derivative,Math.Abs(data[k+1]-z));
+                    if(j<n)derivative=Math.Max(derivative,Math.Abs(data[k+stride]-z));
+                }
+            }
+            internal static V Direction(int face,int n,int i,int j)
+            {
+                double u=2.0*i/n-1,v=2.0*j/n-1;
+                switch(face)
+                {
+                    case 0:return new V(1,u,v).Unit;
+                    case 1:return new V(-1,u,v).Unit;
+                    case 2:return new V(u,1,v).Unit;
+                    case 3:return new V(u,-1,v).Unit;
+                    case 4:return new V(u,v,1).Unit;
+                    default:return new V(u,v,-1).Unit;
+                }
+            }
+            private static double Interpolate(double[] values,int start,int n,double x,double y)
+            {
+                double u=Clamp((x+1)*n*.5,0,n),v=Clamp((y+1)*n*.5,0,n);
+                int i=Math.Min(n-1,(int)u),j=Math.Min(n-1,(int)v);double a=u-i,b=v-j;
+                int k=start+j*(n+1)+i;
+                return (values[k]*(1-a)+values[k+1]*a)*(1-b)+
+                    (values[k+n+1]*(1-a)+values[k+n+2]*a)*b;
+            }
+            internal double Height(V direction)
+            {
+                if(!direction.Valid||direction.Length<=0)return double.NaN;
+                V q=direction.Unit;
+                double x=Math.Abs(q.X),y=Math.Abs(q.Y),z=Math.Abs(q.Z),u,v;int face;
+                if(x>=y&&x>=z){face=q.X>=0?0:1;u=q.Y/x;v=q.Z/x;}
+                else if(y>=z){face=q.Y>=0?2:3;u=q.X/y;v=q.Z/y;}
+                else{face=q.Z>=0?4:5;u=q.X/z;v=q.Y/z;}
+                double h=Interpolate(heights,face*(N+1)*(N+1),N,u,v);
+                foreach(var patch in patches)h=patch.Blend(q,h);
+                return h;
+            }
+            internal TerrainGrid Refine(Patch patch)
+            {
+                var next=new Patch[patches.Length+1];Array.Copy(patches,next,patches.Length);
+                next[next.Length-1]=patch;return new TerrainGrid(N,heights,next);
+            }
+            internal TerrainModel Bind(double radius,double offset,V omega,double epoch,V a,V b,V c)
+            {
+                V Fixed(State s)
+                {
+                    V r=AtmosphericFeasibleRangePlanner.RotateTarget(s.R.Unit,omega,epoch-s.UT);
+                    return new V(V.Dot(r,a),V.Dot(r,b),V.Dot(r,c)).Unit;
+                }
+                double Ground(State s)=>Height(Fixed(s));
+                SurfaceSample Sample(State s)
+                {
+                    double h=Ground(s),asl=s.R.Length-radius,clearance=asl-h-offset;
+                    return new SurfaceSample(clearance,Math.Min(asl,clearance),Math.Min(asl,asl-h),
+                        s.R.Unit,true);
+                }
+                double Lower(State first,State last,Command command)
+                {
+                    // Chord minimum radius, plus a bound on the variation
+                    // of the interpolated terrain between the fixed radials.
+                    // The error-controlled dynamics step bounds the
+                    // numerical path; final KSP samples remain independent.
+                    V chord=last.R-first.R;double len2=V.Dot(chord,chord);
+                    double fraction=len2>0?Clamp(-V.Dot(first.R,chord)/len2,0,1):0;
+                    double dt=last.UT-first.UT;
+                    double sag=(last.Velocity-first.Velocity).Length*dt*.25+.002*dt;
+                    double minR=(first.R+chord*fraction).Length-sag;
+                    double global=minR-radius-offset-Max;
+                    if(global>500)return global;
+                    V aa=Fixed(first),bb=Fixed(last);
+                    double ha=Height(aa),hb=Height(bb);
+                    // Use the smaller of the global elevation maximum
+                    // and the Lipschitz upper envelope of the sampled map.
+                    double angular=(aa-bb).Length*.5+2*sag/Math.Max(1,minR);
+                    double peak=Math.Min(Max,Math.Max(ha,hb)+slope*angular);
+                    return Math.Min(Math.Min(first.R.Length-radius-offset-ha,last.R.Length-radius-offset-hb),
+                        minR-radius-offset-peak);
+                }
+                return new TerrainModel(Sample,Lower);
+            }
+        }
         internal sealed class TerrainModel
         {
             internal readonly Func<State,SurfaceSample> Sample;
@@ -283,6 +436,9 @@ namespace MuMech.Landing
             internal readonly Func<double,V,AirSample> Atmosphere;
             internal readonly Func<double,V,V,V,double,double,AeroSample> Aerodynamics;
             internal readonly TerrainModel Terrain;
+            internal readonly TerrainGrid Grid;
+            internal readonly V TerrainA,TerrainB,TerrainC;
+            internal readonly double TerrainEpoch;
             // DragArea = Cd*A m², constant synthetic/passive adapter. Lift is
             // NOT assumed zero for a real vessel; unsupported unless supplied
             // via an explicitly supplied deterministic force model (r, air-relative
@@ -292,10 +448,22 @@ namespace MuMech.Landing
                 Curve pressure,Curve density,double dragArea,double terrainRadius,double bottomOffset,
                 Func<V,V,V,double,double,V> passiveLift=null,
                 Func<double,V,AirSample> atmosphere=null,
-                Func<double,V,V,V,double,double,AeroSample> aerodynamics=null,TerrainModel terrain=null)
+                Func<double,V,V,V,double,double,AeroSample> aerodynamics=null,TerrainModel terrain=null,
+                TerrainGrid grid=null,double terrainEpoch=0,V terrainA=default,V terrainB=default,V terrainC=default)
             {Radius=radius;Mu=mu;Omega=omega;AtmosphereTop=atmosphereTop;Pressure=pressure;Density=density;
                 DragArea=dragArea;TerrainRadius=terrainRadius;BottomOffset=bottomOffset;PassiveLift=passiveLift;
-                Atmosphere=atmosphere;Aerodynamics=aerodynamics;Terrain=terrain;}
+                Atmosphere=atmosphere;Aerodynamics=aerodynamics;Grid=grid;TerrainEpoch=terrainEpoch;
+                TerrainA=terrainA;TerrainB=terrainB;TerrainC=terrainC;
+                Terrain=grid==null?terrain:grid.Bind(radius,bottomOffset,omega,terrainEpoch,terrainA,terrainB,terrainC);}
+            internal Environment WithGrid(TerrainGrid grid,double epoch,V a,V b,V c)
+                =>new Environment(Radius,Mu,Omega,AtmosphereTop,Pressure,Density,DragArea,TerrainRadius,BottomOffset,
+                    PassiveLift,Atmosphere,Aerodynamics,grid:grid,terrainEpoch:epoch,terrainA:a,terrainB:b,terrainC:c);
+            internal Environment WithDrag(double area)
+                =>new Environment(Radius,Mu,Omega,AtmosphereTop,Pressure,Density,area,TerrainRadius,BottomOffset,
+                    PassiveLift,Atmosphere,Aerodynamics,Terrain,Grid,TerrainEpoch,TerrainA,TerrainB,TerrainC);
+            internal Environment WithSiteRadius(double siteRadius)
+                =>new Environment(Radius,Mu,Omega,AtmosphereTop,Pressure,Density,DragArea,siteRadius,BottomOffset,
+                    PassiveLift,Atmosphere,Aerodynamics,Terrain,Grid,TerrainEpoch,TerrainA,TerrainB,TerrainC);
             internal bool Valid => Finite(Radius)&&Radius>0&&Finite(Mu)&&Mu>=0&&Omega.Valid&&
                 Finite(AtmosphereTop)&&AtmosphereTop>=0&&Finite(TerrainRadius)&&TerrainRadius>0&&
                 Finite(BottomOffset)&&BottomOffset>=0&&Finite(DragArea)&&DragArea>=0&&

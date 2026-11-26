@@ -60,6 +60,73 @@ namespace MuMech.Landing
         private string corridorStatus;
         private bool corridorPassed;
         private string executionStatus;
+        private TerrainAcquisition terrainCapture;
+        private D.TerrainGrid terrainGrid;
+        private int terrainRefinements;
+        // Incremental main-thread PQS sampling. Use body-fixed coordinates
+        // so a fresh solver epoch does not invalidate acquired elevations.
+        private sealed class TerrainAcquisition
+        {
+            private const int N=12,PatchN=10;
+            private readonly double[] globe;
+            private readonly List<(D.V centre,double half)> requests=new List<(D.V,double)>();
+            private double[] patch;
+            private int index,patchIndex;
+            internal D.TerrainGrid Grid {get;private set;}
+            internal bool Complete=>Grid!=null&&patchIndex>=requests.Count;
+            internal int Samples {get;private set;}
+            internal TerrainAcquisition(D.TerrainGrid previous,double latitude,double longitude,double radius)
+            {
+                Grid=previous;globe=previous==null?new double[6*(N+1)*(N+1)]:null;
+                double lat=latitude*Math.PI/180,lon=longitude*Math.PI/180;
+                D.V q=new D.V(Math.Cos(lat)*Math.Cos(lon),Math.Cos(lat)*Math.Sin(lon),Math.Sin(lat));
+                requests.Add((q,Math.Min(.25,4000/radius)));
+                requests.Add((q,Math.Min(.01,250/radius)));
+                patch=new double[(PatchN+1)*(PatchN+1)];
+            }
+            private static double Sample(MechJebCore core,D.V q,bool collider)
+            {
+                double lat=Math.Asin(Math.Max(-1,Math.Min(1,q.Z)))*180/Math.PI;
+                double lon=Math.Atan2(q.Y,q.X)*180/Math.PI;
+                var body=core.vessel.mainBody;
+                double h=body.TerrainAltitude(lat,lon);
+                if(collider)
+                {
+                    h=core.Landing.LandingSurface.Altitude(body,lat,lon,h);
+                    Require(!core.Landing.LandingSurface.LastQuerySaturated,"terrain collider query saturated");
+                }
+                Require(D.Finite(h),"terrain sample unavailable");return h;
+            }
+            internal void Advance(MechJebCore core)
+            {
+                var clock=Stopwatch.StartNew();
+                for(int work=0;work<24&&!Complete&&(work==0||clock.Elapsed.TotalMilliseconds<2);work++)
+                {
+                    if(Grid==null)
+                    {
+                        int side=N+1,face=index/(side*side),k=index%(side*side);
+                        globe[index++]=Sample(core,D.TerrainGrid.Direction(face,N,k%side,k/side),false);Samples++;
+                        if(index==globe.Length){Grid=new D.TerrainGrid(N,globe);index=0;}
+                        continue;
+                    }
+                    var request=requests[patchIndex];
+                    // Same frame as immutable Patch.Direction; no
+                    // allocation of a temporary patch for each sample.
+                    D.V centre=request.centre;
+                    D.V a=D.V.Cross(centre,Math.Abs(centre.X)<.8?new D.V(1,0,0):new D.V(0,1,0)).Unit;
+                    D.V b=D.V.Cross(centre,a).Unit;
+                    int n=PatchN+1,i=index%n,j=index/n;
+                    D.V q=(centre+a*(request.half*(2.0*i/PatchN-1))+
+                        b*(request.half*(2.0*j/PatchN-1))).Unit;
+                    patch[index++]=Sample(core,q,false);Samples++;
+                    if(index==patch.Length)
+                    {
+                        Grid=Grid.Refine(new D.TerrainGrid.Patch(centre,request.half,PatchN,patch));
+                        index=0;patchIndex++;patch=new double[patch.Length];
+                    }
+                }
+            }
+        }
         internal static D.V V(Vector3d x)=>new D.V(x.x,x.y,x.z);
         internal static Vector3d World(D.V x)=>new Vector3d(x.X,x.Y,x.Z);
         private static string Num(double x,string format="F1")=>D.Finite(x)?x.ToString(format,CultureInfo.InvariantCulture):"unknown";
@@ -384,12 +451,9 @@ namespace MuMech.Landing
             try
             {
                 snapshot=Capture(core);answer=null;logged=false;
-                bool strategic=snapshot.Strategic;
                 var copy=snapshot;
-                cancel=new CancellationTokenSource();cancel.CancelAfter(strategic?20000:8000);
-                CancellationToken token=cancel.Token;
-                job=Task.Run(()=>Solve(copy,token));
-                status=strategic?"Computing orbital landing preview":"Computing snapshot preview";
+                terrainCapture=new TerrainAcquisition(null,copy.Latitude,copy.Longitude,copy.Environment.Radius);
+                status="Acquiring planetary terrain";
                 Debug.Log("[DunaIntegratedPreview] snapshot UT="+Num(copy.UT,"R")+" vessel="+copy.Vessel+
                     " target="+Num(copy.Latitude,"R")+","+Num(copy.Longitude,"R")+" massKg="+Num(copy.Mass)+
                     " mixtureKg="+Num(copy.UsableFuel)+" cap="+Num(copy.Cap,"F3")+
@@ -407,11 +471,28 @@ namespace MuMech.Landing
                 Debug.Log("[DunaIntegratedPreview] "+status);return false;
             }
         }
-        internal bool Running=>job!=null&&!job.IsCompleted;
+        private void StartTerrainSolve(MechJebCore core)
+        {
+            // The unpowered vessel has moved during PQS sampling. Capture
+            // its current epoch/pose rather than skipping a planned burn.
+            snapshot=Capture(core);
+            var basis=snapshot.Frame.AtCapture;
+            snapshot.Environment=snapshot.Environment.WithGrid(terrainGrid,snapshot.UT,basis.A,basis.B,basis.C);
+            var copy=snapshot;
+            cancel=new CancellationTokenSource();cancel.CancelAfter(copy.Strategic?20000:8000);
+            CancellationToken token=cancel.Token;
+            job=Task.Run(()=>Solve(copy,token));
+            answer=null;tracker=null;corridor=null;corridorPassed=false;corridorStatus=null;logged=false;
+            status=copy.Strategic?"Computing terrain-aware orbital landing":"Computing terrain-aware descent";
+            Debug.Log("[DunaIntegratedPreview] terrain-aware solve UT="+Num(copy.UT,"R")+
+                " terrain min="+Num(terrainGrid.Min)+" max="+Num(terrainGrid.Max)+" refinements="+terrainRefinements);
+        }
+        internal bool Running=>terrainCapture!=null||job!=null&&!job.IsCompleted;
         internal void Cancel()
         {
             if(cancel!=null){cancel.Cancel();cancel.Dispose();cancel=null;}
             job=null;snapshot=null;answer=null;logged=false;status="Not evaluated";
+            terrainCapture=null;terrainGrid=null;terrainRefinements=0;
             tracker=null;corridor=null;
             corridorStatus=null;corridorPassed=false;executionStatus=null;
         }
@@ -487,6 +568,15 @@ namespace MuMech.Landing
                 corridor.Advance(core);
                 corridorPassed=corridor.Passed;
                 corridorStatus=corridor.Status;
+                if(corridor.NeedsTerrainRefinement&&snapshot.Strategic&&terrainRefinements<4)
+                {
+                    Debug.Log("[DunaIntegratedPreview] "+corridorStatus+"; acquiring additional terrain and replanning");
+                    terrainRefinements++;
+                    terrainCapture=new TerrainAcquisition(terrainGrid,corridor.ConflictLatitude,
+                        corridor.ConflictLongitude,snapshot.Environment.Radius);
+                    answer=null;tracker=null;corridor=null;corridorStatus=null;corridorPassed=false;
+                    status="Refining terrain and recalculating landing";
+                }
             }
             catch(Exception ex){corridorStatus="Rejected: "+ex.Message;}
         }
@@ -538,6 +628,21 @@ namespace MuMech.Landing
         {
             if(snapshot!=null&&!SameContext(core,snapshot)){Cancel();status="Cancelled: vessel, target, warp or topology changed";
                 Debug.Log("[DunaIntegratedPreview] "+status);}
+            if(terrainCapture!=null&&snapshot!=null)
+            {
+                try
+                {
+                    terrainCapture.Advance(core);
+                    if(!terrainCapture.Complete)return status+" ("+terrainCapture.Samples+" samples)";
+                    terrainGrid=terrainCapture.Grid;terrainCapture=null;
+                    StartTerrainSolve(core);
+                }
+                catch(Exception ex)
+                {
+                    terrainCapture=null;status="Terrain acquisition failed: "+ex.Message;
+                    answer=new Answer{Error=status};Debug.Log("[DunaIntegratedPreview] "+status);
+                }
+            }
             if(job!=null&&job.IsCompleted&&answer==null)
             {
                 try{answer=job.GetAwaiter().GetResult();status=answer.Error??"Snapshot complete";}
@@ -546,6 +651,7 @@ namespace MuMech.Landing
             }
             if(answer==null||snapshot==null)return status;
             AdvanceCorridor(core);
+            if(answer==null)return status;
             double age=core.VesselState.Time-snapshot.UT;
             string lines=status+" (age "+Num(age)+" s; experimental model)\n";
             if(answer.Strategic!=null)

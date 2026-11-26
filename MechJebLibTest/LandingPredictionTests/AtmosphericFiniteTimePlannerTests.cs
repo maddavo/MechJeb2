@@ -239,7 +239,10 @@ namespace MechJebLibTest.LandingPredictionTests
         {
             var t=PoweredTracker();
             Assert.True(t.ReferenceAt(0,out var s,out _));
-            Assert.Equal("terrain clearance below trajectory",t.Track(s,800,8,1,0,0).Reason);
+            // Safe higher ground is not a trajectory failure; imminent
+            // contact outside the terminal envelope remains unacceptable.
+            Assert.True(t.Track(s,800,8,1,0,0).Valid);
+            Assert.Equal("unexpected imminent terrain contact",t.Track(s,2,8,1,0,0).Reason);
             // A high-altitude no-drag radial bound is not an independent
             // proof of imminent impact. Keep the validated plan here.
             Assert.True(t.Track(s,1000,3.01,1,3,0).Valid);
@@ -266,6 +269,48 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.False(MuMech.Landing.DunaLandingAdmission.OrbitalBurnAligned(tracker,wrong,true,0,1));
             Assert.True(MuMech.Landing.DunaLandingAdmission.OrbitalBurnAligned(tracker,wrong,true,.1,1));
             Assert.True(MuMech.Landing.DunaLandingAdmission.OrbitalBurnAligned(tracker,wrong,false,0,1));
+        }
+
+        [Fact]
+        public void SampledTerrainUsesBodyFixedHeightAndRetainsRefinement()
+        {
+            const int n=4;var values=new double[6*(n+1)*(n+1)];
+            for(int face=0;face<6;face++)for(int j=0;j<=n;j++)for(int i=0;i<=n;i++)
+            {
+                var q=D.TerrainGrid.Direction(face,n,i,j);
+                values[face*(n+1)*(n+1)+j*(n+1)+i]=1000+500*q.X;
+            }
+            var original=new D.TerrainGrid(n,values);
+            var patch=new D.TerrainGrid.Patch(X,.01,2,Enumerable.Repeat(1700.0,9).ToArray());
+            var grid=original.Refine(patch);
+            Assert.Equal(1500,original.Height(X),8);
+            Assert.Equal(1700,grid.Height(X),8);
+            Assert.Equal(500,grid.Height(X*(-1)),8);
+            var omega=Z*.001;
+            var env=new D.Environment(320000,0,omega,0,null,null,0,321700,0,
+                grid:grid,terrainEpoch:100,terrainA:X,terrainB:Y,terrainC:Z);
+            var q1=P.RotateTarget(X,omega,100);
+            var state=new D.State(200,q1*321710,D.V.Cross(omega,q1*321710),1000,q1);
+            Assert.Equal(10,env.PhysicalClearance(state),6);
+            Assert.Equal(10,env.WithDrag(3).PhysicalClearance(state),6);
+            Assert.Equal(10,env.WithSiteRadius(320000).PhysicalClearance(state),6);
+            Assert.Equal(1700,grid.Max,8);
+        }
+
+        [Fact]
+        public void SampledTerrainPropagatesToActualElevatedContact()
+        {
+            const int n=4;var heights=Enumerable.Repeat(1000.0,6*(n+1)*(n+1)).ToArray();
+            var grid=new D.TerrainGrid(n,heights);
+            var env=Env().WithGrid(grid,0,X,Y,Z);
+            var s=new D.State(0,X*321000.53,X*(-.5),1000,X);
+            var set=Settings();
+            var f=new F.Settings(set.Common,321000,approachSpeed:.5,minPowered:.5,maxPowered:1,
+                controlTick:.2,coastIntervals:2,durationIntervals:2,refinements:1);
+            var result=F.Evaluate(env,Engine(),Limits(),s,f,new F.Profile(0,.5),10000,true);
+            Assert.Equal(D.Outcome.ContactWithinLimits,result.Result.Outcome);
+            Assert.InRange(result.Result.End.R.Length,321000-D.ContactResolutionMetres,321000.000001);
+            Assert.True(F.Validate(env,Engine(),Limits(),s,f,result,10000,.01,.01,out _,out _));
         }
 
         [Fact]

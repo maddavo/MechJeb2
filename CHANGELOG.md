@@ -126,3 +126,8 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 - Stabilise low-energy terminal descent and share its state-feedback law with the live/closed-loop tracker; reserve mixed-family search capacity for near-feasible trajectory refinement, preserving contact and replay gates.
 - Preserve lateral tracking bounds during state-based terminal timing recovery; require targeted contact and protected reserve in every recorded Eagle robustness scenario.
 - Exercise existing live orbital alignment, preburn and radial supervisor decisions during strategic closed-loop candidate validation; enforce all targeted strategic scenario misses.
+
+## 2.16.0-landing.20261127.duna-integrated-m5.9
+
+- Replace target-elevation sphere in production planning with a copied body-fixed terrain grid and fine local destination patches. Propagate and replay terrain-dependent clearance and contact, including scenario replay and fallback environment copies.
+- Distinguish physically clear higher ground from collision or terminal terrain conflict; use actual clearance in live stopping/terminal control, automatically sample conflict terrain and replan from current orbital state. Preserve genuine terrain and reserve safety constraints.

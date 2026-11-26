@@ -246,6 +246,9 @@ namespace MuMech.Landing
                 bool atArrival=state.UT>=arrival-settings.ControlTick*.5;
                 if(!terminalMode&&state.UT>=ignition&&surface.Clearance>0&&
                     surface.Clearance<=Math.Min(300,settings.ApproachHeight*2)&&vertical<=0&&
+                    // Do not capture a low-speed intermediate mountain as
+                    // the destination. Targeting still owns the approach.
+                    (env.Terrain==null||P.Miss(env,initial,state,common.TargetAtInitialUT)<=common.TargetTolerance)&&
                     vertical>=-settings.TerminalVertical&&horizontal<=settings.TerminalHorizontal&&
                     (aligned||atArrival&&D.V.Dot(state.Forward,surface.Normal)>.75))
                 {

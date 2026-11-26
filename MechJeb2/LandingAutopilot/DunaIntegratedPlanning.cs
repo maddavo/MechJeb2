@@ -11,12 +11,13 @@ namespace MuMech.Landing
     {
         private readonly DunaIntegratedPreview preview=new DunaIntegratedPreview();
         private D.V pointing;
+        private DunaIntegratedPreview.Snapshot pointingSnapshot;
         private double nextEngineCheck=double.NegativeInfinity;
         internal DunaIntegratedPlanning(MechJebCore core):base(core){}
         internal bool Start(out string reason)
         {
             if(!preview.Start(Core,out reason))return false;
-            pointing=preview.Input.Initial.Forward;
+            pointingSnapshot=preview.Input;pointing=pointingSnapshot.Initial.Forward;
             Status="Computing integrated "+(preview.Input.Strategic?"orbital landing":"descent");
             return true;
         }
@@ -39,6 +40,8 @@ namespace MuMech.Landing
                 if(Vessel.LandedOrSplashed)return Finish("contact during planning");
                 string reason=DunaIntegratedPreview.LiveCompatibility(Core,preview.Input,false);
                 if(reason!=null)return Finish(reason);
+                if(!ReferenceEquals(pointingSnapshot,preview.Input))
+                {pointingSnapshot=preview.Input;pointing=pointingSnapshot.Initial.Forward;}
                 Core.Thrust.Tmode=MechJebModuleThrustController.TMode.OFF;
                 Core.Thrust.TransKillH=false;
                 Core.Attitude.attitudeTo(DunaIntegratedPreview.WorldAt(Vessel.mainBody,preview.Input.Frame,pointing,VesselState.Time),AttitudeReference.INERTIAL,Core.Landing);

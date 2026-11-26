@@ -159,8 +159,13 @@ namespace MuMech.Landing
             double remaining=Math.Max(0,reference.Mass-plan.Result.End.Mass);
             if(actual.Mass-remaining<limits.ReserveMass)
                 return Reject("projected propellant reserve threatened");
-            if(clearance<refClearance-TerrainTolerance(refClearance))
-                return Reject("terrain clearance below trajectory");
+            // Higher terrain is not itself an unsafe trajectory.
+            // The physical stopping-distance screen below uses the
+            // actual clearance. Near-ground guidance uses the actual
+            // clearance in the terminal feedback law. Reject a trajectory
+            // which reaches ground outside its terminal/arrival envelope.
+            if(clearance<=3&&!terminal&&refClearance>clearance+3)
+                return Reject("unexpected imminent terrain contact");
             double vertical=D.V.Dot(environment.Surface(actual.R,actual.Velocity),actual.R.Unit);
             double down=Math.Max(0,-vertical),available=liveMaxAcceleration*cap-localGravity;
             double touch=settings.Common.Terminal.TouchdownSpeed;
