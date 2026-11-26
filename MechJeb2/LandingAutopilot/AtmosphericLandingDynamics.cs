@@ -68,17 +68,19 @@ namespace MuMech.Landing
             internal double At(double x)
             {
                 if(!Finite(x)||x<_keys[0].X||x>_keys[_keys.Length-1].X) return double.NaN;
-                for(int i=1;i<_keys.Length;i++)
+                if(_keys.Length==1)return _keys[0].Y;
+                int lo=0,hi=_keys.Length-1;
+                while(hi-lo>1)
                 {
-                    Knot a=_keys[i-1],b=_keys[i];
-                    if(x>b.X) continue;
-                    double d=b.X-a.X,t=(x-a.X)/d;
-                    if(!Finite(a.Out)||!Finite(b.In)) return a.Y+(b.Y-a.Y)*t;
-                    double t2=t*t,t3=t2*t;
-                    return (2*t3-3*t2+1)*a.Y+(t3-2*t2+t)*d*a.Out+
-                        (-2*t3+3*t2)*b.Y+(t3-t2)*d*b.In;
+                    int mid=(hi+lo)/2;
+                    if(x<=_keys[mid].X)hi=mid;else lo=mid;
                 }
-                return _keys[_keys.Length-1].Y;
+                Knot a=_keys[lo],b=_keys[hi];
+                double d=b.X-a.X,t=(x-a.X)/d;
+                if(!Finite(a.Out)||!Finite(b.In))return a.Y+(b.Y-a.Y)*t;
+                double t2=t*t,t3=t2*t;
+                return (2*t3-3*t2+1)*a.Y+(t3-2*t2+t)*d*a.Out+
+                    (-2*t3+3*t2)*b.Y+(t3-t2)*d*b.In;
             }
         }
 

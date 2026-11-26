@@ -122,3 +122,4 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Acquire effective KSP base temperature, pressure, solar/latitude/axial curves and gas density coefficient; evaluate spatial temperature/density in fixed inertial coordinates, including uncertainty and contingency propagation. Sampled interpolation and fixed capture solar position remain approximations requiring reference parity verification.
 - Add radial/great-circle finite-time endpoint feedback candidate with explicit spherical curvature and rotating-frame acceleration terms. Search alongside Cartesian candidate in high-crossrange orbital and direct descent; preserve candidate identity through replay, join and replanning.
+- Add stock Duna reference fixture from KittopiaTech export, validate captured pressure keys, require safe targeted contact; add analytic target-periapsis transfer seeds and binary-search curve interpolation.

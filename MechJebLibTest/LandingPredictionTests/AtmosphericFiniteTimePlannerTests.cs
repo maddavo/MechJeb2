@@ -651,8 +651,39 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.Equal(-normal,oppositeNormal,8);
         }
 
-        [Fact]
-        public void RecordedEagleOrbitalSnapshotExercisesActualStrategicSearch()
+        // Source: KittopiaTech stock-body export, Kopernicus/kittopia-dumps,
+        // Configs/Duna.cfg, Atmosphere block. Exact effective pressure keys
+        // independently checked against the 65 captured M5.6 pressure values.
+        // Temperature keys match the historical local stock definition.
+        // Solar phase at the capture is not known; vary it explicitly rather
+        // than invent a supposedly exact historical position of the Sun.
+        private static D.StockAtmosphere StockDuna(D.V sun,D.Curve pressure)
+        {
+            var temperature=new D.Curve(
+                new D.Knot(0,233,0,-.0004261126),new D.Knot(1000,232.8,-.000573325,-.000573325),
+                new D.Knot(25000,153.7,-.001877083,-.001877083),new D.Knot(30000,150,0,0),
+                new D.Knot(45000,150,0,0),new D.Knot(50000,160,.003746914,0));
+            var mult=new D.Curve(new D.Knot(0,1,0,0),new D.Knot(1000,1,0,0),
+                new D.Knot(25000,0,0,0),new D.Knot(45000,0,0,0),
+                new D.Knot(47350,.4551345,.0006885778,.0006885778),new D.Knot(50000,1,0,0));
+            var bias=new D.Curve(true,new D.Knot(0,20,0,-.0957164),
+                new D.Knot(50,0,-.950278,-.950278),new D.Knot(70,-30,-1.955704,-1.955704),
+                new D.Knot(90,-50,-.02418368,0));
+            var latitudeSun=new D.Curve(new D.Knot(0,18,0,.06497125),new D.Knot(40,25,0,0),
+                new D.Knot(65,20,-.5202533,-.5202533),new D.Knot(90,5,0,0));
+            var axial=new D.Curve(new D.Knot(-1,0),new D.Knot(1,0));
+            // The exported stock molar mass, with universal gas constant.
+            // Cross-check the independently exported static density below.
+            double factor=.0430000014603138/8.314462618;
+            Assert.InRange(Math.Abs(factor*6755.00011444092/233-.149935108881759),0,1e-6);
+            return new D.StockAtmosphere(320000,50000,factor,Y,sun,1,
+                pressure,temperature,mult,bias,latitudeSun,axial);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public void RecordedEagleOrbitalSnapshotExercisesActualStrategicSearch(bool stock)
         {
             // KSP.log 156992-156995, M5.6 snapshot. The density knots are
             // the actual suspect M5.6 model, NOT a corrected atmosphere.
@@ -697,8 +728,18 @@ namespace MechJebLibTest.LandingPredictionTests
             const double densityPerPa=.0007013894313998122;
             var rho=pressure.Select((v,i)=>new D.Knot(i*781.25,v*densityPerPa)).ToArray();
             var ip=isp.Select((v,i)=>new D.Knot(pressure[0]*i/64/101325,v)).ToArray();
+            var stockPressure=new D.Curve(new D.Knot(0,6755,0,-.7),
+                new D.Knot(12000,1276,-.223,-.223),new D.Knot(20000,241,-.0422,-.0422),
+                new D.Knot(35000,15,-.002787075,-.002787075),new D.Knot(50000,0,0,0));
+            for(int i=0;i<pressure.Length;i++)
+                Assert.InRange(Math.Abs(stockPressure.At(i*781.25)-pressure[i]),0,.005);
+            // Nominal equatorial solar phase, not asserted historical
+            // solar geometry; actual curves come from the stock export.
+            var atmosphere=StockDuna(X*20726155264,stockPressure);
             var env=new D.Environment(320000,301363211975.09772,new D.V(0,-9.5900344839060708e-5,0),
-                50000,new D.Curve(p),new D.Curve(rho),156.35308946772946,322626.89560281805,23.187303275783847);
+                50000,stock?stockPressure:new D.Curve(p),new D.Curve(rho),156.35308946772946,
+                322626.89560281805,23.187303275783847,
+                atmosphere:stock?(Func<double,D.V,D.AirSample>)atmosphere.At:null);
             var initial=new D.State(31154879.330809835,
                 new D.V(-23186.752291146822,5507.7593945916087,418401.43325474294),
                 new D.V(-846.94362943558008,22.163760722689503,-47.456344131980643),
@@ -715,7 +756,7 @@ namespace MechJebLibTest.LandingPredictionTests
             var settings=new Strategic.Settings(set,preparation:45,engagementLead:45,maxWait:6000,maxBurn:600);
             var diagnostics=new System.Collections.Generic.List<string>();
             var report=Strategic.Search(env,engine,lim,initial,settings,diagnostic:diagnostics.Add);
-            Console.WriteLine("recorded-eagle-M5.6-suspect-density status="+report.Status+
+            Console.WriteLine("recorded-eagle-"+(stock?"stock-Duna-reference":"M5.6-suspect-density")+" status="+report.Status+
                 " prefixes="+report.Prefixes+" approaches="+report.Approaches+" steps="+report.Steps+
                 " feasible="+report.Feasible+" unresolved="+report.Unresolved+" miss="+report.Best?.OriginalMiss);
             Console.WriteLine(string.Join("\n",diagnostics));
@@ -724,6 +765,33 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.Contains(diagnostics,line=>line.StartsWith("prefix "));
             if(report.Best!=null)
             {Assert.True(report.Best.ReplayPassed);Assert.True(report.Scenarios.Passed);}
+            // Stock-reference result must be actual safe targeted contact,
+            // not merely execution of the search. The historical erroneous
+            // atmosphere remains a diagnostic, not a delivery criterion.
+            if(stock)
+            {
+                Assert.True(report.Best!=null,"stock reference has no safe trajectory: "+report.Status);
+                Assert.True(report.Best.OriginalMiss<=set.Common.TargetTolerance,"stock reference target miss "+report.Best.OriginalMiss);
+            }
+        }
+
+        [Fact]
+        public void TargetPeriapsisSeedIncludesRadialAndOutOfPlaneVelocity()
+        {
+            const double mu=301363211975.09772;
+            var departure=X*420000;var goal=(Y+Z).Unit;const double rp=335000;
+            Assert.True(Strategic.TargetPeriapsisVelocity(mu,departure,goal,rp,out var v,out double tof));
+            Assert.True(v.X<0&&v.Y>0&&v.Z>0&&tof>0);
+            var environment=new D.Environment(320000,mu,default,0,null,null,0,320000,0);
+            var state=new D.State(0,departure,v,1000,X);
+            Assert.True(Strategic.TryOrbit(environment,state,out var orbit));
+            Assert.Equal(rp,orbit.Periapsis,6);
+            Assert.True(Strategic.KeplerState(environment,state,orbit,tof,out var end,out var velocity));
+            Assert.InRange((end-goal*rp).Length,0,.001);
+            Assert.InRange(Math.Abs(D.V.Dot(end.Unit,velocity)),0,1e-6);
+            Assert.True(Strategic.KeplerState(environment,state,orbit,0,out var start,out var startV));
+            Assert.InRange((start-departure).Length,0,.001);
+            Assert.InRange((startV-v).Length,0,1e-6);
         }
 
         [Fact]

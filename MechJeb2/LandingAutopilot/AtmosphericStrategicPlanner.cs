@@ -54,8 +54,9 @@ namespace MuMech.Landing
         internal readonly struct Burn
         {
             internal readonly double Delay,Duration,NormalFraction,ThrottleFraction;
-            internal Burn(double delay,double duration,double normal,double throttleFraction=1)
-            {Delay=delay;Duration=duration;NormalFraction=normal;ThrottleFraction=throttleFraction;}
+            internal readonly D.V Direction;
+            internal Burn(double delay,double duration,double normal,double throttleFraction=1,D.V direction=default)
+            {Delay=delay;Duration=duration;NormalFraction=normal;ThrottleFraction=throttleFraction;Direction=direction;}
         }
         internal sealed class Prefix
         {
@@ -127,6 +128,81 @@ namespace MuMech.Landing
             return D.Finite(normalFraction)&&Math.Abs(normalFraction)<1;
         }
 
+        // Analytic bound-orbit state only for seed generation. The actual
+        // finite burn, attitude and subsequent trajectory are propagated.
+        internal static bool KeplerState(D.Environment env,D.State initial,Orbit orbit,double elapsed,
+            out D.V position,out D.V velocity)
+        {
+            position=velocity=default;
+            if(env==null||!initial.Valid||!orbit.Valid||!D.Finite(elapsed))return false;
+            double a=orbit.SemiMajor,e=orbit.Eccentricity,n=2*Math.PI/orbit.Period;
+            D.V h=D.V.Cross(initial.R,initial.Velocity);
+            D.V eccentricity=D.V.Cross(initial.Velocity,h)*(1/env.Mu)-initial.R.Unit;
+            D.V first=e>1e-8?eccentricity.Unit:initial.R.Unit;
+            D.V second=D.V.Cross(orbit.Normal,first).Unit;
+            double eccentricAnomaly=e>1e-8?
+                Math.Atan2(D.V.Dot(initial.R,initial.Velocity)/(e*Math.Sqrt(env.Mu*a)),
+                    (1-initial.R.Length/a)/e):0;
+            double mean=eccentricAnomaly-e*Math.Sin(eccentricAnomaly)+n*elapsed;
+            mean=Math.IEEERemainder(mean,2*Math.PI);
+            double anomaly=mean;
+            for(int i=0;i<12;i++)anomaly-=(anomaly-e*Math.Sin(anomaly)-mean)/(1-e*Math.Cos(anomaly));
+            double c=Math.Cos(anomaly),sn=Math.Sin(anomaly),q=Math.Sqrt(1-e*e);
+            position=first*(a*(c-e))+second*(a*q*sn);
+            velocity=(first*(-sn)+second*(q*c))*(Math.Sqrt(env.Mu*a)/position.Length);
+            return position.Valid&&velocity.Valid&&position.Length>0;
+        }
+
+        // Construct an orbit whose periapsis lies on the target radial.
+        // Unlike the old tangential seed this determines the required
+        // radial, along-track AND cross-track velocity components.
+        internal static bool TargetPeriapsisVelocity(double mu,D.V position,D.V target,double periapsis,
+            out D.V velocity,out double flightTime)
+        {
+            velocity=default;flightTime=double.NaN;
+            double r=position.Length;
+            if(!D.Finite(mu)||mu<=0||!position.Valid||r<=0||!target.Valid||target.Length<=0||
+                !D.Finite(periapsis)||periapsis<=0||periapsis>=r)return false;
+            D.V up=position.Unit,goal=target.Unit;
+            double dot=Math.Max(-1,Math.Min(1,D.V.Dot(up,goal)));
+            D.V tangent=goal-up*dot;
+            if(tangent.Length<1e-6)return false;
+            double e=(r-periapsis)/(periapsis-r*dot);
+            if(!D.Finite(e)||e<=0||e>=.95)return false;
+            double a=periapsis/(1-e),h=Math.Sqrt(mu*periapsis*(1+e));
+            double sin=Math.Sqrt(Math.Max(0,1-dot*dot));
+            velocity=tangent.Unit*(h/r)-up*(mu/h*e*sin);
+            double E=Math.Atan2(-Math.Sqrt(1-e*e)*sin,e+dot);
+            flightTime=-(E-e*Math.Sin(E))*Math.Sqrt(a*a*a/mu);
+            return velocity.Valid&&D.Finite(flightTime)&&flightTime>0;
+        }
+
+        internal static bool TargetTransferSeed(D.Environment env,D.State initial,Orbit orbit,D.Authority authority,
+            double delay,double periapsis,double throttle,D.V target,double reserve,double maxBurn,
+            out Burn burn,double commandFraction)
+        {
+            burn=default;
+            double duration=0,flight=orbit.Period*.25;D.V impulse=default;
+            // Centre the finite burn on the impulsive estimate and iterate
+            // the moving target epoch and variable-mass burn duration.
+            for(int i=0;i<8;i++)
+            {
+                double centre=delay+duration*.5;
+                if(!KeplerState(env,initial,orbit,centre,out var position,out var velocity))return false;
+                var goal=P.RotateTarget(target,env.Omega,centre+flight);
+                if(!TargetPeriapsisVelocity(env.Mu,position,goal,periapsis,out var wanted,out double nextFlight))
+                    return false;
+                impulse=wanted-velocity;
+                double nextDuration=SeedBurnTime(impulse.Length,initial.Mass,authority.Force,authority.Flow,throttle);
+                if(!D.Finite(nextDuration)||nextDuration<.5||nextDuration>maxBurn||
+                    nextDuration*authority.Flow*throttle>=initial.Mass-reserve)return false;
+                duration=.5*(duration+nextDuration);flight=.5*(flight+nextFlight);
+            }
+            if(!impulse.Valid||impulse.Length<.1||duration<.5)return false;
+            burn=new Burn(delay,duration,D.V.Dot(impulse.Unit,orbit.Normal),commandFraction,impulse.Unit);
+            return true;
+        }
+
         // Variable mass burn time, rather than constant initial acceleration.
         // This proposes a seed only; full dynamics and reserve checks decide.
         internal static double SeedBurnTime(double deltaV,double mass,double force,double flow,double throttle)
@@ -150,7 +226,8 @@ namespace MuMech.Landing
                 !initial.Valid||initial.Mass<=limits.ReserveMass||initial.Throttle>.01||budget<1||budget>1000000||
                 !D.Finite(burn.Delay)||burn.Delay<settings.Preparation+settings.EngagementLead||burn.Delay>settings.MaxWait||
                 !D.Finite(burn.Duration)||burn.Duration<=0||burn.Duration>settings.MaxBurn||
-                !D.Finite(burn.NormalFraction)||Math.Abs(burn.NormalFraction)>=1||
+                !D.Finite(burn.NormalFraction)||Math.Abs(burn.NormalFraction)>1||
+                !burn.Direction.Valid||burn.Direction.Length>0&&Math.Abs(burn.Direction.Length-1)>1e-6||
                 !D.Finite(burn.ThrottleFraction)||burn.ThrottleFraction<=0||burn.ThrottleFraction>1)return Finish(D.Outcome.InvalidInput);
             var common=settings.Approach.Common;
             double begin=initial.UT+burn.Delay,prep=begin-settings.Preparation;
@@ -171,7 +248,8 @@ namespace MuMech.Landing
                     D.V up=s.R.Unit,normal=D.V.Cross(s.R,s.Velocity).Unit;
                     D.V tangent=(s.Velocity-up*D.V.Dot(up,s.Velocity)).Unit;
                     if(normal.Length<.5||tangent.Length<.5)return Finish(D.Outcome.InvalidInput);
-                    pointing=(tangent*(-Math.Sqrt(1-burn.NormalFraction*burn.NormalFraction))+
+                    pointing=burn.Direction.Length>.5?burn.Direction:
+                        (tangent*(-Math.Sqrt(Math.Max(0,1-burn.NormalFraction*burn.NormalFraction)))+
                         normal*burn.NormalFraction).Unit;aimed=true;
                 }
                 bool powered=s.UT>=begin&&s.UT<burnEnd;
@@ -373,9 +451,14 @@ namespace MuMech.Landing
                     // do not constrain a large plane change to a small
                     // correction on top of a coplanar deorbit impulse.
                     const double burnFraction=.85;
-                    var seeds=new List<(double fraction,double duration)>();
+                    var seeds=new List<Burn>();
                     if(Math.Abs(normal)>.1)
                     {
+                        if(TargetTransferSeed(env,initial,orbit,authority,epoch.delay,Math.Min(r-1,depth),
+                            settings.Approach.Common.CommandCap*burnFraction,
+                            settings.Approach.Common.TargetAtInitialUT,limits.ReserveMass,settings.MaxBurn,
+                            out var transfer,burnFraction))
+                            seeds.Add(transfer);
                         double angle=2*Math.PI*(epoch.delay-settings.Preparation)/orbit.Period;
                         D.V radial=up*Math.Cos(angle)+along*Math.Sin(angle);
                         D.V tangent=D.V.Cross(orbit.Normal,radial).Unit;
@@ -390,23 +473,23 @@ namespace MuMech.Landing
                             if(D.Finite(time)&&time>=.5&&time<=settings.MaxBurn&&
                                 time*authority.Flow*settings.Approach.Common.CommandCap*burnFraction<
                                 initial.Mass-limits.ReserveMass)
-                                seeds.Add((planeFraction,time));
+                                seeds.Add(new Burn(epoch.delay,time,planeFraction,burnFraction));
                         }
                     }
                     foreach(double fraction in tilts)
-                        seeds.Add((fraction,Math.Min(settings.MaxBurn,Math.Max(.5,
-                            dv/(accel*burnFraction)/Math.Sqrt(1-fraction*fraction)))));
+                        seeds.Add(new Burn(epoch.delay,Math.Min(settings.MaxBurn,Math.Max(.5,
+                            dv/(accel*burnFraction)/Math.Sqrt(1-fraction*fraction))),fraction,burnFraction));
                     foreach(var seed in seeds)
                     {
                         if(token.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
                         if(prefixes>=settings.MaxPrefixes||steps>=settings.MaxSteps){exhausted=true;break;}
-                        double fraction=seed.fraction,duration=seed.duration;
-                        var burn=new Burn(epoch.delay,duration,fraction,burnFraction);
+                        var burn=seed;
+                        double fraction=burn.NormalFraction,duration=burn.Duration;
                         var prefix=EvaluatePrefix(env,propulsion,limits,initial,settings,burn,
                             settings.MaxSteps-steps,false,token);
                         prefixes++;steps+=prefix.Steps;
                         diagnostic?.Invoke("prefix "+prefixes+" delay="+epoch.delay+" duration="+duration+
-                            " normal="+fraction+" status="+prefix.Outcome+" height="+env.PhysicalClearance(prefix.End)+
+                            " normal="+fraction+" transfer="+(burn.Direction.Length>.5)+" status="+prefix.Outcome+" height="+env.PhysicalClearance(prefix.End)+
                             " vRadial="+D.V.Dot(prefix.End.Velocity,prefix.End.R.Unit)+
                             " mass="+prefix.End.Mass+" steps="+steps);
                         if(prefix.Outcome!=D.Outcome.Advanced){unresolved++;continue;}
