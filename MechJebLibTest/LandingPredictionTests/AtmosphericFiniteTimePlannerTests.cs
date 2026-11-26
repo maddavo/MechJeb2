@@ -504,6 +504,24 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
+        public void StrategicEngagementLeadIsAnUnpoweredUnturnedInterval()
+        {
+            var env=Env(301363211975.0978);var state=Circular(env);
+            var settings=new Strategic.Settings(Settings(cap:1),preparation:1,maxWait:10,maxBurn:40,engagementLead:3);
+            var limits=Limits(step:.125);
+            Assert.Equal(D.Outcome.InvalidInput,Strategic.EvaluatePrefix(env,Engine(),limits,state,settings,
+                new Strategic.Burn(3,25,0),10000).Outcome);
+            var prefix=Strategic.EvaluatePrefix(env,Engine(),limits,state,settings,
+                new Strategic.Burn(4,25,.2),10000,true);
+            Assert.Equal(D.Outcome.Advanced,prefix.Outcome);
+            Assert.Equal(4,prefix.FirstPoweredUT);
+            Assert.All(prefix.Points.Where(p=>p.State.UT<3),p=>{
+                Assert.Equal(0,p.Command.Throttle);
+                Assert.InRange((p.Command.Direction-state.Forward).Length,0,1e-12);
+            });
+        }
+
+        [Fact]
         public void StrategicPrefixRejectsReserveExhaustionAndBudgetOrCancellation()
         {
             var env=Env(301363211975.0978);var state=Circular(env);

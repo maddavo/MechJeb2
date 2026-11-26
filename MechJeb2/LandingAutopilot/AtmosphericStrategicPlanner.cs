@@ -40,14 +40,14 @@ namespace MuMech.Landing
         internal sealed class Settings
         {
             internal readonly F.Settings Approach;
-            internal readonly double Preparation,MaxWait,MaxBurn;
+            internal readonly double Preparation,EngagementLead,MaxWait,MaxBurn;
             internal readonly int Epochs,MaxPrefixes,MaxSteps,ApproachCandidates;
             internal Settings(F.Settings approach,double preparation=35,double maxWait=3600,double maxBurn=180,
-                int epochs=8,int maxPrefixes=48,int maxSteps=800000,int approachCandidates=12)
-            {Approach=approach;Preparation=preparation;MaxWait=maxWait;MaxBurn=maxBurn;Epochs=epochs;
+                int epochs=8,int maxPrefixes=48,int maxSteps=800000,int approachCandidates=12,double engagementLead=0)
+            {Approach=approach;Preparation=preparation;EngagementLead=engagementLead;MaxWait=maxWait;MaxBurn=maxBurn;Epochs=epochs;
                 MaxPrefixes=maxPrefixes;MaxSteps=maxSteps;ApproachCandidates=approachCandidates;}
             internal bool Valid=>Approach!=null&&Approach.Valid&&D.Finite(Preparation)&&Preparation>=0&&
-                D.Finite(MaxWait)&&MaxWait>=Preparation&&MaxWait<=10000&&D.Finite(MaxBurn)&&MaxBurn>0&&MaxBurn<=300&&
+                D.Finite(EngagementLead)&&EngagementLead>=0&&D.Finite(MaxWait)&&MaxWait>=Preparation+EngagementLead&&MaxWait<=10000&&D.Finite(MaxBurn)&&MaxBurn>0&&MaxBurn<=300&&
                 Epochs>=1&&Epochs<=32&&MaxPrefixes>=1&&MaxPrefixes<=128&&MaxSteps>=1&&MaxSteps<=1000000&&
                 ApproachCandidates>=1&&ApproachCandidates<=64;
         }
@@ -113,7 +113,7 @@ namespace MuMech.Landing
             Prefix Finish(D.Outcome status)=>new Prefix(burn,s,status,steps,min,first,burnEnd,points,commands);
             if(env==null||propulsion==null||limits==null||settings==null||!env.Valid||!limits.Valid||!settings.Valid||
                 !initial.Valid||initial.Mass<=limits.ReserveMass||initial.Throttle>.01||budget<1||budget>1000000||
-                !D.Finite(burn.Delay)||burn.Delay<settings.Preparation||burn.Delay>settings.MaxWait||
+                !D.Finite(burn.Delay)||burn.Delay<settings.Preparation+settings.EngagementLead||burn.Delay>settings.MaxWait||
                 !D.Finite(burn.Duration)||burn.Duration<=0||burn.Duration>settings.MaxBurn||
                 !D.Finite(burn.NormalFraction)||Math.Abs(burn.NormalFraction)>.75)return Finish(D.Outcome.InvalidInput);
             var common=settings.Approach.Common;
@@ -240,7 +240,8 @@ namespace MuMech.Landing
                 !TryOrbit(env,initial,out var orbit)||initial.Mass<=limits.ReserveMass||initial.Throttle>.01||
                 orbit.Periapsis<=env.Radius+env.AtmosphereTop||settings.Approach.Common.CommandCap<=0)
                 return Finish(P.SearchStatus.InvalidInput);
-            double wait=Math.Min(settings.MaxWait,orbit.Period+settings.Preparation);
+            double earliest=settings.Preparation+settings.EngagementLead;
+            double wait=Math.Min(settings.MaxWait,orbit.Period+earliest);
             // Order epoch seeds by approximate prograde downrange geometry
             // at a fraction of the orbit; this only orders bounded search,
             // never discards a candidate as infeasible based on geometry.
@@ -248,7 +249,7 @@ namespace MuMech.Landing
             D.V up=initial.R.Unit,along=D.V.Cross(orbit.Normal,up).Unit;
             for(int i=0;i<settings.Epochs;i++)
             {
-                double delay=settings.Preparation+(wait-settings.Preparation)*i/settings.Epochs;
+                double delay=earliest+(wait-earliest)*i/settings.Epochs;
                 double angle=2*Math.PI*delay/orbit.Period+Math.PI*.65;
                 D.V ahead=up*Math.Cos(angle)+along*Math.Sin(angle);
                 D.V target=P.RotateTarget(settings.Approach.Common.TargetAtInitialUT,env.Omega,delay+orbit.Period*.325);
@@ -257,20 +258,20 @@ namespace MuMech.Landing
             // Add a high-resolution cheap geometry seed and neighbouring
             // epochs. Avoid quantising orbital targeting to hundreds of
             // seconds while retaining the original coarse coverage.
-            double geometryDelay=settings.Preparation,geometryScore=double.NegativeInfinity;
+            double geometryDelay=earliest,geometryScore=double.NegativeInfinity;
             for(int i=0;i<=64;i++)
             {
-                double delay=settings.Preparation+(wait-settings.Preparation)*i/64;
+                double delay=earliest+(wait-earliest)*i/64;
                 double angle=2*Math.PI*delay/orbit.Period+Math.PI*.65;
                 D.V ahead=up*Math.Cos(angle)+along*Math.Sin(angle);
                 D.V target=P.RotateTarget(settings.Approach.Common.TargetAtInitialUT,env.Omega,delay+orbit.Period*.325);
                 double score=D.V.Dot(ahead,target);
                 if(score>geometryScore){geometryScore=score;geometryDelay=delay;}
             }
-            double spacing=(wait-settings.Preparation)/64;
+            double spacing=(wait-earliest)/64;
             foreach(double delay in new[]{geometryDelay,geometryDelay-spacing,geometryDelay+spacing})
             {
-                if(delay<settings.Preparation||delay>wait||epochs.Exists(e=>Math.Abs(e.delay-delay)<.001))continue;
+                if(delay<earliest||delay>wait||epochs.Exists(e=>Math.Abs(e.delay-delay)<.001))continue;
                 double angle=2*Math.PI*delay/orbit.Period+Math.PI*.65;
                 D.V target=P.RotateTarget(settings.Approach.Common.TargetAtInitialUT,env.Omega,delay+orbit.Period*.325);
                 epochs.Add((delay,D.V.Dot(up*Math.Cos(angle)+along*Math.Sin(angle),target)));
