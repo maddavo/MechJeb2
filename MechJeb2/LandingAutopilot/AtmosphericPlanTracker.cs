@@ -176,9 +176,9 @@ namespace MuMech.Landing
                     return Reject("unknown terminal capability");
                 var nominal=propulsion.At(terminalPressure);
                 if(!nominal.Known||nominal.Force<=0)return Reject("unknown terminal thrust");
-                var command=new D.Command(Math.Min(cap,terminalCommand.Throttle*nominal.Force/
+                var terminalRequest=new D.Command(Math.Min(cap,terminalCommand.Throttle*nominal.Force/
                     (actual.Mass*liveMaxAcceleration)),terminalCommand.Direction.Unit);
-                return command.Valid?new Decision(command,pe,ve,me,refClearance):Reject("invalid terminal command");
+                return terminalRequest.Valid?new Decision(terminalRequest,pe,ve,me,refClearance):Reject("invalid terminal command");
             }
             if(feed.Throttle==0)
                 return new Decision(new D.Command(0,feed.Direction.Unit),pe,ve,me,refClearance);
