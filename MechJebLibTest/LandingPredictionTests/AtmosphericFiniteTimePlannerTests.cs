@@ -579,11 +579,13 @@ namespace MechJebLibTest.LandingPredictionTests
                 4*400*9.80665/initial.Mass, .9,.5);
             Assert.NotNull(set);
             var strategic=new Strategic.Settings(set,preparation:45,engagementLead:45);
-            var report=Strategic.Search(env,engine,lim,initial,strategic);
-            Console.WriteLine("orbital-admission-fixture status="+report.Status+" prefixes="+report.Prefixes+
+            var diagnostics=new System.Collections.Generic.List<string>();
+            var report=Strategic.Search(env,engine,lim,initial,strategic,diagnostic:diagnostics.Add);
+            string details="orbital-admission-fixture status="+report.Status+" prefixes="+report.Prefixes+
                 " approaches="+report.Approaches+" steps="+report.Steps+" feasible="+report.Feasible+
-                " unresolved="+report.Unresolved+" miss="+report.Best?.OriginalMiss);
-            Assert.NotNull(report.Best);
+                " unresolved="+report.Unresolved+" miss="+report.Best?.OriginalMiss+"\n"+string.Join("\n",diagnostics);
+            Console.WriteLine(details);
+            Assert.True(report.Best!=null,details);
             Assert.True(report.Best.ReplayPassed);
             Assert.True(report.Scenarios.Passed);
             Assert.InRange(report.Best.OriginalMiss,0,set.Common.TargetTolerance);

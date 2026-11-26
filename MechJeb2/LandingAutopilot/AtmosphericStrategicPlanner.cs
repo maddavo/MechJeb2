@@ -197,7 +197,7 @@ namespace MuMech.Landing
         // Whole-history replay starts from the ORIGINAL orbital snapshot.
         internal static Candidate Combine(D.Environment env,D.Propulsion propulsion,D.Limits limits,D.State initial,
             Settings settings,Prefix prefix,F.Settings approachSettings,F.Candidate approach,int budget,
-            out int replaySteps,CancellationToken token=default)
+            out int replaySteps,CancellationToken token=default,Action<string> diagnostic=null)
         {
             replaySteps=0;
             if(prefix==null||prefix.Outcome!=D.Outcome.Advanced||prefix.Points.Count==0||approach==null||
@@ -221,7 +221,15 @@ namespace MuMech.Landing
                 (replay.End.R-approach.Result.End.R).Length<=20&&
                 Math.Abs(replay.End.Mass-approach.Result.End.Mass)<=Math.Max(.5,initial.Mass*.0005)&&
                 Math.Abs(replay.End.UT-approach.Result.End.UT)<=1;
-            if(!passed)return null;
+            if(!passed)
+            {
+                diagnostic?.Invoke("join replay="+replay.Outcome+" miss="+miss+
+                    " fineMiss="+P.Miss(env,initial,replay.End,common.TargetAtInitialUT)+
+                    " positionError="+(replay.End.R-approach.Result.End.R).Length+
+                    " massError="+Math.Abs(replay.End.Mass-approach.Result.End.Mass)+
+                    " timeError="+Math.Abs(replay.End.UT-approach.Result.End.UT));
+                return null;
+            }
             var profile=new F.Profile(prefix.End.UT-initial.UT+approach.Profile.Coast,approach.Profile.Duration);
             var p=new P.Profile(profile.Coast,0,new D.Command(0,initial.Forward));
             var result=new P.Candidate(p,approach.Result.Outcome,approach.Result.End,miss,
@@ -234,7 +242,7 @@ namespace MuMech.Landing
         }
 
         internal static Report Search(D.Environment env,D.Propulsion propulsion,D.Limits limits,D.State initial,
-            Settings settings,CancellationToken token=default)
+            Settings settings,CancellationToken token=default,Action<string> diagnostic=null)
         {
             Candidate best=null;int prefixes=0,approaches=0,steps=0,feasible=0,unresolved=0;
             bool exhausted=false;
@@ -310,6 +318,10 @@ namespace MuMech.Landing
                         var prefix=EvaluatePrefix(env,propulsion,limits,initial,settings,burn,
                             settings.MaxSteps-steps,false,token);
                         prefixes++;steps+=prefix.Steps;
+                        diagnostic?.Invoke("prefix "+prefixes+" delay="+epoch.delay+" duration="+duration+
+                            " normal="+fraction+" status="+prefix.Outcome+" height="+env.PhysicalClearance(prefix.End)+
+                            " vRadial="+D.V.Dot(prefix.End.Velocity,prefix.End.R.Unit)+
+                            " mass="+prefix.End.Mass+" steps="+steps);
                         if(prefix.Outcome!=D.Outcome.Advanced){unresolved++;continue;}
                         var approachSettings=ApproachAt(env,propulsion,initial,prefix.End,settings);
                         if(approachSettings==null){unresolved++;continue;}
@@ -317,6 +329,9 @@ namespace MuMech.Landing
                         if(settings.MaxSteps-steps<approachSettings.Common.MaxSteps){exhausted=true;break;}
                         var report=F.Search(env,propulsion,limits,prefix.End,approachSettings,token);
                         approaches+=report.Attempts;steps+=report.Steps;
+                        diagnostic?.Invoke("approach "+report.Status+" attempts="+report.Attempts+
+                            " nominal="+report.Feasible+" unresolved="+report.Unresolved+
+                            " bestMiss="+report.Best?.Result.Miss+" steps="+steps);
                         if(report.Best==null){unresolved++;continue;}
                         if(best!=null&&!P.Better(report.Best.Result,best.Combined.Result,
                             settings.Approach.Common.TargetTolerance))continue;
@@ -342,7 +357,7 @@ namespace MuMech.Landing
                             steps+=descent.Result.Steps;
                             if(steps>=settings.MaxSteps){exhausted=true;break;}
                             var joined=Combine(env,propulsion,limits,initial,settings,recorded,approachSettings,descent,
-                                Math.Min(60000,settings.MaxSteps-steps),out int replaySteps,token);
+                                Math.Min(60000,settings.MaxSteps-steps),out int replaySteps,token,diagnostic);
                             steps+=replaySteps;
                             if(joined==null){unresolved++;continue;}
                             if(steps>=settings.MaxSteps){exhausted=true;break;}
@@ -350,7 +365,7 @@ namespace MuMech.Landing
                             var screen=AtmosphericUncertaintyReplay.Validate(env,propulsion,limits,tracker,
                                 Math.Min(240000,settings.MaxSteps-steps),token);
                             steps+=screen.Steps;
-                            if(!screen.Passed){unresolved++;continue;}
+                            if(!screen.Passed){diagnostic?.Invoke("scenario rejected: "+screen.Reason);unresolved++;continue;}
                             if(token.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
                             feasible++;
                             if(best==null||P.Better(joined.Combined.Result,best.Combined.Result,
