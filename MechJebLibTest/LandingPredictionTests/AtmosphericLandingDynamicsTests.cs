@@ -2,6 +2,7 @@ using System;
 using MuMech.Landing;
 using Xunit;
 using D=MuMech.Landing.AtmosphericLandingDynamics;
+using R=MuMech.Landing.AtmosphericLandingReplay;
 
 namespace MechJebLibTest.LandingPredictionTests
 {
@@ -205,6 +206,181 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.Equal(D.Outcome.Advanced,a.Status);
             Assert.Equal(.1,a.End.Velocity.X,10);
             Assert.Equal(20,a.End.Velocity.Y,10);
+        }
+
+        [Fact]
+        public void ForceDecompositionHasCorrectUnitsAndRotation()
+        {
+            var pressure=new D.Curve(new D.Knot(0,101325),new D.Knot(10000,101325));
+            var density=new D.Curve(new D.Knot(0,1),new D.Knot(10000,1));
+            var r=X*321000;
+            double mu=2.5*r.Length*r.Length;
+            var env=new D.Environment(320000,mu,new D.V(0,0,.0001),10000,pressure,density,2,320000,0,
+                (pos,air,f,p,rho)=>new D.V(0,0,100));
+            var v=D.V.Cross(env.Omega,r)+new D.V(0,20,0);
+            var s=new D.State(0,r,v,1000,X,.5);
+            D.ForceSample forces=D.Forces(env,Engines(2),s);
+            Assert.True(forces.Known);
+            Assert.Equal(101325,forces.Pressure,8);
+            Assert.Equal(1,forces.Density,8);
+            Assert.Equal(20,forces.AirVelocity.Y,8);
+            Assert.Equal(-2.5,forces.Gravity.X,8);
+            Assert.Equal(280*G0,forces.Thrust.X,8);
+            Assert.Equal(-400,forces.Drag.Y,8);
+            Assert.Equal(100,forces.Lift.Z,8);
+            Assert.Equal(1,forces.MassFlow,8);
+            Assert.Equal(-2.5+280*G0/1000,forces.Acceleration.X,8);
+            Assert.Equal(-.4,forces.Acceleration.Y,8);
+            Assert.Equal(.1,forces.Acceleration.Z,8);
+        }
+
+        [Fact]
+        public void ExplicitAtmosphereAndAeroAdaptersUseEpochPositionAndAttainedPointing()
+        {
+            double sampledUT=-1;
+            D.V sampledForward=default;
+            var env=new D.Environment(320000,0,default,10000,null,null,0,320000,0,
+                atmosphere:(ut,r)=>new D.AirSample(ut*1000+r.Length-320000,1),
+                aerodynamics:(ut,r,w,f,p,rho)=>{
+                    sampledUT=ut;sampledForward=f;
+                    return new D.AeroSample(w*(-1),new D.V(0,0,f.Y*100));
+                });
+            var s=new D.State(10,X*321000,new D.V(0,20,0),1000,X);
+            var step=D.Advance(env,Engines(),Limits(turn:1),s,new D.Command(1,new D.V(0,1,0)),.1);
+            Assert.Equal(D.Outcome.Advanced,step.Status);
+            Assert.Equal(10.05,sampledUT,8);
+            Assert.Equal(Math.Sin(.05),sampledForward.Y,8);
+            D.ForceSample f1=D.Forces(env,Engines(),step.End);
+            Assert.True(f1.Known);
+            Assert.Equal(step.End.UT*1000+step.End.R.Length-320000,f1.Pressure,8);
+            Assert.Equal(100*step.End.Forward.Y,f1.Lift.Z,8);
+        }
+
+        [Fact]
+        public void ExplicitUnknownAeroDoesNotFallBackToZero()
+        {
+            var env=new D.Environment(320000,0,default,10000,null,null,0,320000,0,
+                atmosphere:(ut,r)=>new D.AirSample(0,1),
+                aerodynamics:(ut,r,w,f,p,rho)=>default);
+            Assert.False(D.Forces(env,Engines(),State(1000,-20)).Known);
+            Assert.Equal(D.Outcome.UnknownCapability,
+                D.Advance(env,Engines(),Limits(),State(1000,-20),new D.Command(0,X),.1).Status);
+            var missingAir=new D.Environment(320000,0,default,10000,null,null,0,320000,0,
+                atmosphere:(ut,r)=>default);
+            Assert.False(D.Forces(missingAir,Engines(),State(1000,-20)).Known);
+        }
+
+        [Fact]
+        public void InvalidAeroCannotAddEnergyThroughPassiveDragOrDoubleCount()
+        {
+            var env=new D.Environment(320000,0,default,10000,null,null,0,320000,0,
+                atmosphere:(ut,r)=>new D.AirSample(0,1),
+                aerodynamics:(ut,r,w,f,p,rho)=>new D.AeroSample(w,default));
+            Assert.False(D.Forces(env,Engines(),State(1000,-20)).Known);
+            var ambiguous=new D.Environment(320000,0,default,10000,null,null,1,320000,0,
+                atmosphere:(ut,r)=>new D.AirSample(0,1),
+                aerodynamics:(ut,r,w,f,p,rho)=>new D.AeroSample(default,default));
+            Assert.False(ambiguous.Valid);
+        }
+
+        [Fact]
+        public void ExactScalarAltitudeRetainsStrictPressureDomain()
+        {
+            var c=new D.Curve(new D.Knot(0,10),new D.Knot(1000,0));
+            var env=new D.Environment(320000,0,default,1000,c,c,0,320000,0);
+            Assert.True(env.AirAtAltitude(0,out double p,out _));
+            Assert.Equal(10,p);
+            Assert.False(env.AirAtAltitude(-1e-9,out _,out _));
+        }
+
+        [Fact]
+        public void ReplayFiniteBurnAndCoastConvergeWithoutResettingToObservation()
+        {
+            var initial=State(10000,0);
+            var commands=new[]{new R.Segment(0,10,new D.Command(1,X)),new R.Segment(10,20,new D.Command(0,X))};
+            double speed=400*G0*Math.Log(1000.0/990);
+            // Integral of the rocket-equation speed, plus ten-second coast.
+            double displacement=400*G0*(10+990*Math.Log(.99))+10*speed;
+            var observation=new R.Observation(new D.State(20,X*(330000+displacement),X*speed,990,X));
+            var coarse=R.Run(Vacuum(),Engines(),Limits(dt:.5),initial,commands,new[]{observation});
+            var fine=R.Run(Vacuum(),Engines(),Limits(dt:.25),initial,commands,new[]{observation});
+            Assert.True(coarse.HistoryCompleted&&fine.HistoryCompleted);
+            Assert.Equal(2,fine.CompletedSegments);
+            Assert.Equal(990,fine.End.Mass,8);
+            Assert.InRange((fine.End.R-coarse.End.R).Length,0,1);
+            Assert.InRange((fine.End.Velocity-coarse.End.Velocity).Length,0,.1);
+            Assert.InRange(fine.Comparisons[0].PositionError,0,1);
+            Assert.InRange(fine.Comparisons[0].VelocityError,0,.1);
+            Assert.True(fine.Comparisons[0].PositionError<coarse.Comparisons[0].PositionError);
+            Assert.False(fine.Comparisons[0].ForceResidualKnown);
+            Assert.True(double.IsNaN(fine.Comparisons[0].FlowResidual));
+        }
+
+        [Fact]
+        public void ReplayUsesContinuousHistoryAndSeparatesForceModelFromStateResidual()
+        {
+            var initial=State(1000,10);
+            var history=new[]{new R.Segment(0,2,new D.Command(0,X))};
+            // Deliberately different observed state; propagation must not reset.
+            var a=new R.Observation(new D.State(.75,X*321100,X*100,1000,X,1),
+                X*(400*G0-100),default,default,.8);
+            var b=new R.Observation(new D.State(2,X*321020,X*10,1000,X));
+            var run=R.Run(Vacuum(),Engines(),Limits(dt:.5),initial,history,new[]{a,b});
+            Assert.True(run.HistoryCompleted);
+            Assert.Equal(2,run.Comparisons.Count);
+            Assert.Equal(.75,run.Comparisons[0].UT,10);
+            Assert.Equal(92.5,run.Comparisons[0].PositionError,8);
+            Assert.Equal(90,run.Comparisons[0].VelocityError,8);
+            Assert.True(run.Comparisons[0].ForceResidualKnown);
+            Assert.Equal(100,run.Comparisons[0].ThrustResidual.X,8);
+            Assert.Equal(.2,run.Comparisons[0].FlowResidual,8);
+            Assert.Equal(0,run.Comparisons[0].PredictedForces.Thrust.Length,8);
+            Assert.Equal(0,run.Comparisons[1].PositionError,8);
+        }
+
+        [Fact]
+        public void ReplayRejectsUnspecifiedIntervalsAndOutOfOrderObservations()
+        {
+            var s=State(1000,10);
+            var off=new D.Command(0,X);
+            var gap=new[]{new R.Segment(0,1,off),new R.Segment(1.1,2,off)};
+            Assert.Equal(D.Outcome.InvalidInput,
+                R.Run(Vacuum(),Engines(),Limits(),s,gap,Array.Empty<R.Observation>()).Outcome);
+            var history=new[]{new R.Segment(0,2,off)};
+            var a=new R.Observation(new D.State(1,X*321000,X*10,1000,X));
+            Assert.Equal(D.Outcome.InvalidInput,R.Run(Vacuum(),Engines(),Limits(),s,history,new[]{a,a}).Outcome);
+        }
+
+        [Fact]
+        public void ReplayDoesNotContinueThroughContactOrClaimCaptureIsLanding()
+        {
+            var s=State(1,-10);
+            var history=new[]{new R.Segment(0,10,new D.Command(0,X))};
+            var result=R.Run(Vacuum(),Engines(),Limits(dt:.5),s,history,Array.Empty<R.Observation>());
+            Assert.Equal(D.Outcome.ContactUnsafe,result.Outcome);
+            Assert.False(result.HistoryCompleted);
+            Assert.InRange(result.End.UT,.099999,.100001);
+            var high=R.Run(Vacuum(),Engines(),Limits(dt:.5),State(1000,0),history,Array.Empty<R.Observation>());
+            Assert.True(high.HistoryCompleted);
+            Assert.Equal(D.Outcome.Advanced,high.Outcome);
+        }
+
+        [Fact]
+        public void ReplayStopsOnCancellationBudgetOrUnknownModel()
+        {
+            var s=State(1000,10);
+            var h=new[]{new R.Segment(0,10,new D.Command(0,X))};
+            var observations=Array.Empty<R.Observation>();
+            var cancelled=R.Run(Vacuum(),Engines(),Limits(),s,h,observations,
+                cancellation:new System.Threading.CancellationToken(true));
+            Assert.Equal(D.Outcome.Cancelled,cancelled.Outcome);
+            Assert.Equal(0,cancelled.Steps);
+            var bounded=R.Run(Vacuum(),Engines(),Limits(),s,h,observations,maxSteps:1);
+            Assert.Equal(D.Outcome.Horizon,bounded.Outcome);
+            Assert.Equal(1,bounded.Steps);
+            var unknown=R.Run(Vacuum(),new D.Propulsion(false),Limits(),s,h,observations);
+            Assert.Equal(D.Outcome.UnknownCapability,unknown.Outcome);
+            Assert.False(unknown.HistoryCompleted);
         }
     }
 }
