@@ -770,7 +770,9 @@ namespace MechJebLibTest.LandingPredictionTests
             // atmosphere remains a diagnostic, not a delivery criterion.
             if(stock)
             {
-                Assert.True(report.Best!=null,"stock reference has no safe trajectory: "+report.Status);
+                Assert.True(report.Best!=null,"stock reference has no validated safe trajectory: "+report.Status+
+                    "\n"+string.Join("\n",diagnostics.Where(line=>line.StartsWith("prefix ")||line.StartsWith("approach ")||
+                    line.StartsWith("scenario rejected")||line.StartsWith("join replay"))));
                 Assert.True(report.Best.OriginalMiss<=set.Common.TargetTolerance,"stock reference target miss "+report.Best.OriginalMiss);
             }
         }

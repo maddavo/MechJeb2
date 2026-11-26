@@ -167,15 +167,22 @@ namespace MuMech.Landing
             D.V up=surface.Normal,w=env.Surface(state.R,state.Velocity);
             double vertical=D.V.Dot(w,up);
             D.V horizontal=w-up*vertical;
-            D.V passive=force.Gravity+(force.Drag+force.Lift)*(1/state.Mass)-D.V.Cross(env.Omega,state.Velocity);
+            // Low-speed terminal guidance is a state-feedback law, not
+            // a timed extrapolation of the high-altitude endpoint law.
+            // Retain the approach descent speed (typically 2 m/s), rather
+            // than accelerating from 2 to 4 m/s after entering the last
+            // 30 m. Brake earlier with a continuously declining envelope.
+            D.V passive=force.Gravity+(force.Drag+force.Lift)*(1/state.Mass)-
+                D.V.Cross(env.Omega,w)*2-D.V.Cross(env.Omega,D.V.Cross(env.Omega,state.R));
             double raw=authority.Force/state.Mass;
             double available=Math.Max(0,raw*settings.Common.CommandCap+D.V.Dot(passive,up));
-            double brake=Math.Min(.8,.25*available);
+            double brake=Math.Min(.45,.20*available);
             double touch=settings.Common.Terminal.TouchdownSpeed;
+            double approach=Math.Max(touch,settings.ApproachSpeed);
             double envelope=Math.Sqrt(touch*touch+2*brake*Math.Max(0,surface.Clearance));
-            double speed=Math.Min(Math.Max(touch,settings.TerminalVertical),envelope);
-            double ff=envelope<settings.TerminalVertical?-brake*vertical/Math.Max(touch,speed):0;
-            D.V desired=up*(ff+1.5*(-speed-vertical))-horizontal*.8-passive;
+            double speed=Math.Min(approach,envelope);
+            double ff=envelope<approach?-brake*vertical/Math.Max(touch,speed):0;
+            D.V desired=up*(ff+1.25*(-speed-vertical))-horizontal*.8-passive;
             double axial=D.V.Dot(desired,up);
             if(axial<=0)return new D.Command(0,up);
             // Finish upright. Limit lateral demand by available tilt;
@@ -230,10 +237,17 @@ namespace MuMech.Landing
                 double horizontal=(w-surface.Normal*vertical).Length;
                 // Terminal transfer only near actual modelled terrain and
                 // with independently checked low horizontal/vertical speed.
+                // In the final low-energy envelope the terminal law can
+                // itself acquire upright attitude. Do not reject solely
+                // because the earlier endpoint law has not yet pointed
+                // upright at its mathematical arrival instant; propagate
+                // the real slew/throttle/clearance to physical contact.
+                bool aligned=D.V.Dot(state.Forward,surface.Normal)>=Math.Cos(Math.PI/6);
+                bool atArrival=state.UT>=arrival-settings.ControlTick*.5;
                 if(!terminalMode&&state.UT>=ignition&&surface.Clearance>0&&
                     surface.Clearance<=Math.Min(300,settings.ApproachHeight*2)&&vertical<=0&&
                     vertical>=-settings.TerminalVertical&&horizontal<=settings.TerminalHorizontal&&
-                    D.V.Dot(state.Forward,surface.Normal)>=Math.Cos(Math.PI/6))
+                    (aligned||atArrival&&D.V.Dot(state.Forward,surface.Normal)>.75))
                 {
                     terminalMode=true;terminal=state.UT;
                     positionError=P.Miss(env,initial,state,common.TargetAtInitialUT);
@@ -321,8 +335,10 @@ namespace MuMech.Landing
                     feasible++;ranked.Add(c);
                     if(best==null||P.Better(c.Result,best.Result,common.TargetTolerance))best=c;
                 }
-                else if(refineNearContact&&c.Result.Outcome==D.Outcome.ContactUnsafe&&
-                    D.Finite(c.Result.TerminalStartUT)&&c.Result.End.Valid)
+                else if(refineNearContact&&c.Result.End.Valid&&
+                    (c.Result.Outcome==D.Outcome.ContactUnsafe&&D.Finite(c.Result.TerminalStartUT)||
+                    c.Result.Outcome==D.Outcome.Horizon&&env.PhysicalClearance(c.Result.End)<=50&&
+                    env.Surface(c.Result.End.R,c.Result.End.Velocity).Length<=8))
                 {
                     // A low-speed terminal contact is a search seed ONLY.
                     // It is never admitted or counted as feasible. Prefer
@@ -338,6 +354,7 @@ namespace MuMech.Landing
                         double speedViolation=Math.Max(0,Math.Abs(v)-common.SafeVertical)+Math.Max(0,h-common.SafeHorizontal);
                         double angle=Math.Acos(Math.Max(-1,Math.Min(1,D.V.Dot(end.Forward,surface.Normal))));
                         double score=miss/Math.Max(1,common.TargetTolerance)+10*speedViolation+
+                            Math.Max(0,surface.Clearance)/30+
                             10*Math.Max(0,angle-common.SafeAngle)+10*Math.Max(0,end.PointingRate-common.SafeRate);
                         if(D.Finite(score)&&score<nearScore)
                         {nearScore=score;nearContact=c;}
@@ -359,14 +376,24 @@ namespace MuMech.Landing
             }
             double dc=(common.MaxIgnitionDelay-settings.MinCoast)/settings.CoastIntervals,
                 dt=(settings.MaxPoweredSeconds-settings.MinPoweredSeconds)/settings.DurationIntervals;
-            for(int i=0;i<=settings.CoastIntervals&&!exhausted;i++)
-                for(int j=0;j<=settings.DurationIntervals&&!exhausted;j++)
-                {
-                    double coast=i==settings.CoastIntervals?common.MaxIgnitionDelay:settings.MinCoast+i*dc;
-                    double duration=j==settings.DurationIntervals?settings.MaxPoweredSeconds:settings.MinPoweredSeconds+j*dt;
-                    if(curvedCandidates&&!convex)Try(coast,duration,true);
-                    Try(coast,duration);
-                }
+            // In the mixed-family search reserve evaluations for refinement
+            // of near-feasible trajectories. The former interleaved 24-node
+            // grid consumed the entire budget before any refinement.
+            if(curvedCandidates&&!convex)
+            {
+                int coarseLimit=Math.Max(1,common.MaxCandidates-Math.Max(6,common.MaxCandidates/4));
+                for(int family=0;family<2&&!exhausted&&attempts<coarseLimit;family++)
+                    for(int i=0;i<=settings.CoastIntervals&&!exhausted&&attempts<coarseLimit;i++)
+                        for(int j=0;j<=settings.DurationIntervals&&!exhausted&&attempts<coarseLimit;j++)
+                            Try(i==settings.CoastIntervals?common.MaxIgnitionDelay:settings.MinCoast+i*dc,
+                                j==settings.DurationIntervals?settings.MaxPoweredSeconds:settings.MinPoweredSeconds+j*dt,
+                                family==0);
+            }
+            else
+                for(int i=0;i<=settings.CoastIntervals&&!exhausted;i++)
+                    for(int j=0;j<=settings.DurationIntervals&&!exhausted;j++)
+                        Try(i==settings.CoastIntervals?common.MaxIgnitionDelay:settings.MinCoast+i*dc,
+                            j==settings.DurationIntervals?settings.MaxPoweredSeconds:settings.MinPoweredSeconds+j*dt);
             for(int n=0;n<settings.Refinements&&!exhausted&&(best!=null||nearContact!=null)&&!cancellation.IsCancellationRequested;n++)
             {
                 dc*=.5;dt*=.5;Profile center=(best??nearContact).Profile;

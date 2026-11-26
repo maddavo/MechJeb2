@@ -1,6 +1,7 @@
 using System;
 using D=MuMech.Landing.AtmosphericLandingDynamics;
 using F=MuMech.Landing.AtmosphericFiniteTimePlanner;
+using P=MuMech.Landing.AtmosphericFeasibleRangePlanner;
 
 namespace MuMech.Landing
 {
@@ -134,7 +135,21 @@ namespace MuMech.Landing
             // original measurement allowance, not arbitrary mass loss.
             double consumed=Math.Max(0,initialMass-reference.Mass);
             double massLimit=Math.Max(10,initialMass*.01)+consumed*(1/.95-1);
-            if(pe>positionLimit||ve>velocityLimit||me>massLimit)return Reject("trajectory deviation");
+            // The final segment is a spatial/velocity feedback landing,
+            // not tracking a clock. Permit the same bounded local terminal
+            // envelope used by the planner once its recorded terminal
+            // phase begins. Contact timing variation is not itself unsafe.
+            D.V up=actual.R.Unit,w=environment.Surface(actual.R,actual.Velocity);
+            double vr=D.V.Dot(w,up),vh=(w-up*vr).Length;
+            D.V contact=P.RotateTarget(plan.Result.End.R.Unit,environment.Omega,actual.UT-EndUT);
+            double contactDistance=(up-contact).Length*environment.Radius;
+            bool terminal=D.Finite(plan.Result.TerminalStartUT)&&actual.UT>=plan.Result.TerminalStartUT&&
+                clearance<=Math.Min(50,settings.ApproachHeight*2+5)&&vr<=0&&
+                vr>=-settings.TerminalVertical-1&&vh<=Math.Max(1,settings.TerminalHorizontal+1)&&
+                D.Finite(contactDistance)&&contactDistance<=Math.Max(5,settings.Common.TargetTolerance)&&
+                D.V.Dot(actual.Forward,up)>.75;
+            if((!terminal&&(pe>positionLimit||ve>velocityLimit))||me>massLimit)
+                return Reject("trajectory deviation");
             double remaining=Math.Max(0,reference.Mass-plan.Result.End.Mass);
             if(actual.Mass-remaining<limits.ReserveMass)
                 return Reject("projected propellant reserve threatened");
@@ -153,6 +168,18 @@ namespace MuMech.Landing
             if(down>touch+1&&clearance/Math.Max(.1,down)<=8&&
                 (!D.Finite(stopDistance)||stopDistance+down*liveResponse>clearance))
                 return Reject("insufficient radial stopping distance");
+            if(terminal)
+            {
+                var surface=new D.SurfaceSample(clearance,clearance,clearance,up,true);
+                var terminalCommand=F.TerminalCommand(environment,propulsion,actual,settings,surface);
+                if(!terminalCommand.Valid||!environment.Air(actual.UT,actual.R,out double terminalPressure,out _))
+                    return Reject("unknown terminal capability");
+                var nominal=propulsion.At(terminalPressure);
+                if(!nominal.Known||nominal.Force<=0)return Reject("unknown terminal thrust");
+                var command=new D.Command(Math.Min(cap,terminalCommand.Throttle*nominal.Force/
+                    (actual.Mass*liveMaxAcceleration)),terminalCommand.Direction.Unit);
+                return command.Valid?new Decision(command,pe,ve,me,refClearance):Reject("invalid terminal command");
+            }
             if(feed.Throttle==0)
                 return new Decision(new D.Command(0,feed.Direction.Unit),pe,ve,me,refClearance);
             if(!environment.Air(reference.UT,reference.R,out double pressure,out double density))

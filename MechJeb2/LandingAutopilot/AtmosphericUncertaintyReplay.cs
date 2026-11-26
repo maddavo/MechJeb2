@@ -169,7 +169,14 @@ namespace MuMech.Landing
                     var step=D.Advance(env,engine,lim,state,command,dt,common.SafeVertical,common.SafeHorizontal,
                         common.SafeAngle,common.SafeRate);
                     steps++;state=step.End;
-                    if(step.Status!=D.Outcome.Advanced)return Finish(step.Status,step.Status.ToString());
+                    if(step.Status!=D.Outcome.Advanced)
+                    {
+                        D.V w=env.Surface(state.R,state.Velocity),up=state.R.Unit;
+                        double vertical=D.V.Dot(w,up),horizontal=(w-up*vertical).Length;
+                        double angle=Math.Acos(Math.Max(-1,Math.Min(1,D.V.Dot(state.Forward,up))))*180/Math.PI;
+                        return Finish(step.Status,step.Status+" vertical="+vertical+" horizontal="+horizontal+
+                            " angleDeg="+angle+" rateDegS="+state.PointingRate*180/Math.PI+" mass="+state.Mass);
+                    }
                 }
             }
             return Finish(D.Outcome.Horizon,"contact not demonstrated");
