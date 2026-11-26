@@ -31,3 +31,9 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 - Added explicit SI force decomposition, deterministic atmosphere/aerodynamic adapters and strict scalar altitude lookup to the independent dynamics model.
 - Added continuous bounded command-history replay with separate state and measured-force residuals, explicit invalid/unknown data, contact and cancellation handling; ten new synthetic tests.
 - No live guidance change, no installation or flight-validation claim. Continue original M0/M1 gates.
+
+## 2.16.0-landing.20261126.duna-dynamics-m1.3
+
+- Add explicit terrain/support geometry and corridor lower-bound adapter with ordered contact/reserve events and unknown rejection.
+- Add non-actuating KHV/FinalDescent reference replay, distinct PID/authority/engine states and bounded integration, twelve synthetic tests.
+- Extend existing local evidence report to identify missing actual model inputs without repeating established evidence. No live guidance change, installation or plan gate waiver.
