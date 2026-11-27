@@ -148,3 +148,8 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 - Display planned deorbit countdown and duration, remaining burn time, next scheduled descent burn and touchdown countdown from the current accepted trajectory, updated using game UT during physics and warp. Display warp exit countdown during owned warp.
 - Restore the existing Auto-warp checkbox during integrated planning and descent, removing the obsolete 1x-only label. Test merged powered intervals, countdown boundaries and game-time jumps.
 - Preserve pending auto-warp during stock KSP alarm braking/message acknowledgement; resume only after the alarm closes, fresh-state revalidation and a remaining safe preparation window. Explicit user cancellation, loss of context and deadline expiry override alarm suspension.
+
+## 2.16.0-landing.20261127.duna-integrated-m5.13
+
+- Replace single-tick nominal burn alignment abort with actual feedback-command alignment interlock and attitude recovery. Replan from actual settled vessel state when sufficient vacuum coast remains; preserve reserve and body-fixed terrain. Committed short-coast paths suspend misaligned thrust and retain independent hazard control.
+- Use the same actual-command throttle interlock in uncertainty replay. Log observed alignment and rate on recovery.

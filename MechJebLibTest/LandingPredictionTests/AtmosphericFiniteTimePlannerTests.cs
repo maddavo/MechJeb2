@@ -309,6 +309,23 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.True(MuMech.Landing.DunaLandingAdmission.OrbitalBurnAligned(tracker,wrong,false,0,1));
         }
 
+        [Fact]
+        public void OrbitalRecoveryUsesRequestedDirectionAndPreservesOriginalReserve()
+        {
+            var env=Env(301363211975.0978);var circular=Circular(env);
+            var requested=new D.Command(.85,Y);
+            var aimed=new D.State(circular.UT,circular.R,circular.Velocity,900,Y,0,0);
+            var wrong=new D.State(aimed.UT,aimed.R,aimed.Velocity,aimed.Mass,X,0,0);
+            Assert.True(MuMech.Landing.DunaLandingAdmission.OrbitalCommandAligned(aimed,requested));
+            Assert.False(MuMech.Landing.DunaLandingAdmission.OrbitalCommandAligned(wrong,requested));
+            Assert.False(MuMech.Landing.DunaLandingAdmission.SettledForRecovery(wrong,Y,0,0));
+            Assert.False(MuMech.Landing.DunaLandingAdmission.SettledForRecovery(aimed,Y,.1,0));
+            Assert.True(MuMech.Landing.DunaLandingAdmission.SettledForRecovery(aimed,Y,0,0));
+            Assert.True(MuMech.Landing.DunaLandingAdmission.RecoveryCoastAvailable(env,aimed,90));
+            Assert.Equal(600,MuMech.Landing.DunaLandingAdmission.RecoveryReserve(600,550));
+            Assert.Equal(650,MuMech.Landing.DunaLandingAdmission.RecoveryReserve(600,650));
+        }
+
         [Theory]
         [InlineData(800,1000,false,false)]
         [InlineData(10,1000,false,false)]

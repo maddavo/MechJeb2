@@ -65,6 +65,7 @@ namespace MuMech.Landing
         private TerrainAcquisition terrainCapture;
         private D.TerrainGrid terrainGrid;
         private int terrainRefinements;
+        private double protectedReserve;
         private double preferredBurnUT=double.NaN;
         private F.Profile? preferredApproach;
         // Incremental main-thread PQS sampling. Use body-fixed coordinates
@@ -181,7 +182,7 @@ namespace MuMech.Landing
         // spherical terrain at target ASL. These are explicitly NOT verified
         // real-engine, lift, crossfeed, attitude or swept terrain models.
         // Results are for comparing algorithms, never authorization to burn.
-        private static Snapshot Capture(MechJebCore core)
+        private static Snapshot Capture(MechJebCore core,double reserveFloor=0)
         {
             Vessel v=core.vessel;
             VesselState s=core.VesselState;
@@ -343,7 +344,8 @@ namespace MuMech.Landing
             Require(D.Finite(usable)&&usable>0&&usable<mass,"unknown usable propellant inventory");
             // Retain 5% of estimated mixture; crossfeed/staging is not
             // modelled. Do not infer a guaranteed reserve from total tanks.
-            double reserve=mass-.95*usable;
+            double reserve=DunaLandingAdmission.RecoveryReserve(reserveFloor,mass-.95*usable);
+            Require(reserve<mass,"protected propellant reserve reached");
             var ispKeys=new D.Knot[N+1];
             double nominalCurrent=0;
             double currentPa=body.GetPressure(s.AltitudeASL)*1000;
@@ -467,14 +469,21 @@ namespace MuMech.Landing
             catch(Exception ex){a.Error=ex.GetType().Name+": "+ex.Message;}
             return a;
         }
-        internal bool Start(MechJebCore core,out string reason)
+        internal bool Start(MechJebCore core,out string reason,double reserveFloor=0,D.TerrainGrid previousTerrain=null)
         {
             Cancel();
             try
             {
-                snapshot=Capture(core);answer=null;logged=false;
+                protectedReserve=reserveFloor;
+                snapshot=Capture(core,protectedReserve);answer=null;logged=false;
                 var copy=snapshot;
-                if(copy.Strategic)
+                if(previousTerrain!=null)
+                {
+                    // Body-fixed samples remain valid after a changed orbit.
+                    terrainGrid=previousTerrain;
+                    StartTerrainSolve(core);
+                }
+                else if(copy.Strategic)
                 {
                     // Initial target-sphere solution is a routing hint,
                     // never executable landing authority.
@@ -509,7 +518,7 @@ namespace MuMech.Landing
         {
             // The unpowered vessel has moved during PQS sampling. Capture
             // its current epoch/pose rather than skipping a planned burn.
-            snapshot=Capture(core);
+            snapshot=Capture(core,protectedReserve);
             var basis=snapshot.Frame.AtCapture;
             snapshot.Environment=snapshot.Environment.WithGrid(terrainGrid,snapshot.UT,basis.A,basis.B,basis.C);
             snapshot.PreferredBurnUT=preferredBurnUT;snapshot.PreferredApproach=preferredApproach;
@@ -528,7 +537,7 @@ namespace MuMech.Landing
         {
             if(cancel!=null){cancel.Cancel();cancel.Dispose();cancel=null;}
             job=null;snapshot=null;answer=null;logged=false;status="Not evaluated";
-            terrainCapture=null;terrainGrid=null;terrainRefinements=0;preferredBurnUT=double.NaN;preferredApproach=null;
+            terrainCapture=null;terrainGrid=null;terrainRefinements=0;protectedReserve=0;preferredBurnUT=double.NaN;preferredApproach=null;
             tracker=null;corridor=null;
             corridorStatus=null;corridorPassed=false;executionStatus=null;
         }

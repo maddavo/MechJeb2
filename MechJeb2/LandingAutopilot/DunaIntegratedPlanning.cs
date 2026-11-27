@@ -14,9 +14,9 @@ namespace MuMech.Landing
         private DunaIntegratedPreview.Snapshot pointingSnapshot;
         private double nextEngineCheck=double.NegativeInfinity;
         internal DunaIntegratedPlanning(MechJebCore core):base(core){}
-        internal bool Start(out string reason)
+        internal bool Start(out string reason,double reserveFloor=0,D.TerrainGrid previousTerrain=null)
         {
-            if(!preview.Start(Core,out reason))return false;
+            if(!preview.Start(Core,out reason,reserveFloor,previousTerrain))return false;
             pointingSnapshot=preview.Input;pointing=pointingSnapshot.Initial.Forward;
             Status="Computing integrated "+(preview.Input.Strategic?"orbital landing":"descent");
             return true;

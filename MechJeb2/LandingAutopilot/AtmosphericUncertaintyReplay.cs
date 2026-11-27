@@ -173,8 +173,9 @@ namespace MuMech.Landing
                             return Finish(D.Outcome.UnknownCapability,"live supervisor: "+safety.Reason+" at UT "+state.UT+
                                 " clearance="+clearance+" down="+safety.DownSpeed);
                     }
-                    if(!DunaLandingAdmission.OrbitalBurnAligned(tracker,state,prefix,timing.BurnStart,timing.BurnEnd))
-                        return Finish(D.Outcome.UnknownCapability,"live orbital burn alignment at UT "+state.UT);
+                    if(prefix&&state.UT>=timing.BurnStart&&state.UT<timing.BurnEnd&&
+                        !DunaLandingAdmission.OrbitalCommandAligned(state,command))
+                        command=new D.Command(0,command.Direction);
                     if(prefix&&command.Throttle>0)burnRequested=true;
                 }
                 // Re-evaluate feedback at <=0.2s intervals, split at

@@ -206,6 +206,30 @@ namespace MuMech.Landing
                 tracker.ReferenceAt(actual.UT,out _,out var planned)&&
                 D.V.Dot(actual.Forward,planned.Direction.Unit)>=.995;
 
+        // Compare the ACTUAL feedback thrust request, not an unrelated
+        // nominal direction. The same throttle interlock is used by replay.
+        internal static bool OrbitalCommandAligned(D.State actual,D.Command requested)
+            =>actual.Valid&&requested.Valid&&D.V.Dot(actual.Forward,requested.Direction.Unit)>=.995;
+        internal static bool SettledForRecovery(D.State actual,D.V direction,double observedAcceleration,
+            double appliedThrottle)
+            =>actual.Valid&&direction.Valid&&direction.Length>.99&&
+                D.V.Dot(actual.Forward,direction)>=.9986&&actual.PointingRate<=Math.PI/180&&
+                actual.Throttle<=.001&&D.Finite(observedAcceleration)&&observedAcceleration<=.005&&
+                D.Finite(appliedThrottle)&&appliedThrottle<=1e-4;
+        internal static double RecoveryReserve(double original,double newlyCalculated)
+            =>Math.Max(original,newlyCalculated);
+        // A new complete solve while coasting must not consume the
+        // available atmospheric-entry preparation interval. A safe orbit
+        // has no entry deadline; committed vacuum trajectories need time.
+        internal static bool RecoveryCoastAvailable(D.Environment env,D.State actual,double seconds)
+        {
+            if(env==null||!actual.Valid||!D.Finite(seconds)||seconds<0)return false;
+            if(!AtmosphericStrategicPlanner.TryOrbit(env,actual,out var orbit))return false;
+            double boundary=env.Radius+env.AtmosphereTop+WarpAtmosphereMargin;
+            if(actual.R.Length<=boundary)return false;
+            if(orbit.Periapsis>boundary)return true;
+            return VacuumBoundaryUT(env,actual,boundary)-actual.UT>=seconds;
+        }
         internal static bool TerrainConflict(double clearance,double modelClearance,bool contact)
             =>!D.Finite(clearance)||!D.Finite(modelClearance)||(contact?Math.Abs(clearance)>2:
                 clearance<=0||modelClearance<=30&&Math.Abs(clearance-modelClearance)>2);

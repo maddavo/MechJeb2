@@ -15,7 +15,55 @@ namespace MuMech.Landing
         private readonly DunaFallbackCoordinator fallback=new DunaFallbackCoordinator();
         private D.Environment activeEnvironment;
         private bool emergency,hazardMode,orbitalBurnRequested;
+        private bool attitudeRecovery;
+        private D.V recoveryDirection;
+        private double recoverySettledUT=double.NaN;
         private string hazardReason;
+        private void HoldForRecovery(D.State actual,D.V direction,string reason)
+        {
+            CancelWarp();CancelReplanning();
+            attitudeRecovery=true;recoveryDirection=direction.Unit;recoverySettledUT=double.NaN;
+            UnityEngine.Debug.Log("[DunaIntegratedDescent] orbital recovery UT="+Num(actual.UT)+
+                " reason="+reason+" errorDeg="+Num(Math.Acos(Math.Max(-1,Math.Min(1,
+                    D.V.Dot(actual.Forward,recoveryDirection))))*180/Math.PI)+
+                " angularRate="+Num(actual.PointingRate*180/Math.PI)+" massKg="+Num(actual.Mass));
+        }
+        private AutopilotStep RecoverOrbitalAttitude(D.State actual)
+        {
+            var s=VesselState;
+            Core.Thrust.Tmode=MechJebModuleThrustController.TMode.OFF;
+            Core.Thrust.TransKillH=false;
+            Core.Thrust.RequestActiveThrottle(0,false,true);
+            Core.Attitude.attitudeTo(DunaIntegratedPreview.WorldAt(MainBody,snapshot.Frame,recoveryDirection,actual.UT),
+                AttitudeReference.INERTIAL,Core.Landing);
+            Status="Recovering deorbit attitude; thrust suspended";
+            if(!DunaLandingAdmission.RecoveryCoastAvailable(activeEnvironment,actual,90))
+            {
+                // Do not spend the remaining entry interval waiting for
+                // an orbital optimisation. Continue under the independent
+                // supervisor and live-state approach recovery.
+                attitudeRecovery=false;hazardMode=true;
+                hazardReason="insufficient vacuum coast for attitude recovery and full replan";
+                return this;
+            }
+            if(!DunaLandingAdmission.SettledForRecovery(actual,recoveryDirection,s.CurrentThrustAcceleration,
+                Vessel.ctrlState.mainThrottle))
+            {recoverySettledUT=double.NaN;return this;}
+            if(!D.Finite(recoverySettledUT)){recoverySettledUT=actual.UT;return this;}
+            if(actual.UT-recoverySettledUT<.5)return this;
+            var planning=new DunaIntegratedPlanning(Core);
+            if(!planning.Start(out string why,tracker.ReserveMass,activeEnvironment.Grid))
+            {
+                // Keep the autopilot armed, but don't blindly resume the
+                // invalidated timed burn. A genuine imminent hazard is
+                // handled by the independent supervisor on the next tick.
+                attitudeRecovery=false;hazardMode=true;hazardReason="recovery planning: "+why;
+                return this;
+            }
+            UnityEngine.Debug.Log("[DunaIntegratedDescent] settled; replanning from observed state UT="+
+                Num(actual.UT)+" reserveKg="+Num(tracker.ReserveMass));
+            return planning;
+        }
         internal void CancelReplanning(){replanner.Cancel();fallback.Cancel();}
         private bool warpOwned,warpReturning,warpDisabledForPlan,alarmSuspended,manualWarpCancel;
         private double warpDisabledAt=double.NaN;
@@ -94,7 +142,7 @@ namespace MuMech.Landing
                 orbit.Periapsis>activeEnvironment.Radius+activeEnvironment.AtmosphereTop)
             {
                 var planning=new DunaIntegratedPlanning(Core);
-                if(!planning.Start(out string why))return Finish("post-warp replan: "+why);
+                if(!planning.Start(out string why,tracker.ReserveMass,activeEnvironment.Grid))return Finish("post-warp replan: "+why);
                 CancelReplanning();
                 return planning;
             }
@@ -202,7 +250,7 @@ namespace MuMech.Landing
                     return this;
                 }
                 var s=VesselState;
-                if(!Core.Node.Autowarp||Core.Warp.WarpPaused||hazardMode||emergency||terminalExtension||
+                if(!Core.Node.Autowarp||Core.Warp.WarpPaused||hazardMode||emergency||terminalExtension||attitudeRecovery||
                     replanner.Busy||fallback.Busy||Core.Warp.warpToUT>0||s.Time<nextWarpProbe)return this;
                 // Allow another window after an actual orbital burn. Do
                 // not restart the same warp during its preparation period.
@@ -245,6 +293,7 @@ namespace MuMech.Landing
         // present body orientation; the plan remains a model forecast.
         internal string ForecastText()
         {
+            if(attitudeRecovery)return "Recovering burn attitude; previous trajectory invalidated.\nRecalculating from measured orbit after engine tail and attitude settle.";
             if(hazardMode)return "Integrated forecast invalidated: "+hazardReason;
             double now=Planetarium.GetUniversalTime();
             if(terminalExtension||now>=tracker.EndUT)return "Integrated contact epoch expired; terminal extension";
@@ -316,9 +365,36 @@ namespace MuMech.Landing
                 clearance-=deckOffset;
                 double cap=Math.Min(snapshot.Cap,Math.Min(s.ThrottleLimit,s.ThrottleFixedLimit));
                 var actual=DunaIntegratedPreview.LiveState(Core,snapshot);
+                if(attitudeRecovery)return RecoverOrbitalAttitude(actual);
                 var decision=tracker.Track(actual,clearance,s.MaxThrustAcceleration,cap,
                     s.LocalGravity,s.MaxEngineResponseTime);
                 bool orbitalPrefix=snapshot.Strategic&&s.Time<snapshot.ApproachStartUT;
+                // Recover before the generic tracking-envelope failure
+                // can terminate an otherwise safely coasting vessel.
+                bool burnWindow=orbitalPrefix&&s.Time>=snapshot.DeorbitStartUT&&s.Time<snapshot.DeorbitEndUT;
+                if(!hazardMode&&burnWindow&&tracker.ReferenceAt(actual.UT,out _,out var referenceCommand))
+                {
+                    var desired=decision.Valid?decision.Command:referenceCommand;
+                    if(!decision.Valid||!DunaLandingAdmission.OrbitalCommandAligned(actual,desired))
+                    {
+                        if(DunaLandingAdmission.RecoveryCoastAvailable(activeEnvironment,actual,90))
+                        {
+                            HoldForRecovery(actual,desired.Direction,decision.Valid?"attitude error":decision.Reason);
+                            return RecoverOrbitalAttitude(actual);
+                        }
+                        // Committed with inadequate coast time for a full
+                        // solve: hold the actual requested direction with
+                        // zero thrust. Never apply misaligned thrust.
+                        if(decision.Valid)
+                        {
+                            Core.Thrust.RequestActiveThrottle(0,false,true);
+                            Core.Attitude.attitudeTo(DunaIntegratedPreview.WorldAt(MainBody,snapshot.Frame,
+                                desired.Direction.Unit,s.Time),AttitudeReference.INERTIAL,Core.Landing);
+                            Status="Correcting committed burn attitude; thrust suspended";
+                            return this;
+                        }
+                    }
+                }
                 if(!hazardMode&&!emergency&&!orbitalPrefix)
                 {
                     // Alternate background work. A ready contingency is not
@@ -382,9 +458,10 @@ namespace MuMech.Landing
                         return Finish("hazard control unavailable: "+hazardReason+"; manual control required");
                 }
                 else if(decision.Valid)command=decision.Command;
-                if(!hazardMode&&!DunaLandingAdmission.OrbitalBurnAligned(tracker,actual,orbitalPrefix,
-                    snapshot.DeorbitStartUT,snapshot.DeorbitEndUT))
-                    return Finish("orbital burn alignment not demonstrated; manual control required");
+                // The pre-command recovery branch above handles orbital
+                // misalignment; no single-tick nominal-angle abort remains.
+                if(!hazardMode&&burnWindow&&!DunaLandingAdmission.OrbitalCommandAligned(actual,command))
+                    command=new D.Command(0,command.Direction);
                 if(!command.Valid||!D.Finite(cap)||command.Throttle>cap+1e-8)
                     return Finish("invalid live command");
                 // Exclusive ownership of the existing actuator interfaces.
