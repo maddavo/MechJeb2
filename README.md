@@ -256,3 +256,5 @@ Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m
 Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m5.11` — use existing MechJeb regular warp for validated unpowered vacuum coast, exit for attitude preparation, revalidate actual unpacked flight state before resuming. Experimental; no flight-test authorisation until acceptance.
 
 Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m5.12` — live game-time deorbit, descent burn, warp exit and touchdown countdowns; Auto-warp checkbox remains available during active guidance. Experimental pending validation.
+
+M5.12 additionally preserves pending auto-warp through stock KSP alarm interruptions and resumes after acknowledgement and fresh-state validation, subject to the original preparation deadline. Manual cancellation remains authoritative.

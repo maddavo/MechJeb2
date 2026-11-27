@@ -17,14 +17,39 @@ namespace MuMech.Landing
         private bool emergency,hazardMode,orbitalBurnRequested;
         private string hazardReason;
         internal void CancelReplanning(){replanner.Cancel();fallback.Cancel();}
-        private bool warpOwned,warpReturning,warpDisabledForPlan;
+        private bool warpOwned,warpReturning,warpDisabledForPlan,alarmSuspended,manualWarpCancel;
+        private double warpDisabledAt=double.NaN;
+        // Stock alarm transaction, not an arbitrary 1x rate. Indicator
+        // also covers anticipatory braking ahead of the message.
+        private static void StockAlarmState(out bool affecting,out bool pending)
+        {
+            affecting=pending=false;
+            var clock=AlarmClockScenario.Instance;
+            if(clock==null)return;
+            affecting=clock.WarpAffectIndicator;
+            var alarms=clock.alarms;
+            if(alarms==null)return;
+            for(int i=0;i<alarms.Count;i++)
+            {
+                var alarm=alarms.At(i);
+                if(alarm!=null&&DunaLandingAdmission.PendingWarpAlarm(alarm.Triggered,alarm.Actioned,
+                    alarm.HaltWarp,alarm.PauseGame)){pending=true;break;}
+            }
+        }
+        // Capture the explicit key event on Update, not a later physics
+        // tick. Abort and Auto-warp off cancel independently.
+        internal void ObserveManualWarpInput()
+        {
+            if(warpOwned&&GameSettings.TIME_WARP_DECREASE.GetKeyDown())manualWarpCancel=true;
+        }
         private double warpExit=double.NaN,nextWarpProbe=double.NegativeInfinity;
         private double unpackedUT=double.NaN,warpStartUT=double.NaN;
         private bool warpSawRate;
         internal void CancelWarp()
         {
             if(warpOwned||warpReturning)Core.Warp.StopOwnedLandingWarp();
-            warpOwned=false;warpReturning=false;warpExit=double.NaN;unpackedUT=double.NaN;
+            warpOwned=false;warpReturning=false;alarmSuspended=false;manualWarpCancel=false;
+            warpExit=double.NaN;unpackedUT=double.NaN;
         }
         private bool OwnsControls()=>Core.Landing.Enabled&&DunaLandingAdmission.OwnsActuators(
             Core.Attitude.Users.Count,Core.Attitude.Users.Contains(Core.Landing),
@@ -35,7 +60,7 @@ namespace MuMech.Landing
         private void ReturnToPhysics()
         {
             Core.Warp.StopOwnedLandingWarp();
-            warpReturning=true;warpOwned=false;unpackedUT=double.NaN;
+            warpReturning=true;warpOwned=false;alarmSuspended=false;manualWarpCancel=false;unpackedUT=double.NaN;
             Status="Returning to 1x for landing trajectory revalidation";
         }
         private AutopilotStep RefreshAfterWarp()
@@ -77,7 +102,7 @@ namespace MuMech.Landing
             // The validated trajectory is still current. The regular
             // tracker now uses the measured post-warp state, and the
             // normal approach replan/supervisor remains active.
-            warpDisabledForPlan=true;
+            warpDisabledForPlan=true;warpDisabledAt=actual.UT;
             nextWarpProbe=actual.UT+1;
             Status=decision.Valid?"Post-warp trajectory revalidated; acquiring burn attitude":
                 "Post-warp trajectory requires guidance recovery";
@@ -104,6 +129,54 @@ namespace MuMech.Landing
                         return RefreshAfterWarp();
                     }
                     double now=Planetarium.GetUniversalTime();
+                    StockAlarmState(out bool alarmAffecting,out bool alarmPending);
+                    var alarmAction=DunaLandingAdmission.AlarmWarpTransition(now,warpExit,alarmSuspended,
+                        alarmAffecting,alarmPending,manualWarpCancel,Core.Node.Autowarp,Core.Warp.WarpPaused,
+                        context,Core.Warp.warpToUT>0,PhysicsReady());
+                    if(alarmAction==DunaLandingAdmission.AlarmWarpAction.EndIntent)
+                    {ReturnToPhysics();return this;}
+                    if(alarmAction==DunaLandingAdmission.AlarmWarpAction.Suspend)
+                    {
+                        if(!alarmSuspended)
+                            UnityEngine.Debug.Log("[DunaIntegratedDescent] stock alarm suspended warp UT="+Num(now)+
+                                " retained exit="+Num(warpExit));
+                        alarmSuspended=true;unpackedUT=double.NaN;
+                        Core.Warp.StopOwnedLandingWarp();
+                        Status="Auto-warp suspended by KSP alarm; waiting for acknowledgement";
+                        return this;
+                    }
+                    if(alarmAction==DunaLandingAdmission.AlarmWarpAction.WaitForPhysics)
+                    {
+                        unpackedUT=double.NaN;Core.Warp.StopOwnedLandingWarp();
+                        return this;
+                    }
+                    if(alarmAction==DunaLandingAdmission.AlarmWarpAction.Resume)
+                    {
+                        // Closure alone is not sufficient: wait for a
+                        // subsequent fresh physical tick and revalidate.
+                        if(!D.Finite(unpackedUT)){unpackedUT=VesselState.Time;return this;}
+                        if(VesselState.Time<=unpackedUT)return this;
+                        if(DunaIntegratedPreview.LiveCompatibility(Core,snapshot,true)!=null)
+                        {ReturnToPhysics();return this;}
+                        var resumedState=DunaIntegratedPreview.LiveState(Core,snapshot);
+                        var resumedVessel=VesselState;
+                        double resumedCap=Math.Min(snapshot.Cap,Math.Min(resumedVessel.ThrottleLimit,resumedVessel.ThrottleFixedLimit));
+                        var resumed=tracker.Track(resumedState,resumedVessel.AltitudeBottom,resumedVessel.MaxThrustAcceleration,
+                            resumedCap,resumedVessel.LocalGravity,resumedVessel.MaxEngineResponseTime);
+                        double newExit=resumed.Valid?DunaLandingAdmission.WarpExitUT(activeEnvironment,tracker,resumedState,
+                            resumed.Command.Throttle,Vessel.ctrlState.mainThrottle,resumedVessel.CurrentThrustAcceleration,
+                            resumedVessel.MinThrustAcceleration,true,true,false):double.NaN;
+                        if(!D.Finite(newExit)||Math.Min(newExit,warpExit)-now<30)
+                        {ReturnToPhysics();return this;}
+                        warpExit=Math.Min(newExit,warpExit);
+                        alarmSuspended=false;warpSawRate=false;unpackedUT=double.NaN;
+                        Core.Thrust.RequestActiveThrottle(0,false,true);
+                        Core.Warp.WarpRegularAtRate((float)Math.Max(1,Math.Min(100,(warpExit-now)/10)),true,true);
+                        Status="Auto-warp resumed after KSP alarm";
+                        UnityEngine.Debug.Log("[DunaIntegratedDescent] stock alarm closed; resumed warp UT="+Num(now)+
+                            " retained exit="+Num(warpExit));
+                        return this;
+                    }
                     // A user returning to 1x manually is an interruption,
                     // not an instruction to immediately accelerate again.
                     if(TimeWarp.CurrentRate>1)warpSawRate=true;
@@ -135,10 +208,13 @@ namespace MuMech.Landing
                 // not restart the same warp during its preparation period.
                 if(warpDisabledForPlan)
                 {
-                    if(!orbitalBurnRequested||s.Time<snapshot.ApproachStartUT)return this;
+                    if(!orbitalBurnRequested||s.Time<snapshot.ApproachStartUT||
+                        warpDisabledAt>=snapshot.ApproachStartUT)return this;
                     warpDisabledForPlan=false;
                 }
                 nextWarpProbe=s.Time+1;
+                StockAlarmState(out bool initialAlarmAffecting,out bool initialAlarmPending);
+                if(initialAlarmAffecting||initialAlarmPending)return this;
                 if(DunaIntegratedPreview.LiveCompatibility(Core,snapshot,false)!=null)return this;
                 var actual=DunaIntegratedPreview.LiveState(Core,snapshot);
                 double cap=Math.Min(snapshot.Cap,Math.Min(s.ThrottleLimit,s.ThrottleFixedLimit));
@@ -151,6 +227,7 @@ namespace MuMech.Landing
                 CancelReplanning();
                 Core.Thrust.RequestActiveThrottle(0,false,true);
                 warpStartUT=s.Time;warpExit=exit;warpOwned=true;warpSawRate=false;
+                manualWarpCancel=false;alarmSuspended=false;
                 Core.Warp.WarpRegularAtRate((float)Math.Max(1,Math.Min(100,(exit-s.Time)/10)),true,true);
                 Status="Auto-warp to landing preparation; "+Num(exit-s.Time)+" s";
                 UnityEngine.Debug.Log("[DunaIntegratedDescent] auto-warp requested UT="+Num(s.Time)+" exit="+Num(exit));
@@ -182,7 +259,9 @@ namespace MuMech.Landing
                 "\nOriginal target miss "+Num(miss/1000)+" km"+
                 "\n"+tracker.ForecastCountdowns(now,snapshot.Strategic&&!emergency,
                     snapshot.DeorbitStartUT,snapshot.DeorbitEndUT,snapshot.ApproachStartUT)+
-                (warpOwned&&now<warpExit?"\nWarp exit in "+AtmosphericPlanTracker.Countdown(warpExit-now):
+                (alarmSuspended?"\nAuto-warp suspended by KSP alarm; preparation in "+
+                    AtmosphericPlanTracker.Countdown(Math.Max(0,warpExit-now)):
+                    warpOwned&&now<warpExit?"\nWarp exit in "+AtmosphericPlanTracker.Countdown(warpExit-now):
                     warpReturning?"\nWaiting for 1x physics revalidation":"")+
                 "\nModel remaining mass above reserve "+Num(end.Mass-tracker.ReserveMass)+" kg";
         }

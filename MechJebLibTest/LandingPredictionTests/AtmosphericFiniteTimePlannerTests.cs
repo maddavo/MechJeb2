@@ -1125,6 +1125,53 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
+        public void StockAlarmSuspendsAndResumesSamePendingWarpIntent()
+        {
+            var normal=MuMech.Landing.DunaLandingAdmission.AlarmWarpAction.Normal;
+            var suspend=MuMech.Landing.DunaLandingAdmission.AlarmWarpAction.Suspend;
+            var waiting=MuMech.Landing.DunaLandingAdmission.AlarmWarpAction.WaitForPhysics;
+            var resume=MuMech.Landing.DunaLandingAdmission.AlarmWarpAction.Resume;
+            var end=MuMech.Landing.DunaLandingAdmission.AlarmWarpAction.EndIntent;
+            const double exit=1000;
+            Assert.Equal(normal,MuMech.Landing.DunaLandingAdmission.AlarmWarpTransition(100,exit,false,false,false,false,true,false,true,false,false));
+            Assert.Equal(suspend,MuMech.Landing.DunaLandingAdmission.AlarmWarpTransition(200,exit,false,true,false,false,true,false,true,false,false));
+            Assert.True(MuMech.Landing.DunaLandingAdmission.PendingWarpAlarm(true,false,true,false));
+            Assert.Equal(suspend,MuMech.Landing.DunaLandingAdmission.AlarmWarpTransition(210,exit,true,false,true,false,true,false,true,false,true));
+            Assert.Equal(suspend,MuMech.Landing.DunaLandingAdmission.AlarmWarpTransition(500,exit,true,false,true,false,true,false,true,false,true));
+            Assert.False(MuMech.Landing.DunaLandingAdmission.PendingWarpAlarm(true,true,true,false));
+            Assert.Equal(waiting,MuMech.Landing.DunaLandingAdmission.AlarmWarpTransition(501,exit,true,false,false,false,true,false,true,false,false));
+            Assert.Equal(resume,MuMech.Landing.DunaLandingAdmission.AlarmWarpTransition(502,exit,true,false,false,false,true,false,true,false,true));
+            Assert.Equal(normal,MuMech.Landing.DunaLandingAdmission.AlarmWarpTransition(503,exit,false,false,false,false,true,false,true,false,false));
+            Assert.Equal(suspend,MuMech.Landing.DunaLandingAdmission.AlarmWarpTransition(800,exit,false,true,true,false,true,false,true,false,false));
+            Assert.Equal(end,MuMech.Landing.DunaLandingAdmission.AlarmWarpTransition(990,exit,true,false,true,false,true,false,true,false,true));
+            Assert.Equal(end,MuMech.Landing.DunaLandingAdmission.AlarmWarpTransition(991,exit,true,false,false,false,true,false,true,false,true));
+            Assert.Equal(end,MuMech.Landing.DunaLandingAdmission.AlarmWarpTransition(971,exit,true,false,false,false,true,false,true,false,true));
+        }
+
+        [Theory]
+        [InlineData(true,true,false,true,false)]
+        [InlineData(false,false,false,true,false)]
+        [InlineData(false,true,true,true,false)]
+        [InlineData(false,true,false,false,false)]
+        [InlineData(false,true,false,true,true)]
+        public void ManualCancellationAndLostAuthorityOverrideAlarmSuspension(bool manual,bool autoWarp,bool paused,bool context,bool competing)
+        {
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.AlarmWarpAction.EndIntent,
+                MuMech.Landing.DunaLandingAdmission.AlarmWarpTransition(100,1000,true,true,true,manual,autoWarp,paused,context,competing,true));
+        }
+
+        [Theory]
+        [InlineData(false,false,true,false,false)]
+        [InlineData(true,true,true,false,false)]
+        [InlineData(true,false,false,false,false)]
+        [InlineData(true,false,true,false,true)]
+        [InlineData(true,false,false,true,true)]
+        public void OnlyUnacknowledgedWarpAffectingAlarmsHoldIntent(bool triggered,bool actioned,bool halt,bool pause,bool expected)
+        {
+            Assert.Equal(expected,MuMech.Landing.DunaLandingAdmission.PendingWarpAlarm(triggered,actioned,halt,pause));
+        }
+
+        [Fact]
         public void WarpVacuumBoundaryUsesActualOrbitNotTargetElevation()
         {
             var env=Env(301363211975.0978);var s=Circular(env);

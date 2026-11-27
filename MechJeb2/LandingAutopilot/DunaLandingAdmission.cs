@@ -260,6 +260,24 @@ namespace MuMech.Landing
             if(rate==1&&!packed&&exit-now<30)return WarpAction.Revalidate;
             return WarpAction.Continue;
         }
+        // Alarm braking can precede the popup. Preserve the original
+        // preparation deadline, but do not confuse this with manual stop.
+        internal enum AlarmWarpAction { Normal, Suspend, WaitForPhysics, Resume, EndIntent }
+        internal static bool PendingWarpAlarm(bool triggered,bool actioned,bool haltWarp,bool pauseGame)
+            =>triggered&&!actioned&&(haltWarp||pauseGame);
+        internal static AlarmWarpAction AlarmWarpTransition(double now,double exit,bool suspended,
+            bool alarmAffectingWarp,bool pendingAlarm,bool manualCancel,bool autoWarp,bool paused,
+            bool contextValid,bool competingWarp,bool physicsReady)
+        {
+            if(manualCancel||!autoWarp||paused||!contextValid||competingWarp||
+                !D.Finite(now)||!D.Finite(exit)||now>=exit-10)
+                return AlarmWarpAction.EndIntent;
+            if(alarmAffectingWarp||pendingAlarm)return AlarmWarpAction.Suspend;
+            if(!suspended)return AlarmWarpAction.Normal;
+            // Same minimum useful preparation-safe window as initial warp.
+            if(exit-now<30)return AlarmWarpAction.EndIntent;
+            return physicsReady?AlarmWarpAction.Resume:AlarmWarpAction.WaitForPhysics;
+        }
         internal static bool WarpPhysicsReady(double rate,bool packed,bool fresh)
             =>rate==1&&!packed&&fresh;
 

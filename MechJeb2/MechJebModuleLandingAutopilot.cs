@@ -722,6 +722,12 @@ namespace MuMech
             base.Drive(s);
         }
 
+        public override void OnUpdate()
+        {
+            base.OnUpdate();
+            if(CurrentStep is DunaIntegratedDescent integrated)integrated.ObserveManualWarpInput();
+        }
+
         public override void OnFixedUpdate()
         {
             if(IntegratedLandingActive){base.OnFixedUpdate();return;}
