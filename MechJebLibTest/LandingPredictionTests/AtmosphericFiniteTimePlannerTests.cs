@@ -198,6 +198,44 @@ namespace MechJebLibTest.LandingPredictionTests
         }
 
         [Fact]
+        public void CountdownUsesCurrentGameTimeAndContiguousPoweredWindows()
+        {
+            // Deliberately synthetic timing-only fixture, not a physical
+            // landing replay. Adjacent positive command segments merge.
+            var points=new System.Collections.Generic.List<F.Point>();
+            var history=new System.Collections.Generic.List<R.Segment>();
+            double[] epochs={100,110,112,120,130,135,140,145,150};
+            double[] throttle={0,.5,.7,0,.6,.4,0,.2};
+            for(int i=0;i<throttle.Length;i++)
+            {
+                var state=new D.State(epochs[i],X*321000,X*(-20),1000,X);
+                var command=new D.Command(throttle[i],X);
+                points.Add(new F.Point(state,command,epochs[i+1]));
+                history.Add(new R.Segment(epochs[i],epochs[i+1],command));
+            }
+            var end=new D.State(150,X*320000,X*(-.5),999,X);
+            var result=new P.Candidate(new P.Profile(0,0,new D.Command(0,X)),D.Outcome.ContactWithinLimits,
+                end,0,0,110,0,8);
+            var tracker=new Tracker(Env(),Engine(),Limits(),Settings(cap:1),
+                new F.Candidate(new F.Profile(0,.5),result,0,0,0,points,history));
+            Assert.Equal("Deorbit burn in 00:00:10; duration 00:00:10\nNext descent burn in 00:00:30; duration 00:00:10\nTouchdown in 00:00:50 (game time)",
+                tracker.ForecastCountdowns(100,true,110,120,125));
+            Assert.Contains("Deorbit burn remaining 00:00:07",tracker.ForecastCountdowns(113,true,110,120,125));
+            Assert.DoesNotContain("Deorbit",tracker.ForecastCountdowns(120,true,110,120,125));
+            Assert.Contains("Descent burn remaining 00:00:05",tracker.ForecastCountdowns(135,true,110,120,125));
+            Assert.Contains("Next descent burn in 00:00:05",tracker.ForecastCountdowns(140,true,110,120,125));
+            Assert.Contains("Descent burn remaining 00:00:05",tracker.ForecastCountdowns(145,true,110,120,125));
+            Assert.Contains("Next descent burn in 00:00:10",tracker.ForecastCountdowns(100,false,0,0,0));
+            Assert.Equal("Manoeuvre countdown unavailable",tracker.ForecastCountdowns(150,true,110,120,125));
+            Assert.Equal("00:00:01",Tracker.Countdown(.01));
+            Assert.Equal("01:00:01",Tracker.Countdown(3600.1));
+            Assert.Equal("unknown",Tracker.Countdown(double.NaN));
+            Assert.True(tracker.TryPoweredWindow(135,125,out double start,out double finish));
+            Assert.Equal(130,start);
+            Assert.Equal(140,finish);
+        }
+
+        [Fact]
         public void TrackerAllowsExpectedImpulseLossFuelButProtectsReserve()
         {
             var a=new D.State(0,X*321000,X*(-20),1000,X);

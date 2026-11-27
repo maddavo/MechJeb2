@@ -146,9 +146,7 @@ namespace MuMech
                 GuiUtils.SimpleTextBox(Localizer.Format("#MechJeb_LandingGuidance_label3"), Core.Landing.TouchdownSpeed, "m/s",
                     35); //Touchdown speed:
 
-                if(integrated!=null||planning!=null)GUILayout.Label("Integrated guidance: 1x only");
-                else if (Core.Landing != null)
-                    Core.Node.Autowarp = GUILayout.Toggle(Core.Node.Autowarp, Localizer.Format("#MechJeb_LandingGuidance_checkbox1")); //Auto-warp
+                Core.Node.Autowarp = GUILayout.Toggle(Core.Node.Autowarp, Localizer.Format("#MechJeb_LandingGuidance_checkbox1")); //Auto-warp
 
                 Core.Landing.DeployGears =
                     GUILayout.Toggle(Core.Landing.DeployGears, Localizer.Format("#MechJeb_LandingGuidance_checkbox2")); //Deploy Landing Gear

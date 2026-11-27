@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using D=MuMech.Landing.AtmosphericLandingDynamics;
 using F=MuMech.Landing.AtmosphericFiniteTimePlanner;
 using P=MuMech.Landing.AtmosphericFeasibleRangePlanner;
@@ -15,6 +17,9 @@ namespace MuMech.Landing
         private readonly D.Limits limits;
         private readonly F.Settings settings;
         private readonly F.Candidate plan;
+        // Build once per accepted trajectory, including replacements.
+        // Display updates do not scan the full numerical history.
+        private readonly List<(double start,double end)> poweredWindows=new List<(double,double)>();
         internal double StartUT => plan.Reference[0].State.UT;
         internal double EndUT => plan.Result.End.UT;
         internal double TargetMiss => plan.Result.Miss;
@@ -43,6 +48,14 @@ namespace MuMech.Landing
                     (c.Command.Direction-p.Command.Direction).Length>1e-9)
                     throw new ArgumentException("non-contiguous or invalid trajectory");
                 last=p.ValidUntil;
+                if(c.Command.Throttle>0&&c.StartUT<EndUT)
+                {
+                    double end=Math.Min(c.EndUT,EndUT);
+                    int n=poweredWindows.Count;
+                    if(n>0&&poweredWindows[n-1].end==c.StartUT)
+                        poweredWindows[n-1]=(poweredWindows[n-1].start,end);
+                    else poweredWindows.Add((c.StartUT,end));
+                }
             }
             if(EndUT<=StartUT||EndUT>last)throw new ArgumentException("invalid contact epoch");
         }
@@ -60,6 +73,52 @@ namespace MuMech.Landing
             internal Decision(D.Command command,double position,double velocity,double mass,double clearance)
             {Valid=true;Reason="tracking";Command=command;PositionError=position;VelocityError=velocity;
                 MassError=mass;ReferenceClearance=clearance;}
+        }
+
+        // Durations are simulated game time, not wall-clock time.
+        // Round up so a future event never displays zero prematurely.
+        internal static string Countdown(double seconds)
+        {
+            if(!D.Finite(seconds)||seconds<0||seconds>=TimeSpan.MaxValue.TotalSeconds)return "unknown";
+            var span=TimeSpan.FromSeconds(Math.Ceiling(seconds));
+            return ((long)span.TotalHours).ToString("00",CultureInfo.InvariantCulture)+":"+
+                span.Minutes.ToString("00",CultureInfo.InvariantCulture)+":"+
+                span.Seconds.ToString("00",CultureInfo.InvariantCulture);
+        }
+
+        internal bool TryPoweredWindow(double now,double notBefore,out double start,out double end)
+        {
+            start=end=double.NaN;
+            if(!D.Finite(now)||!D.Finite(notBefore)||now<StartUT||now>=EndUT)return false;
+            double from=Math.Max(now,notBefore);
+            int lo=0,hi=poweredWindows.Count;
+            while(lo<hi)
+            {
+                int mid=lo+(hi-lo)/2;
+                if(poweredWindows[mid].end<=from)lo=mid+1;else hi=mid;
+            }
+            if(lo==poweredWindows.Count)return false;
+            var window=poweredWindows[lo];
+            start=Math.Max(window.start,notBefore);end=window.end;
+            return start<end;
+        }
+
+        internal string ForecastCountdowns(double now,bool strategic,double deorbitStart,double deorbitEnd,double approachStart)
+        {
+            if(!D.Finite(now)||now<StartUT||now>=EndUT)return "Manoeuvre countdown unavailable";
+            string text="";
+            if(strategic&&now<deorbitEnd)
+            {
+                text=now<deorbitStart?
+                    "Deorbit burn in "+Countdown(deorbitStart-now)+"; duration "+Countdown(deorbitEnd-deorbitStart):
+                    "Deorbit burn remaining "+Countdown(deorbitEnd-now);
+                text+="\n";
+            }
+            if(TryPoweredWindow(now,strategic?approachStart:StartUT,out double start,out double end))
+                text+=now<start?"Next descent burn in "+Countdown(start-now)+"; duration "+Countdown(end-start)+"\n":
+                    "Descent burn remaining "+Countdown(end-now)+"\n";
+            else text+="No further scheduled burn\n";
+            return text+"Touchdown in "+Countdown(EndUT-now)+" (game time)";
         }
 
         // Search only the remaining validated reference. Do not warp

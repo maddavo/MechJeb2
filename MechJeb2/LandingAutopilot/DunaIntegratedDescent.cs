@@ -169,7 +169,7 @@ namespace MuMech.Landing
         internal string ForecastText()
         {
             if(hazardMode)return "Integrated forecast invalidated: "+hazardReason;
-            double now=warpOwned||warpReturning?Planetarium.GetUniversalTime():VesselState.Time;
+            double now=Planetarium.GetUniversalTime();
             if(terminalExtension||now>=tracker.EndUT)return "Integrated contact epoch expired; terminal extension";
             var end=tracker.Plan.Result.End;
             Vector3d world=MainBody.position+DunaIntegratedPreview.WorldAt(MainBody,snapshot.Frame,
@@ -179,7 +179,11 @@ namespace MuMech.Landing
             return "Integrated trajectory (model only)"+(emergency?"; alternative site":"")+
                 "\nContact "+MainBody.GetLatitude(world).ToString("F6",CultureInfo.InvariantCulture)+
                 "°, "+MainBody.GetLongitude(world).ToString("F6",CultureInfo.InvariantCulture)+"°"+
-                "\nOriginal target miss "+Num(miss/1000)+" km; contact in "+Num(end.UT-now)+" s"+
+                "\nOriginal target miss "+Num(miss/1000)+" km"+
+                "\n"+tracker.ForecastCountdowns(now,snapshot.Strategic&&!emergency,
+                    snapshot.DeorbitStartUT,snapshot.DeorbitEndUT,snapshot.ApproachStartUT)+
+                (warpOwned&&now<warpExit?"\nWarp exit in "+AtmosphericPlanTracker.Countdown(warpExit-now):
+                    warpReturning?"\nWaiting for 1x physics revalidation":"")+
                 "\nModel remaining mass above reserve "+Num(end.Mass-tracker.ReserveMass)+" kg";
         }
         internal DunaIntegratedDescent(MechJebCore core,DunaIntegratedPreview.Snapshot snapshot,

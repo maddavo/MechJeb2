@@ -254,3 +254,5 @@ Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m
 Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m5.10` — separate search-budget expiry from explicit cancellation; retain fully validated targeted trajectories and terminate interactive optimisation at first validated target. Terrain and live admission checks remain required.
 
 Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m5.11` — use existing MechJeb regular warp for validated unpowered vacuum coast, exit for attitude preparation, revalidate actual unpacked flight state before resuming. Experimental; no flight-test authorisation until acceptance.
+
+Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m5.12` — live game-time deorbit, descent burn, warp exit and touchdown countdowns; Auto-warp checkbox remains available during active guidance. Experimental pending validation.

@@ -142,3 +142,8 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Honour existing Auto-warp checkbox for validated unpowered vacuum coast, using regular warp controller with bounded rate, atmosphere and next-thrust deadlines, and explicit unpacked 1x revalidation.
 - Invalidate and recalculate a changed preburn orbit rather than skipping a burn; retain normal approach recovery, cancel owned warp on termination, and test analytic orbit crossing and actual post-warp state continuity.
+
+## 2.16.0-landing.20261127.duna-integrated-m5.12
+
+- Display planned deorbit countdown and duration, remaining burn time, next scheduled descent burn and touchdown countdown from the current accepted trajectory, updated using game UT during physics and warp. Display warp exit countdown during owned warp.
+- Restore the existing Auto-warp checkbox during integrated planning and descent, removing the obsolete 1x-only label. Test merged powered intervals, countdown boundaries and game-time jumps.
