@@ -868,6 +868,21 @@ namespace MechJebLibTest.LandingPredictionTests
                     line.StartsWith("scenario rejected")||line.StartsWith("join replay"))));
                 Assert.True(report.Best.OriginalMiss<=set.Common.TargetTolerance,"stock reference target miss "+report.Best.OriginalMiss);
                 Assert.Equal(4,report.Scenarios.Trials.Count);
+                var warpTracker=new Tracker(env,engine,lim,set,report.Best.Combined);
+                double exit=MuMech.Landing.DunaLandingAdmission.WarpExitUT(env,warpTracker,initial,0,0,0,0,true,true,false);
+                Assert.True(D.Finite(exit)&&exit>initial.UT+30);
+                Assert.True(exit<=initial.UT+report.Best.Deorbit.Delay-60);
+                Assert.True(Strategic.TryOrbit(env,initial,out var actualOrbit));
+                Assert.True(Strategic.KeplerState(env,initial,actualOrbit,exit-initial.UT,out var rr,out var vv));
+                var jumped=new D.State(exit,rr,vv,initial.Mass,initial.Forward);
+                var resumed=warpTracker.Track(jumped,env.PhysicalClearance(jumped),4.9947751881921194,
+                    1,env.Mu/rr.Length/rr.Length,.1);
+                Assert.True(resumed.Valid,resumed.Reason);
+                Assert.Equal(0,resumed.Command.Throttle);
+                Assert.True(warpTracker.ReferenceAt(initial.UT+report.Best.Deorbit.Delay+.5,out var powered,out _));
+                Assert.True(double.IsNaN(MuMech.Landing.DunaLandingAdmission.WarpExitUT(env,warpTracker,powered,0,0,0,0,true,true,false)));
+                Console.WriteLine("Eagle warp exit lead="+(initial.UT+report.Best.Deorbit.Delay-exit)+
+                    " positionError="+resumed.PositionError+" velocityError="+resumed.VelocityError);
                 foreach(var trial in report.Scenarios.Trials)
                 {
                     Console.WriteLine("Eagle stock scenario "+trial.Name+" outcome="+trial.Outcome+

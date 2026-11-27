@@ -19,21 +19,23 @@ namespace MuMech.Landing
         internal void CancelReplanning(){replanner.Cancel();fallback.Cancel();}
         private bool warpOwned,warpReturning,warpDisabledForPlan;
         private double warpExit=double.NaN,nextWarpProbe=double.NegativeInfinity;
+        private double unpackedUT=double.NaN,warpStartUT=double.NaN;
+        private bool warpSawRate;
         internal void CancelWarp()
         {
             if(warpOwned||warpReturning)Core.Warp.MinimumWarp(true);
-            warpOwned=false;warpReturning=false;warpExit=double.NaN;
+            warpOwned=false;warpReturning=false;warpExit=double.NaN;unpackedUT=double.NaN;
         }
         private bool OwnsControls()=>Core.Landing.Enabled&&DunaLandingAdmission.OwnsActuators(
             Core.Attitude.Users.Count,Core.Attitude.Users.Contains(Core.Landing),
             Core.Thrust.Users.Count,Core.Thrust.Users.Contains(Core.Thrust),
             Core.Thrust.Users.Contains(Core.Landing),true);
         private bool PhysicsReady()=>DunaLandingAdmission.WarpPhysicsReady(TimeWarp.CurrentRate,Vessel.packed,
-            Math.Abs(VesselState.Time-Planetarium.GetUniversalTime())<=.05);
+            TimeWarp.CurrentRateIndex==0&&Math.Abs(VesselState.Time-Planetarium.GetUniversalTime())<=.05);
         private void ReturnToPhysics()
         {
             Core.Warp.MinimumWarp(true);
-            warpReturning=true;warpOwned=false;
+            warpReturning=true;warpOwned=false;unpackedUT=double.NaN;
             Status="Returning to 1x for landing trajectory revalidation";
         }
         private AutopilotStep RefreshAfterWarp()
@@ -47,8 +49,15 @@ namespace MuMech.Landing
             double cap=Math.Min(snapshot.Cap,Math.Min(s.ThrottleLimit,s.ThrottleFixedLimit));
             var decision=tracker.Track(actual,s.AltitudeBottom,s.MaxThrustAcceleration,cap,
                 s.LocalGravity,s.MaxEngineResponseTime);
-            bool missed=actual.UT>=warpExit+DunaLandingAdmission.WarpPreparationSeconds||
-                !tracker.ReferenceAt(actual.UT,out _,out var feed)||feed.Throttle>0;
+            // Crossing an intended atmospheric margin is not a missed
+            // powered interval. Inspect the actual reference history.
+            bool missed=!tracker.ReferenceAt(actual.UT,out _,out var feed)||feed.Throttle>0;
+            if(!missed&&D.Finite(warpStartUT))
+                foreach(var p in tracker.Plan.Reference)
+                {
+                    if(p.State.UT>=actual.UT)break;
+                    if(p.ValidUntil>warpStartUT&&p.Command.Throttle>0){missed=true;break;}
+                }
             UnityEngine.Debug.Log("[DunaIntegratedDescent] warp exit UT="+Num(actual.UT)+
                 " planned exit="+Num(warpExit)+" tracking="+decision.Valid+" missed="+missed+
                 " positionError="+Num(decision.PositionError)+" velocityError="+Num(decision.VelocityError));
@@ -87,10 +96,20 @@ namespace MuMech.Landing
                     {CancelWarp();return Finish("landing context changed during warp");}
                     if(warpReturning)
                     {
-                        if(!PhysicsReady()){Core.Warp.MinimumWarp(true);return this;}
+                        if(!PhysicsReady()){unpackedUT=double.NaN;Core.Warp.MinimumWarp(true);return this;}
+                        // Require a subsequent fresh physical tick, not
+                        // merely the frame on which KSP unpacked.
+                        if(!D.Finite(unpackedUT)){unpackedUT=VesselState.Time;return this;}
+                        if(VesselState.Time<=unpackedUT)return this;
                         return RefreshAfterWarp();
                     }
                     double now=Planetarium.GetUniversalTime();
+                    // A user returning to 1x manually is an interruption,
+                    // not an instruction to immediately accelerate again.
+                    if(TimeWarp.CurrentRate>1)warpSawRate=true;
+                    if((warpSawRate&&TimeWarp.CurrentRate==1&&!Vessel.packed)||
+                        Core.Warp.warpToUT>0)
+                    {ReturnToPhysics();return this;}
                     var action=DunaLandingAdmission.AdvanceWarp(now,warpExit,TimeWarp.CurrentRate,Vessel.packed,
                         Core.Node.Autowarp,context,TimeWarp.WarpMode==TimeWarp.Modes.HIGH,Core.Warp.WarpPaused);
                     if(action!=DunaLandingAdmission.WarpAction.Continue)
@@ -106,7 +125,7 @@ namespace MuMech.Landing
                 {
                     // Manual/unowned warp cannot consume a powered segment.
                     if(TimeWarp.CurrentRate!=1||Vessel.packed)
-                    {warpExit=Planetarium.GetUniversalTime();ReturnToPhysics();}
+                    {warpStartUT=lastUT;warpExit=Planetarium.GetUniversalTime();ReturnToPhysics();}
                     return this;
                 }
                 var s=VesselState;
@@ -131,7 +150,7 @@ namespace MuMech.Landing
                 if(!D.Finite(exit))return this;
                 CancelReplanning();
                 Core.Thrust.RequestActiveThrottle(0,false,true);
-                warpExit=exit;warpOwned=true;
+                warpStartUT=s.Time;warpExit=exit;warpOwned=true;warpSawRate=false;
                 Core.Warp.WarpRegularAtRate((float)Math.Max(1,Math.Min(100,(exit-s.Time)/10)),true,true);
                 Status="Auto-warp to landing preparation; "+Num(exit-s.Time)+" s";
                 UnityEngine.Debug.Log("[DunaIntegratedDescent] auto-warp requested UT="+Num(s.Time)+" exit="+Num(exit));

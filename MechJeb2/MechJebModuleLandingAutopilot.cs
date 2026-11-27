@@ -580,7 +580,11 @@ namespace MuMech
         }
         private void ReleaseIntegratedDescent()
         {
-            if(CurrentStep is DunaIntegratedDescent integrated)integrated.CancelReplanning();
+            if(CurrentStep is DunaIntegratedDescent integrated)
+            {
+                integrated.CancelWarp();
+                integrated.CancelReplanning();
+            }
             if(CurrentStep is DunaIntegratedPlanning planning)planning.Cancel();
             if(Core.Thrust.Users.Contains(this)&&Core.Thrust.Users.Count<=2)
                 Core.Thrust.ThrustOff();
