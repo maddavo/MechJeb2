@@ -962,6 +962,49 @@ namespace MechJebLibTest.LandingPredictionTests
                             " positionError="+secondDecision.PositionError+" velocityError="+secondDecision.VelocityError);
                     }
                 }
+                // Interrupt a partially completed finite burn on the
+                // recorded Eagle orbit. Inject a 10-degree attitude error,
+                // propagate the engine tail and attitude recovery, then
+                // solve from the changed physical state, NOT original orbit.
+                if(!relief)
+                {
+                    double interruption=initial.UT+report.Best.Deorbit.Delay+2;
+                    Assert.True(warpTracker.ReferenceAt(interruption,out var partial,out var planned));
+                    var axis=D.V.Cross(planned.Direction,Math.Abs(planned.Direction.X)<.8?X:Y).Unit;
+                    var tilted=(planned.Direction.Unit*Math.Cos(Math.PI/18)+axis*Math.Sin(Math.PI/18)).Unit;
+                    var interrupted=new D.State(partial.UT,partial.R,partial.Velocity,partial.Mass,tilted,
+                        partial.Throttle,0);
+                    Assert.False(MuMech.Landing.DunaLandingAdmission.OrbitalCommandAligned(interrupted,planned));
+                    Assert.True(MuMech.Landing.DunaLandingAdmission.RecoveryCoastAvailable(env,interrupted,90));
+                    var cut=new D.Command(0,planned.Direction);
+                    D.State recovered=interrupted;
+                    for(int i=0;i<60;i++)
+                    {
+                        var step=D.Advance(env,engine,lim,recovered,cut,.1);
+                        Assert.Equal(D.Outcome.Advanced,step.Status);
+                        recovered=step.End;
+                    }
+                    var authority=engine.At(0);
+                    Assert.True(MuMech.Landing.DunaLandingAdmission.SettledForRecovery(recovered,planned.Direction.Unit,
+                        recovered.Throttle*authority.Force/recovered.Mass,0));
+                    Assert.True(recovered.Mass<initial.Mass);
+                    var rebasedTarget=P.RotateTarget(target,env.Omega,recovered.UT-initial.UT).Unit;
+                    var recoverySettings=MuMech.Landing.DunaLandingAdmission.Settings(env,engine,recovered,
+                        rebasedTarget,1,authority.Force/recovered.Mass/.89999951070689,.89999951070689,.5);
+                    Assert.NotNull(recoverySettings);
+                    var recoveryReport=Strategic.Search(env,engine,lim,recovered,
+                        new Strategic.Settings(recoverySettings,preparation:45,engagementLead:45,maxWait:6000,maxBurn:600),
+                        stopAtFirstTarget:true);
+                    var recoveredPlan=recoveryReport.ValidatedTarget(recoverySettings.Common.TargetTolerance);
+                    Console.WriteLine("Eagle interrupted burn recovery: "+recoveryReport.Status+" prefixes="+recoveryReport.Prefixes+
+                        " approaches="+recoveryReport.Approaches+" miss="+recoveredPlan?.OriginalMiss+
+                        " protected reserve="+lim.ReserveMass);
+                    Assert.NotNull(recoveredPlan);
+                    Assert.True(recoveryReport.Scenarios.Passed);
+                    Assert.True(recoveredPlan.Combined.Result.End.Mass>=lim.ReserveMass);
+                    Assert.Equal(recovered.UT,recoveredPlan.Combined.Reference[0].State.UT);
+                    Assert.Equal(recovered.Mass,recoveredPlan.Combined.Reference[0].State.Mass);
+                }
                 foreach(var trial in report.Scenarios.Trials)
                 {
                     Console.WriteLine("Eagle stock scenario "+trial.Name+" outcome="+trial.Outcome+
