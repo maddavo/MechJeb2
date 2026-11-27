@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MechJebLibBindings;
@@ -29,7 +30,7 @@ namespace MuMech.Landing
             internal uint[] Parts;
             internal uint ReferencePart;
             internal string EngineConfiguration;
-            internal double Latitude,Longitude,UT,Mass,Cap,Warp,DragArea,UsableFuel;
+            internal double Latitude,Longitude,UT,Mass,Cap,Warp,DragArea,UsableFuel,Reserve;
             internal D.State Initial;
             internal DunaLandingAdmission.SolverFrame Frame;
             internal D.Environment Environment;
@@ -383,22 +384,41 @@ namespace MuMech.Landing
                 " pressurePa="+Num(currentPa,"R")+" ASL="+Num(s.AltitudeASL,"R"));
             Require(D.Finite(area)&&area>0,"prospective drag area unavailable");
             double terrainRadius=radius+asl;
-            var environment=new D.Environment(radius,mu,omega,top,new D.Curve(pressure),new D.Curve(density),
-                area,terrainRadius,offset,atmosphere:atmosphere.At);
             double response=Math.Max(.1,s.MaxEngineResponseTime);
             Require(D.Finite(response)&&response<=30,"unknown actuator response");
             // 6 deg/s deliberately explicit, not an observed worst-case
             // turn guarantee. The selected model is not executable.
-            var limits=new D.Limits(reserve,Math.PI/30,response,response,.5);
             double attained=Math.Max(0,Math.Min(1,s.CurrentThrustAcceleration/s.MaxThrustAcceleration));
-            var initial=new D.State(s.Time,pos,vel,mass,forward,attained,v.angularVelocity.magnitude);
-            Require(initial.Valid&&environment.Valid&&limits.Valid,"invalid numerical snapshot");
-            var mode=DunaLandingAdmission.Choose(environment,initial,v.ctrlState.mainThrottle,s.SpeedVertical,out string reason);
-            Require(mode!=DunaLandingAdmission.Mode.Refused,reason);
+            var capture=new DunaIntegratedSnapshotBuilder.Input
+            {
+                Body=body.bodyName,HasAtmosphere=body.atmosphere,Active=FlightGlobals.ActiveVessel==v,
+                Targeted=core.Target.PositionTargetExists&&core.Target.targetBody==body,Packed=v.packed,
+                Landed=v.LandedOrSplashed,ChuteOption=core.Landing.DeployChutes,ChuteCount=s.Parachutes.Count,
+                ChuteDeployed=s.ParachuteDeployed,Rcs=v.ActionGroups[KSPActionGroup.RCS],
+                MinimumThrottle=core.Thrust.LimiterMinThrottle,DifferentialThrottle=core.Thrust.DifferentialThrottle,
+                Smoothing=core.Thrust.SmoothThrottle,Far=ReflectionUtils.IsLoadedFAR,PartCount=v.parts.Count,
+                Warp=TimeWarp.CurrentRate,UT=s.Time,MassKg=mass,AltitudeAsl=s.AltitudeASL,
+                VerticalSpeed=s.SpeedVertical,CommandedThrottle=v.ctrlState.mainThrottle,
+                MaxAcceleration=s.MaxThrustAcceleration,MinAcceleration=s.MinThrustAcceleration,
+                FixedThrottleLimit=s.ThrottleFixedLimit,ThrottleLimit=s.ThrottleLimit,
+                TargetLatitude=lat,TargetLongitude=lon,TerrainAsl=asl,Radius=radius,Mu=mu,
+                AtmosphereTop=top,BottomOffset=offset,TouchdownSpeed=core.Landing.TouchdownSpeed,
+                EngineResponse=response,TurnRate=Math.PI/30,FlowKgPerSecond=flowTotal,
+                UsableFuelKg=usable,ReserveFloorKg=reserveFloor,NominalThrustNewtons=nominalCurrent,
+                ImpulseDerate=derate,DragArea=area,AttainedThrottle=attained,PointingRate=v.angularVelocity.magnitude,
+                Position=pos,OrbitalVelocity=vel,SurfaceVelocity=V(s.SurfaceVelocity),Omega=omega,
+                Forward=forward,TargetRadial=target,PressureByAltitude=new D.Curve(pressure),
+                DensityByAltitude=new D.Curve(density),EngineIspByPressure=curve,Atmosphere=atmosphere.At,
+                Propulsion=propulsion,FrameA=frame.AtCapture.A,FrameB=frame.AtCapture.B,FrameC=frame.AtCapture.C,
+                Parts=v.parts.Select(part=>part.flightID).ToArray(),
+                ReferencePart=v.GetReferenceTransformPart().flightID,EngineConfiguration=EngineSignature(v)
+            };
+            var built=DunaIntegratedSnapshotBuilder.Build(capture);
+            Require(built.Accepted,built.Reason);
+            var initial=built.Initial;var environment=built.Environment;var limits=built.Limits;
+            var settings=built.Settings;var mode=built.Mode;reserve=built.Reserve;
+            frame=built.Frame;cap=built.Cap;
             bool strategic=mode==DunaLandingAdmission.Mode.Orbit;
-            var settings=DunaLandingAdmission.Settings(environment,propulsion,initial,target,cap,
-                s.MaxThrustAcceleration,derate,(double)core.Landing.TouchdownSpeed);
-            Require(settings!=null,"invalid solver settings or horizon");
             // One bounded model record per admitted snapshot, sufficient
             // to reconstruct the numerical input without a second flight.
             var samples=new System.Text.StringBuilder();
@@ -417,8 +437,8 @@ namespace MuMech.Landing
                 " samples(ASL:Pa:rho:atm:Isp)="+samples);
             var partIds=new uint[v.parts.Count];for(int i=0;i<partIds.Length;i++)partIds[i]=v.parts[i].flightID;
             return new Snapshot{Vessel=v.id,Parts=partIds,Latitude=lat,Longitude=lon,UT=s.Time,Mass=mass,
-                Cap=cap,Warp=TimeWarp.CurrentRate,DragArea=area,UsableFuel=usable,Initial=initial,
-                Environment=environment,Propulsion=propulsion,Limits=limits,Settings=settings,Frame=frame,
+                Cap=cap,Warp=TimeWarp.CurrentRate,DragArea=area,UsableFuel=usable,Reserve=built.Reserve,
+                Initial=initial,Environment=environment,Propulsion=propulsion,Limits=limits,Settings=settings,Frame=frame,
                 Strategic=strategic,ApproachStartUT=initial.UT,
                 ReferencePart=v.GetReferenceTransformPart().flightID,EngineConfiguration=EngineSignature(v)};
         }

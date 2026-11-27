@@ -210,6 +210,17 @@ namespace MuMech.Landing
         // nominal direction. The same throttle interlock is used by replay.
         internal static bool OrbitalCommandAligned(D.State actual,D.Command requested)
             =>actual.Valid&&requested.Valid&&D.V.Dot(actual.Forward,requested.Direction.Unit)>=.995;
+        internal enum OrbitalRecoveryAction { None, Replan, HoldThrust, Supervisor }
+        internal static OrbitalRecoveryAction SelectOrbitalRecovery(bool inBurnWindow,bool trackingValid,
+            D.State actual,D.Command requested,bool recoveryCoastAvailable)
+        {
+            if(!inBurnWindow)return OrbitalRecoveryAction.None;
+            if(!trackingValid)return recoveryCoastAvailable?OrbitalRecoveryAction.Replan:OrbitalRecoveryAction.Supervisor;
+            if(OrbitalCommandAligned(actual,requested))return OrbitalRecoveryAction.None;
+            return recoveryCoastAvailable?OrbitalRecoveryAction.Replan:OrbitalRecoveryAction.HoldThrust;
+        }
+        internal static D.Command GateOrbitalCommand(D.State actual,D.Command command,bool inBurnWindow)
+            =>inBurnWindow&&!OrbitalCommandAligned(actual,command)?new D.Command(0,command.Direction):command;
         internal static bool SettledForRecovery(D.State actual,D.V direction,double observedAcceleration,
             double appliedThrottle)
             =>actual.Valid&&direction.Valid&&direction.Length>.99&&

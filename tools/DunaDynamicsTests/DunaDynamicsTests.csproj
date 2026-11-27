@@ -8,6 +8,9 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/DunaM1DiagnosticsRequest.cs" Link="DunaM1DiagnosticsRequest.cs"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/DunaLandingAdmission.cs" Link="DunaLandingAdmission.cs"/>
+    <Compile Include="../../MechJeb2/LandingAutopilot/DunaIntegratedSnapshotBuilder.cs" Link="DunaIntegratedSnapshotBuilder.cs"/>
+    <Compile Include="../../MechJebLibTest/LandingPredictionTests/M513CapturedEagleOfflineGateTests.cs" Link="M513CapturedEagleOfflineGateTests.cs"/>
+    <None Include="../../MechJebLibTest/LandingPredictionTests/Fixtures/M5.12-Eagle-orbit-capture.csv" Link="Fixtures/M5.12-Eagle-orbit-capture.csv" CopyToOutputDirectory="PreserveNewest"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericLandingDynamics.cs" Link="AtmosphericLandingDynamics.cs"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericLandingReplay.cs" Link="AtmosphericLandingReplay.cs"/>
     <Compile Include="../../MechJeb2/LandingAutopilot/AtmosphericTerminalReplay.cs" Link="AtmosphericTerminalReplay.cs"/>

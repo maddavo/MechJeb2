@@ -65,7 +65,7 @@ jobs:
         id: duna
         run: |
           $env:DUNA_BENCHMARK_OUTPUT = Join-Path (Resolve-Path TestResults).Path 'solver-benchmark-net48.tsv'
-          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release --no-build "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~DunaM1DiagnosticsTests|FullyQualifiedName~DunaBrakingHandoffTests|FullyQualifiedName~AtmosphericLandingDynamicsTests|FullyQualifiedName~AtmosphericFeasibleRangePlannerTests|FullyQualifiedName~AtmosphericFiniteTimePlannerTests|FullyQualifiedName~AtmosphericSolverBenchmarkTests' --logger 'console;verbosity=normal' --logger 'trx;LogFileName=duna.trx' --results-directory TestResults
+          dotnet test MechJebLibTest/MechJebLibTest.csproj -c Release --no-build "-p:KspDir=$env:KspDir" "-p:KspData=$env:KspData" --filter 'FullyQualifiedName~DunaM1DiagnosticsTests|FullyQualifiedName~DunaBrakingHandoffTests|FullyQualifiedName~AtmosphericLandingDynamicsTests|FullyQualifiedName~AtmosphericFeasibleRangePlannerTests|FullyQualifiedName~AtmosphericFiniteTimePlannerTests|FullyQualifiedName~AtmosphericSolverBenchmarkTests|FullyQualifiedName~M513CapturedEagleOfflineGateTests' --logger 'console;verbosity=normal' --logger 'trx;LogFileName=duna.trx' --results-directory TestResults
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (!(Test-Path $env:DUNA_BENCHMARK_OUTPUT)) { throw 'Missing net48 solver benchmark results' }
           Get-Content $env:DUNA_BENCHMARK_OUTPUT
@@ -105,15 +105,22 @@ jobs:
           $ErrorActionPreference = 'Stop'
           [xml]$current = Get-Content TestResults/landing.trx -Raw
           [xml]$baseline = Get-Content TestResults/baseline.trx -Raw
-          $a = @($current.TestRun.Results.UnitTestResult | ForEach-Object { "$($_.testName) : $($_.outcome)" } | Sort-Object)
-          $b = @($baseline.TestRun.Results.UnitTestResult | ForEach-Object { "$($_.testName) : $($_.outcome)" } | Sort-Object)
+          $a = @($current.TestRun.Results.UnitTestResult)
+          $b = @($baseline.TestRun.Results.UnitTestResult)
           if (!$a.Count -or !$b.Count) { throw 'Missing baseline or task test outcomes' }
-          $delta = @(Compare-Object $b $a)
-          $summary = @("Task: $($a.Count) tests", "Baseline: $($b.Count) tests", "Differences: $($delta.Count)")
-          $summary += @($delta | Out-String)
+          $currentByName = @{}; foreach ($test in $a) { $currentByName[$test.testName] = $test.outcome }
+          $baselineByName = @{}; foreach ($test in $b) { $baselineByName[$test.testName] = $test.outcome }
+          $removed = @($baselineByName.Keys | Where-Object { !$currentByName.ContainsKey($_) })
+          $added = @($currentByName.Keys | Where-Object { !$baselineByName.ContainsKey($_) })
+          $changed = @($baselineByName.Keys | Where-Object { $currentByName.ContainsKey($_) -and $currentByName[$_] -ne $baselineByName[$_] })
+          $failedAdded = @($added | Where-Object { $currentByName[$_] -ne 'Passed' })
+          $summary = @("Task: $($a.Count) tests", "Baseline: $($b.Count) tests", "Changed shared outcomes: $($changed.Count)", "Removed baseline tests: $($removed.Count)", "Added tests: $($added.Count)", "Failing added tests: $($failedAdded.Count)")
+          $summary += @('Changed outcomes:') + @($changed | ForEach-Object { "  $_ : baseline=$($baselineByName[$_]), task=$($currentByName[$_])" })
+          $summary += @('Removed baseline tests:') + @($removed | ForEach-Object { "  $_" })
+          $summary += @('Added tests:') + @($added | ForEach-Object { "  $_ : $($currentByName[$_])" })
           $summary | Set-Content TestResults/baseline-comparison.txt
           $summary | Write-Output
-          if ($delta.Count) { throw 'Baseline and task landing outcomes differ; investigate before use' }
+          if ($removed.Count -or $changed.Count -or $failedAdded.Count) { throw 'Landing regression outcomes differ from baseline; investigate before use' }
 
       - name: Package plugin and assembly identity manifest
         if: always() && steps.duna.outcome == 'success' && (steps.landing.outcome == 'success' || steps.compare.outcome == 'success')

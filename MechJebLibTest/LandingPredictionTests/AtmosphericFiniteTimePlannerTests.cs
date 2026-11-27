@@ -318,6 +318,22 @@ namespace MechJebLibTest.LandingPredictionTests
             var wrong=new D.State(aimed.UT,aimed.R,aimed.Velocity,aimed.Mass,X,0,0);
             Assert.True(MuMech.Landing.DunaLandingAdmission.OrbitalCommandAligned(aimed,requested));
             Assert.False(MuMech.Landing.DunaLandingAdmission.OrbitalCommandAligned(wrong,requested));
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.OrbitalRecoveryAction.Replan,
+                MuMech.Landing.DunaLandingAdmission.SelectOrbitalRecovery(true,true,wrong,requested,true));
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.OrbitalRecoveryAction.HoldThrust,
+                MuMech.Landing.DunaLandingAdmission.SelectOrbitalRecovery(true,true,wrong,requested,false));
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.OrbitalRecoveryAction.Supervisor,
+                MuMech.Landing.DunaLandingAdmission.SelectOrbitalRecovery(true,false,wrong,requested,false));
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.OrbitalRecoveryAction.None,
+                MuMech.Landing.DunaLandingAdmission.SelectOrbitalRecovery(true,true,aimed,requested,false));
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.OrbitalRecoveryAction.None,
+                MuMech.Landing.DunaLandingAdmission.SelectOrbitalRecovery(false,false,wrong,requested,false));
+            Assert.Equal(MuMech.Landing.DunaLandingAdmission.OrbitalRecoveryAction.Supervisor,
+                MuMech.Landing.DunaLandingAdmission.SelectOrbitalRecovery(true,false,wrong,default,false));
+            var held=MuMech.Landing.DunaLandingAdmission.GateOrbitalCommand(wrong,requested,true);
+            Assert.Equal(0,held.Throttle);
+            Assert.Equal(requested.Direction,held.Direction);
+            Assert.True(MuMech.Landing.DunaLandingAdmission.GateOrbitalCommand(aimed,requested,true).Throttle>0);
             Assert.False(MuMech.Landing.DunaLandingAdmission.SettledForRecovery(wrong,Y,0,0));
             Assert.False(MuMech.Landing.DunaLandingAdmission.SettledForRecovery(aimed,Y,.1,0));
             Assert.True(MuMech.Landing.DunaLandingAdmission.SettledForRecovery(aimed,Y,0,0));

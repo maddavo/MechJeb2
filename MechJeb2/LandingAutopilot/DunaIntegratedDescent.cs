@@ -372,27 +372,38 @@ namespace MuMech.Landing
                 // Recover before the generic tracking-envelope failure
                 // can terminate an otherwise safely coasting vessel.
                 bool burnWindow=orbitalPrefix&&s.Time>=snapshot.DeorbitStartUT&&s.Time<snapshot.DeorbitEndUT;
-                if(!hazardMode&&burnWindow&&tracker.ReferenceAt(actual.UT,out _,out var referenceCommand))
+                if(!hazardMode&&burnWindow)
                 {
-                    var desired=decision.Valid?decision.Command:referenceCommand;
-                    if(!decision.Valid||!DunaLandingAdmission.OrbitalCommandAligned(actual,desired))
+                    bool hasReference=tracker.ReferenceAt(actual.UT,out _,out var referenceCommand);
+                    var desired=decision.Valid?decision.Command:hasReference?referenceCommand:
+                        new D.Command(0,actual.Forward);
+                    bool coastAvailable=DunaLandingAdmission.RecoveryCoastAvailable(activeEnvironment,actual,90);
+                    var recovery=DunaLandingAdmission.SelectOrbitalRecovery(burnWindow,decision.Valid,actual,
+                        desired,coastAvailable);
+                    if(recovery==DunaLandingAdmission.OrbitalRecoveryAction.Replan)
                     {
-                        if(DunaLandingAdmission.RecoveryCoastAvailable(activeEnvironment,actual,90))
-                        {
-                            HoldForRecovery(actual,desired.Direction,decision.Valid?"attitude error":decision.Reason);
-                            return RecoverOrbitalAttitude(actual);
-                        }
-                        // Committed with inadequate coast time for a full
-                        // solve: hold the actual requested direction with
-                        // zero thrust. Never apply misaligned thrust.
-                        if(decision.Valid)
-                        {
-                            Core.Thrust.RequestActiveThrottle(0,false,true);
-                            Core.Attitude.attitudeTo(DunaIntegratedPreview.WorldAt(MainBody,snapshot.Frame,
-                                desired.Direction.Unit,s.Time),AttitudeReference.INERTIAL,Core.Landing);
-                            Status="Correcting committed burn attitude; thrust suspended";
-                            return this;
-                        }
+                        HoldForRecovery(actual,desired.Direction,decision.Valid?"attitude error":decision.Reason);
+                        return RecoverOrbitalAttitude(actual);
+                    }
+                    if(recovery==DunaLandingAdmission.OrbitalRecoveryAction.HoldThrust)
+                    {
+                        Core.Thrust.RequestActiveThrottle(0,false,true);
+                        Core.Attitude.attitudeTo(DunaIntegratedPreview.WorldAt(MainBody,snapshot.Frame,
+                            desired.Direction.Unit,s.Time),AttitudeReference.INERTIAL,Core.Landing);
+                        Status="Correcting committed burn attitude; thrust suspended";
+                        return this;
+                    }
+                    if(recovery==DunaLandingAdmission.OrbitalRecoveryAction.Supervisor)
+                    {
+                        // A lost tracker inside the committed ignition window
+                        // is not permission to continue an unrelated hazard
+                        // law against orbital velocity. Stop this pass; the
+                        // next fresh state enters the independent supervisor.
+                        Core.Thrust.RequestActiveThrottle(0,false,true);
+                        hazardMode=true;hazardReason="orbital tracker lost without safe coast; thrust suspended";
+                        CancelReplanning();
+                        Status="Orbital trajectory invalidated; supervisor taking over with thrust suspended";
+                        return this;
                     }
                 }
                 if(!hazardMode&&!emergency&&!orbitalPrefix)
@@ -460,8 +471,7 @@ namespace MuMech.Landing
                 else if(decision.Valid)command=decision.Command;
                 // The pre-command recovery branch above handles orbital
                 // misalignment; no single-tick nominal-angle abort remains.
-                if(!hazardMode&&burnWindow&&!DunaLandingAdmission.OrbitalCommandAligned(actual,command))
-                    command=new D.Command(0,command.Direction);
+                command=DunaLandingAdmission.GateOrbitalCommand(actual,command,burnWindow);
                 if(!command.Valid||!D.Finite(cap)||command.Throttle>cap+1e-8)
                     return Finish("invalid live command");
                 // Exclusive ownership of the existing actuator interfaces.

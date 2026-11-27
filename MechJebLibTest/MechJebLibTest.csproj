@@ -22,6 +22,7 @@
 
     <ItemGroup>
         <None Update="LandingPredictionTests/Fixtures/*.csv" CopyToOutputDirectory="PreserveNewest"/>
+        <None Update="LandingPredictionTests/Fixtures/M5.12-Eagle-orbit-capture.csv" CopyToOutputDirectory="PreserveNewest"/>
         <Reference Include="Assembly-CSharp">
             <HintPath>$(KspData)/Managed/Assembly-CSharp.dll</HintPath>
             <Private>True</Private>
