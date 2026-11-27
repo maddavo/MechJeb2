@@ -122,3 +122,8 @@ The existing non-atmospheric landing guidance is a required design-review refere
 
 
 Interactive landing planning must distinguish optimisation budget expiry from explicit cancellation or context invalidation. A completed independent replay and passed uncertainty screen for a targeted trajectory remain valid evidence when further optimisation expires. Stop interactive strategic search once a fully validated targeted trajectory is found; do not demand a globally optimal solution before starting guidance. A retained candidate must still pass terrain screening and live admission. Explicit cancellation discards the transaction; incomplete or off-target candidates cannot engage.
+
+
+### Auto-warp parity
+
+The integrated targeted landing controller must honour Core.Node.Autowarp and reuse MechJeb's existing warp controller. Permit regular warp only over a validated zero-thrust vacuum coast, with an actual osculating orbit and planned-reference atmosphere/first-thrust bound. Return to unpacked 1x with adequate turn/settle reserve before the next manoeuvre. Do not issue powered commands during packed warp or before a fresh physical state is revalidated. A changed safe preburn orbit requires a fresh plan; never credit skipped thrust. Stop owned warp on cancellation, loss of context, or disabling Auto-warp. Atmospheric and powered phases remain at physics 1x; use regular warp for subsequent safe vacuum coast when available. Offline tests must cover warp entry, actual Kepler propagation, exit, interruption and refusal of stale/powered paths. Flight-test readiness requires functional parity with existing Landing Guidance, including Auto-warp.

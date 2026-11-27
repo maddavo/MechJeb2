@@ -539,16 +539,17 @@ namespace MuMech.Landing
             return "miss "+Num(a.Miss/1000,"F2")+" km; fuel "+Num(initialMass-a.End.Mass, "F0")+" kg; coast "+
                 Num(a.Profile.IgnitionDelay)+" s";
         }
-        internal static bool SameContext(MechJebCore core,Snapshot snapshot)
+        internal static bool SameContext(MechJebCore core,Snapshot snapshot,bool ownedWarp=false)
         {
             if(snapshot==null||core.vessel==null||core.vessel.id!=snapshot.Vessel||
                 core.vessel.mainBody==null||core.vessel.mainBody.bodyName!="Duna"||
                 !core.Target.PositionTargetExists||core.Target.targetBody!=core.vessel.mainBody||
                 (double)core.Target.targetLatitude!=snapshot.Latitude||(double)core.Target.targetLongitude!=snapshot.Longitude||
-                TimeWarp.CurrentRate!=snapshot.Warp||core.vessel.packed||core.vessel.parts.Count!=snapshot.Parts.Length||
+                (!ownedWarp&&(TimeWarp.CurrentRate!=snapshot.Warp||core.vessel.packed))||
+                core.vessel.parts.Count!=snapshot.Parts.Length||
                 core.vessel.GetReferenceTransformPart()==null||
                 core.vessel.GetReferenceTransformPart().flightID!=snapshot.ReferencePart)return false;
-            if(core.VesselState.Time<snapshot.UT)return false;
+            if((ownedWarp?Planetarium.GetUniversalTime():core.VesselState.Time)<snapshot.UT)return false;
             for(int i=0;i<snapshot.Parts.Length;i++)if(core.vessel.parts[i].flightID!=snapshot.Parts[i])return false;
             return true;
         }

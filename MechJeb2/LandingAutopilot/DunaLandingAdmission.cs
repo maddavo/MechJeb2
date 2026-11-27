@@ -210,6 +210,59 @@ namespace MuMech.Landing
             =>!D.Finite(clearance)||!D.Finite(modelClearance)||(contact?Math.Abs(clearance)>2:
                 clearance<=0||modelClearance<=30&&Math.Abs(clearance-modelClearance)>2);
 
+        // A regular-warp window must be both a validated zero-thrust
+        // reference interval and vacuum on the current osculating orbit.
+        // Similar to the airless preparation policy, return to physics
+        // early enough for a complete attitude slew and settling.
+        internal const double WarpPreparationSeconds=60;
+        internal const double WarpAtmosphereMargin=5000;
+        internal static double VacuumBoundaryUT(D.Environment env,D.State actual,double boundaryRadius)
+        {
+            if(env==null||!actual.Valid||!D.Finite(boundaryRadius)||boundaryRadius<=0||
+                actual.R.Length<=boundaryRadius||
+                !AtmosphericStrategicPlanner.TryOrbit(env,actual,out var orbit))return actual.UT;
+            if(orbit.Periapsis>boundaryRadius)return double.PositiveInfinity;
+            double a=orbit.SemiMajor,e=orbit.Eccentricity;
+            if(e<1e-8)return actual.UT;
+            double cos=Math.Max(-1,Math.Min(1,(1-actual.R.Length/a)/e));
+            double sin=D.V.Dot(actual.R,actual.Velocity)/(e*Math.Sqrt(env.Mu*a));
+            double eccentric=Math.Atan2(sin,cos);
+            double mean=eccentric-e*Math.Sin(eccentric);
+            double entry=-Math.Acos(Math.Max(-1,Math.Min(1,(1-boundaryRadius/a)/e)));
+            double target=entry-e*Math.Sin(entry);
+            double delta=(target-mean)%(2*Math.PI);
+            if(delta<0)delta+=2*Math.PI;
+            return actual.UT+delta*orbit.Period/(2*Math.PI);
+        }
+        internal static double WarpExitUT(D.Environment env,AtmosphericPlanTracker tracker,D.State actual,
+            double commandedThrottle,double appliedThrottle,double acceleration,double minimumAcceleration,
+            bool autoWarp,bool physicsReady,bool recoveryActive)
+        {
+            if(!autoWarp||!physicsReady||recoveryActive||env==null||tracker==null||!actual.Valid||
+                !D.Finite(commandedThrottle)||Math.Abs(commandedThrottle)>1e-4||
+                !D.Finite(appliedThrottle)||Math.Abs(appliedThrottle)>1e-4||actual.Throttle>1e-4||
+                !D.Finite(acceleration)||Math.Abs(acceleration)>.001||
+                !D.Finite(minimumAcceleration)||minimumAcceleration>1e-6)return double.NaN;
+            double boundary=env.Radius+env.AtmosphereTop+WarpAtmosphereMargin;
+            if(actual.R.Length<=boundary||!tracker.ReferenceAt(actual.UT,out _,out var command)||command.Throttle!=0)
+                return double.NaN;
+            double next=tracker.NextPoweredOrAtmosphericUT(actual.UT,boundary);
+            double entry=VacuumBoundaryUT(env,actual,boundary);
+            double exit=Math.Min(next,entry)-WarpPreparationSeconds;
+            return D.Finite(exit)&&exit-actual.UT>=30?exit:double.NaN;
+        }
+        internal enum WarpAction { Continue, Stop, WaitForPhysics, Revalidate }
+        internal static WarpAction AdvanceWarp(double now,double exit,double rate,bool packed,
+            bool autoWarp,bool contextValid,bool regular,bool paused)
+        {
+            if(!contextValid||!autoWarp||paused||!regular||!D.Finite(now)||!D.Finite(exit)||now>=exit-10)
+                return packed||rate!=1?WarpAction.Stop:WarpAction.Revalidate;
+            if(rate==1&&!packed&&exit-now<30)return WarpAction.Revalidate;
+            return WarpAction.Continue;
+        }
+        internal static bool WarpPhysicsReady(double rate,bool packed,bool fresh)
+            =>rate==1&&!packed&&fresh;
+
         internal static bool OwnsActuators(int attitudeUsers,bool landingAttitude,int thrustUsers,
             bool thrustSelf,bool landingThrust,bool pending)
             =>pending?attitudeUsers==1&&landingAttitude&&thrustUsers==2&&thrustSelf&&landingThrust:

@@ -17,6 +17,128 @@ namespace MuMech.Landing
         private bool emergency,hazardMode,orbitalBurnRequested;
         private string hazardReason;
         internal void CancelReplanning(){replanner.Cancel();fallback.Cancel();}
+        private bool warpOwned,warpReturning,warpDisabledForPlan;
+        private double warpExit=double.NaN,nextWarpProbe=double.NegativeInfinity;
+        internal void CancelWarp()
+        {
+            if(warpOwned||warpReturning)Core.Warp.MinimumWarp(true);
+            warpOwned=false;warpReturning=false;warpExit=double.NaN;
+        }
+        private bool OwnsControls()=>Core.Landing.Enabled&&DunaLandingAdmission.OwnsActuators(
+            Core.Attitude.Users.Count,Core.Attitude.Users.Contains(Core.Landing),
+            Core.Thrust.Users.Count,Core.Thrust.Users.Contains(Core.Thrust),
+            Core.Thrust.Users.Contains(Core.Landing),true);
+        private bool PhysicsReady()=>DunaLandingAdmission.WarpPhysicsReady(TimeWarp.CurrentRate,Vessel.packed,
+            Math.Abs(VesselState.Time-Planetarium.GetUniversalTime())<=.05);
+        private void ReturnToPhysics()
+        {
+            Core.Warp.MinimumWarp(true);
+            warpReturning=true;warpOwned=false;
+            Status="Returning to 1x for landing trajectory revalidation";
+        }
+        private AutopilotStep RefreshAfterWarp()
+        {
+            // Only after actual physics/vessel state has refreshed. The
+            // packed orbit is not a live attitude or engine observation.
+            string reason=DunaIntegratedPreview.LiveCompatibility(Core,snapshot,true);
+            if(reason!=null)return Finish(reason+" after warp");
+            var s=VesselState;
+            var actual=DunaIntegratedPreview.LiveState(Core,snapshot);
+            double cap=Math.Min(snapshot.Cap,Math.Min(s.ThrottleLimit,s.ThrottleFixedLimit));
+            var decision=tracker.Track(actual,s.AltitudeBottom,s.MaxThrustAcceleration,cap,
+                s.LocalGravity,s.MaxEngineResponseTime);
+            bool missed=actual.UT>=warpExit+DunaLandingAdmission.WarpPreparationSeconds||
+                !tracker.ReferenceAt(actual.UT,out _,out var feed)||feed.Throttle>0;
+            UnityEngine.Debug.Log("[DunaIntegratedDescent] warp exit UT="+Num(actual.UT)+
+                " planned exit="+Num(warpExit)+" tracking="+decision.Valid+" missed="+missed+
+                " positionError="+Num(decision.PositionError)+" velocityError="+Num(decision.VelocityError));
+            warpReturning=false;warpOwned=false;warpExit=double.NaN;
+            // A changed orbit or missed burn must be re-planned, not
+            // silently credited with a burn skipped during warp.
+            if((missed||!decision.Valid)&&!orbitalBurnRequested&&
+                AtmosphericStrategicPlanner.TryOrbit(activeEnvironment,actual,out var orbit)&&
+                orbit.Periapsis>activeEnvironment.Radius+activeEnvironment.AtmosphereTop)
+            {
+                var planning=new DunaIntegratedPlanning(Core);
+                if(!planning.Start(out string why))return Finish("post-warp replan: "+why);
+                CancelReplanning();
+                return planning;
+            }
+            if(missed)return Finish("warp overran the unpowered interval; manual control required");
+            // The validated trajectory is still current. The regular
+            // tracker now uses the measured post-warp state, and the
+            // normal approach replan/supervisor remains active.
+            warpDisabledForPlan=true;
+            nextWarpProbe=actual.UT+1;
+            Status=decision.Valid?"Post-warp trajectory revalidated; acquiring burn attitude":
+                "Post-warp trajectory requires guidance recovery";
+            return this;
+        }
+        public override AutopilotStep OnFixedUpdate()
+        {
+            try
+            {
+                if(!OwnsControls())return Finish("warp actuator ownership changed");
+                if(warpOwned||warpReturning)
+                {
+                    bool context=DunaIntegratedPreview.SameContext(Core,snapshot,true)&&
+                        FlightGlobals.ActiveVessel==Vessel&&!Vessel.LandedOrSplashed;
+                    if(!context)
+                    {CancelWarp();return Finish("landing context changed during warp");}
+                    if(warpReturning)
+                    {
+                        if(!PhysicsReady()){Core.Warp.MinimumWarp(true);return this;}
+                        return RefreshAfterWarp();
+                    }
+                    double now=Planetarium.GetUniversalTime();
+                    var action=DunaLandingAdmission.AdvanceWarp(now,warpExit,TimeWarp.CurrentRate,Vessel.packed,
+                        Core.Node.Autowarp,context,TimeWarp.WarpMode==TimeWarp.Modes.HIGH,Core.Warp.WarpPaused);
+                    if(action!=DunaLandingAdmission.WarpAction.Continue)
+                    {ReturnToPhysics();return this;}
+                    // Regular warp only; never invoke physics warp in air.
+                    // Bound the rate and decrease it as the exit approaches.
+                    float maxRate=(float)Math.Max(1,Math.Min(100,(warpExit-now)/10));
+                    Core.Warp.WarpRegularAtRate(maxRate,true,true);
+                    Status="Auto-warp to landing preparation; "+Num(warpExit-now)+" s";
+                    return this;
+                }
+                if(!PhysicsReady())
+                {
+                    // Manual/unowned warp cannot consume a powered segment.
+                    if(TimeWarp.CurrentRate!=1||Vessel.packed)
+                    {warpExit=Planetarium.GetUniversalTime();ReturnToPhysics();}
+                    return this;
+                }
+                var s=VesselState;
+                if(!Core.Node.Autowarp||Core.Warp.WarpPaused||hazardMode||emergency||terminalExtension||
+                    replanner.Busy||fallback.Busy||Core.Warp.warpToUT>0||s.Time<nextWarpProbe)return this;
+                // Allow another window after an actual orbital burn. Do
+                // not restart the same warp during its preparation period.
+                if(warpDisabledForPlan)
+                {
+                    if(!orbitalBurnRequested||s.Time<snapshot.ApproachStartUT)return this;
+                    warpDisabledForPlan=false;
+                }
+                nextWarpProbe=s.Time+1;
+                if(DunaIntegratedPreview.LiveCompatibility(Core,snapshot,false)!=null)return this;
+                var actual=DunaIntegratedPreview.LiveState(Core,snapshot);
+                double cap=Math.Min(snapshot.Cap,Math.Min(s.ThrottleLimit,s.ThrottleFixedLimit));
+                var decision=tracker.Track(actual,s.AltitudeBottom,s.MaxThrustAcceleration,cap,
+                    s.LocalGravity,s.MaxEngineResponseTime);
+                if(!decision.Valid||decision.Command.Throttle!=0)return this;
+                double exit=DunaLandingAdmission.WarpExitUT(activeEnvironment,tracker,actual,decision.Command.Throttle,
+                    Vessel.ctrlState.mainThrottle,s.CurrentThrustAcceleration,s.MinThrustAcceleration,true,true,false);
+                if(!D.Finite(exit))return this;
+                CancelReplanning();
+                Core.Thrust.RequestActiveThrottle(0,false,true);
+                warpExit=exit;warpOwned=true;
+                Core.Warp.WarpRegularAtRate((float)Math.Max(1,Math.Min(100,(exit-s.Time)/10)),true,true);
+                Status="Auto-warp to landing preparation; "+Num(exit-s.Time)+" s";
+                UnityEngine.Debug.Log("[DunaIntegratedDescent] auto-warp requested UT="+Num(s.Time)+" exit="+Num(exit));
+                return this;
+            }
+            catch(Exception ex){CancelWarp();return Finish("warp controller exception: "+ex.Message);}
+        }
         private double nextEngineUT=double.NegativeInfinity,nextLogUT=double.NegativeInfinity,lastUT=double.NegativeInfinity;
         private bool terminalExtension;
         private double nextSurfaceUT=double.NegativeInfinity,deckOffset;
@@ -50,6 +172,7 @@ namespace MuMech.Landing
         private string Num(double x)=>x.ToString("F3",CultureInfo.InvariantCulture);
         private AutopilotStep Finish(string reason)
         {
+            CancelWarp();
             Core.Landing.EndIntegratedDescent(reason);
             return null;
         }
@@ -58,6 +181,9 @@ namespace MuMech.Landing
         {
             try
             {
+                // Drive may not run during packed warp. When it does,
+                // it must never write a powered command until revalidated.
+                if(warpOwned||warpReturning||!PhysicsReady())return this;
                 var s=VesselState;
                 if(Vessel.LandedOrSplashed)
                     return Finish("observed contact lat="+Num(MainBody.GetLatitude(s.CoM))+

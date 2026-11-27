@@ -1001,8 +1001,64 @@ namespace MechJebLibTest.LandingPredictionTests
                 1,env.Mu/(initial.R.Length*initial.R.Length),.1);
             Assert.True(decision.Valid,decision.Reason);
             Assert.Equal(0,decision.Command.Throttle);
+            // Test the actual validated orbital trajectory with a KSP-like
+            // on-rails Kepler jump, not just a fabricated warp state.
+            double warpExit=MuMech.Landing.DunaLandingAdmission.WarpExitUT(env,tracker,initial,0,0,0,0,true,true,false);
+            if(report.Best.Deorbit.Delay>90)
+            {
+                Assert.True(D.Finite(warpExit));
+                Assert.True(warpExit<=initial.UT+report.Best.Deorbit.Delay-60);
+                Assert.True(Strategic.TryOrbit(env,initial,out var warpOrbit));
+                Assert.True(Strategic.KeplerState(env,initial,warpOrbit,warpExit-initial.UT,out var wr,out var wv));
+                var actualAfterWarp=new D.State(warpExit,wr,wv,initial.Mass,initial.Forward);
+                var after=tracker.Track(actualAfterWarp,env.PhysicalClearance(actualAfterWarp),
+                    4*400*9.80665/initial.Mass,1,env.Mu/wr.Length/wr.Length,.1);
+                Assert.True(after.Valid,after.Reason);
+                Assert.Equal(0,after.Command.Throttle);
+            }
+            Assert.True(double.IsNaN(MuMech.Landing.DunaLandingAdmission.WarpExitUT(env,tracker,initial,0,0,0,0,false,true,false)));
+            Assert.True(double.IsNaN(MuMech.Landing.DunaLandingAdmission.WarpExitUT(env,tracker,initial,0,.1,0,0,true,true,false)));
             Assert.Equal(MuMech.Landing.DunaLandingAdmission.Progress.Engage,
                 MuMech.Landing.DunaLandingAdmission.Next(true,true,false,true,true,decision.Valid));
+        }
+
+        [Theory]
+        [InlineData(1,false,true)]
+        [InlineData(100,true,false)]
+        [InlineData(1,true,false)]
+        [InlineData(5,false,false)]
+        public void WarpCannotResumeThrustUntilUnpackedOneX(double rate,bool packed,bool ready)
+        {
+            Assert.Equal(ready,MuMech.Landing.DunaLandingAdmission.WarpPhysicsReady(rate,packed,true));
+            Assert.False(MuMech.Landing.DunaLandingAdmission.WarpPhysicsReady(rate,packed,false));
+        }
+
+        [Fact]
+        public void WarpExitPolicyStopsBeforePreparationAndRespectsAutoWarp()
+        {
+            var A=MuMech.Landing.DunaLandingAdmission.WarpAction.Continue;
+            var S=MuMech.Landing.DunaLandingAdmission.WarpAction.Stop;
+            var R=MuMech.Landing.DunaLandingAdmission.WarpAction.Revalidate;
+            Assert.Equal(A,MuMech.Landing.DunaLandingAdmission.AdvanceWarp(100,200,50,true,true,true,true,false));
+            Assert.Equal(S,MuMech.Landing.DunaLandingAdmission.AdvanceWarp(191,200,50,true,true,true,true,false));
+            Assert.Equal(S,MuMech.Landing.DunaLandingAdmission.AdvanceWarp(100,200,50,true,false,true,true,false));
+            Assert.Equal(S,MuMech.Landing.DunaLandingAdmission.AdvanceWarp(100,200,50,true,true,false,true,false));
+            Assert.Equal(S,MuMech.Landing.DunaLandingAdmission.AdvanceWarp(100,200,2,false,true,true,false,false));
+            Assert.Equal(R,MuMech.Landing.DunaLandingAdmission.AdvanceWarp(191,200,1,false,true,true,true,false));
+        }
+
+        [Fact]
+        public void WarpVacuumBoundaryUsesActualOrbitNotTargetElevation()
+        {
+            var env=Env(301363211975.0978);var s=Circular(env);
+            Assert.Equal(double.PositiveInfinity,MuMech.Landing.DunaLandingAdmission.VacuumBoundaryUT(env,s,375000));
+            double dv=Strategic.SeedDeltaV(env,s,335000);
+            var changed=new D.State(s.UT,s.R,s.Velocity-Y*dv,s.Mass,s.Forward);
+            double entry=MuMech.Landing.DunaLandingAdmission.VacuumBoundaryUT(env,changed,375000);
+            Assert.True(D.Finite(entry)&&entry>0);
+            Assert.True(Strategic.TryOrbit(env,changed,out var orbit));
+            Assert.True(Strategic.KeplerState(env,changed,orbit,entry-changed.UT,out var position,out _));
+            Assert.InRange(position.Length,374999.99,375000.01);
         }
 
         [Fact]

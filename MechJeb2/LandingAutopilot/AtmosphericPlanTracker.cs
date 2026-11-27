@@ -62,6 +62,27 @@ namespace MuMech.Landing
                 MassError=mass;ReferenceClearance=clearance;}
         }
 
+        // Search only the remaining validated reference. Do not warp
+        // across positive thrust, engine tail or atmosphere entry.
+        internal double NextPoweredOrAtmosphericUT(double ut,double boundaryRadius)
+        {
+            if(!ReferenceAt(ut,out var state,out var command)||command.Throttle!=0||
+                state.Throttle>1e-4||state.R.Length<=boundaryRadius)return ut;
+            int lo=0,hi=plan.Reference.Count-1;
+            while(lo<hi)
+            {
+                int mid=lo+(hi-lo+1)/2;
+                if(plan.Reference[mid].State.UT<=ut)lo=mid;else hi=mid-1;
+            }
+            for(int i=lo+1;i<plan.Reference.Count;i++)
+            {
+                var p=plan.Reference[i];
+                if(p.Command.Throttle>0||p.State.Throttle>1e-4||p.State.R.Length<=boundaryRadius)
+                    return p.State.UT;
+            }
+            return EndUT;
+        }
+
         internal bool ReferenceAt(double ut,out D.State state,out D.Command command)
         {
             state=default;command=default;

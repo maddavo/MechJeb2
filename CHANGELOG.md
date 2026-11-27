@@ -137,3 +137,8 @@ Version: `2.16.0-landing.20261126.duna-dual-window`. Duna targeted powered/no-ch
 
 - Preserve the best fully validated targeted orbital trajectory when the optimisation deadline expires; explicit cancellation invalidates the result. Interactive planning stops at the first fully validated target rather than spending the remaining budget on fuel optimisation.
 - Report deadline exhaustion without a validated result distinctly; retain terrain and live admission checks. Add deterministic completion-boundary regressions.
+
+## 2.16.0-landing.20261127.duna-integrated-m5.11
+
+- Honour existing Auto-warp checkbox for validated unpowered vacuum coast, using regular warp controller with bounded rate, atmosphere and next-thrust deadlines, and explicit unpacked 1x revalidation.
+- Invalidate and recalculate a changed preburn orbit rather than skipping a burn; retain normal approach recovery, cancel owned warp on termination, and test analytic orbit crossing and actual post-warp state continuity.
