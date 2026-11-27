@@ -426,31 +426,43 @@ namespace MuMech.Landing
             try
             {
                 var clock=Stopwatch.StartNew();
+                using var budget=new CancellationTokenSource();
+                budget.CancelAfter(s.Strategic?20000:8000);
+                using var linked=CancellationTokenSource.CreateLinkedTokenSource(token,budget.Token);
+                var workToken=linked.Token;
                 if(s.Strategic)
                 {
                     var settings=new AtmosphericStrategicPlanner.Settings(s.Settings,preparation:45,engagementLead:45,maxWait:6000,maxBurn:600);
                     a.Strategic=AtmosphericStrategicPlanner.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,settings,token,
-                        preferredDelay:s.PreferredBurnUT-s.UT,preferredApproach:s.PreferredApproach);
+                        preferredDelay:s.PreferredBurnUT-s.UT,preferredApproach:s.PreferredApproach,
+                        optimizationBudget:budget.Token,stopAtFirstTarget:true);
                     a.ReplayPassed=a.Strategic.Best?.ReplayPassed==true;
                     a.Scenarios=a.Strategic.Scenarios;
-                    if(a.ReplayPassed&&a.Scenarios?.Passed==true&&!token.IsCancellationRequested)
-                        a.Validated=a.Strategic.Best.Combined;
+                    if(!token.IsCancellationRequested)
+                        a.Validated=a.Strategic.ValidatedTarget(s.Settings.Common.TargetTolerance)?.Combined;
+                    if(a.Validated==null)
+                        a.Error=a.Strategic.Status==P.SearchStatus.BudgetExhausted?
+                            "Optimisation budget exhausted without a validated targeted landing":
+                            a.Strategic.Status==P.SearchStatus.Cancelled?"Planning cancelled":"No validated targeted landing found";
                     return a;
                 }
                 a.Reference=P.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,s.Settings.Common,
-                    0,new D.Command(0,s.Initial.Forward),token);
+                    0,new D.Command(0,s.Initial.Forward),workToken);
                 a.ReferenceMs=clock.Elapsed.TotalMilliseconds;
-                if(token.IsCancellationRequested)return a;
-                a.Direct=F.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,s.Settings,token,curvedCandidates:true);
-                if(token.IsCancellationRequested||a.Direct.Best==null)return a;
+                if(workToken.IsCancellationRequested){a.Error=token.IsCancellationRequested?"Planning cancelled":"Approach planning budget exhausted";return a;}
+                a.Direct=F.Search(s.Environment,s.Propulsion,s.Limits,s.Initial,s.Settings,workToken,curvedCandidates:true);
+                if(workToken.IsCancellationRequested||a.Direct.Best==null)
+                {a.Error=token.IsCancellationRequested?"Planning cancelled":budget.IsCancellationRequested?
+                    "Approach planning budget exhausted without a validated landing":"No approach candidate";return a;}
                 clock.Restart();
                 var selection=F.SelectValidated(s.Environment,s.Propulsion,s.Limits,s.Initial,s.Settings,a.Direct,
-                    30000,120000,20,Math.Max(.5,s.Mass*.0005),token);
+                    30000,120000,20,Math.Max(.5,s.Mass*.0005),workToken);
                 a.ReplayMs=clock.Elapsed.TotalMilliseconds;
                 a.ReplayPassed=selection.FineReplayPassed;
                 a.Scenarios=selection.Scenarios;
-                a.Validated=selection.Candidate;
-                if(a.Validated==null)a.Error=selection.Reason;
+                a.Validated=token.IsCancellationRequested?null:selection.Candidate;
+                if(a.Validated==null)a.Error=token.IsCancellationRequested?"Planning cancelled":
+                    budget.IsCancellationRequested?"Approach validation budget exhausted":selection.Reason;
             }
             catch(Exception ex){a.Error=ex.GetType().Name+": "+ex.Message;}
             return a;
@@ -466,7 +478,7 @@ namespace MuMech.Landing
                 {
                     // Initial target-sphere solution is a routing hint,
                     // never executable landing authority.
-                    cancel=new CancellationTokenSource();cancel.CancelAfter(20000);
+                    cancel=new CancellationTokenSource();
                     CancellationToken token=cancel.Token;
                     job=Task.Run(()=>Solve(copy,token));
                     status="Computing coarse orbital approach";
@@ -502,7 +514,7 @@ namespace MuMech.Landing
             snapshot.Environment=snapshot.Environment.WithGrid(terrainGrid,snapshot.UT,basis.A,basis.B,basis.C);
             snapshot.PreferredBurnUT=preferredBurnUT;snapshot.PreferredApproach=preferredApproach;
             var copy=snapshot;
-            cancel=new CancellationTokenSource();cancel.CancelAfter(copy.Strategic?20000:8000);
+            cancel=new CancellationTokenSource();
             CancellationToken token=cancel.Token;
             job=Task.Run(()=>Solve(copy,token));
             answer=null;tracker=null;corridor=null;corridorPassed=false;corridorStatus=null;logged=false;
@@ -719,7 +731,9 @@ namespace MuMech.Landing
             if(answer.Strategic!=null)
             {
                 var report=answer.Strategic;var best=report.Best;
-                lines+="Orbital search: "+report.Status+"; "+report.Prefixes+" prefixes, "+report.Approaches+" descent candidates\n";
+                string searchStatus=report.Status==P.SearchStatus.BudgetExhausted&&answer.Validated!=null?
+                    "Budget reached; validated trajectory retained":report.Status.ToString();
+                lines+="Orbital search: "+searchStatus+"; "+report.Prefixes+" prefixes, "+report.Approaches+" descent candidates\n";
                 if(best!=null)
                     lines+="Deorbit in "+Num(best.Deorbit.Delay-age)+" s; burn "+Num(best.Deorbit.Duration)+
                         " s; normal component "+Num(best.Deorbit.NormalFraction*100)+"%; deorbit fuel "+

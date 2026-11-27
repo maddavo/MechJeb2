@@ -93,6 +93,11 @@ namespace MuMech.Landing
             internal Report(P.SearchStatus status,Candidate best,int prefixes,int approaches,int steps,int feasible,int unresolved,
                 AtmosphericUncertaintyReplay.Report scenarios)
             {Status=status;Best=best;Prefixes=prefixes;Approaches=approaches;Steps=steps;Feasible=feasible;Unresolved=unresolved;Scenarios=scenarios;}
+            // Budget exhaustion does not invalidate completed evidence.
+            // A user-cancelled report is never eligible for execution.
+            internal Candidate ValidatedTarget(double tolerance)
+                =>Status!=P.SearchStatus.Cancelled&&Best!=null&&Best.ReplayPassed&&
+                    Scenarios?.Passed==true&&D.Finite(Best.OriginalMiss)&&Best.OriginalMiss<=tolerance?Best:null;
         }
 
         // Tangential retrograde seed for a desired osculating periapsis.
@@ -379,12 +384,24 @@ namespace MuMech.Landing
 
         internal static Report Search(D.Environment env,D.Propulsion propulsion,D.Limits limits,D.State initial,
             Settings settings,CancellationToken token=default,Action<string> diagnostic=null,
-            double preferredDelay=double.NaN,F.Profile? preferredApproach=null)
+            double preferredDelay=double.NaN,F.Profile? preferredApproach=null,
+            CancellationToken optimizationBudget=default,bool stopAtFirstTarget=false)
         {
+            // Explicit cancellation discards the transaction. A separate
+            // optimisation deadline stops further work but preserves every
+            // candidate already fully replayed and scenario validated.
+            using var linked=CancellationTokenSource.CreateLinkedTokenSource(token,optimizationBudget);
+            var workToken=linked.Token;
             Candidate best=null;int prefixes=0,approaches=0,steps=0,feasible=0,unresolved=0;
             bool exhausted=false;
             AtmosphericUncertaintyReplay.Report bestScenarios=null;
-            Report Finish(P.SearchStatus status)=>new Report(status,best,prefixes,approaches,steps,feasible,unresolved,bestScenarios);
+            Report Finish(P.SearchStatus status)
+            {
+                if(token.IsCancellationRequested)
+                    return new Report(P.SearchStatus.Cancelled,null,prefixes,approaches,steps,feasible,unresolved,null);
+                if(optimizationBudget.IsCancellationRequested)status=P.SearchStatus.BudgetExhausted;
+                return new Report(status,best,prefixes,approaches,steps,feasible,unresolved,bestScenarios);
+            }
             if(settings==null||!settings.Valid||propulsion==null||limits==null||!limits.Valid||
                 !TryOrbit(env,initial,out var orbit)||initial.Mass<=limits.ReserveMass||initial.Throttle>.01||
                 orbit.Periapsis<=env.Radius+env.AtmosphereTop||settings.Approach.Common.CommandCap<=0)
@@ -435,7 +452,7 @@ namespace MuMech.Landing
             }
             foreach(var epoch in epochs)
             {
-                if(token.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
+                if(workToken.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
                 // Circular/elliptic local seed at original state. Actual
                 // finite propagation, not this approximation, is ranked.
                 double r=initial.R.Length;
@@ -489,12 +506,12 @@ namespace MuMech.Landing
                             dv/(accel*burnFraction)/Math.Sqrt(1-fraction*fraction))),fraction,burnFraction));
                     foreach(var seed in seeds)
                     {
-                        if(token.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
+                        if(workToken.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
                         if(prefixes>=settings.MaxPrefixes||steps>=settings.MaxSteps){exhausted=true;break;}
                         var burn=seed;
                         double fraction=burn.NormalFraction,duration=burn.Duration;
                         var prefix=EvaluatePrefix(env,propulsion,limits,initial,settings,burn,
-                            settings.MaxSteps-steps,false,token);
+                            settings.MaxSteps-steps,false,workToken);
                         prefixes++;steps+=prefix.Steps;
                         diagnostic?.Invoke("prefix "+prefixes+" delay="+epoch.delay+" duration="+duration+
                             " normal="+fraction+" transfer="+(burn.Direction.Length>.5)+" status="+prefix.Outcome+" height="+env.PhysicalClearance(prefix.End)+
@@ -516,7 +533,7 @@ namespace MuMech.Landing
                                 " endMiss="+P.Miss(env,prefix.End,c.Result.End,approachSettings.Common.TargetAtInitialUT)+
                                 " terminal="+c.Result.TerminalStartUT+" saturation="+c.MaxSaturation);
                         var warm=D.Finite(preferredDelay)&&Math.Abs(epoch.delay-preferredDelay)<.01?preferredApproach:null;
-                        var report=F.Search(env,propulsion,limits,prefix.End,approachSettings,token,warmStart:warm,
+                        var report=F.Search(env,propulsion,limits,prefix.End,approachSettings,workToken,warmStart:warm,
                             diagnostic:describe,refineNearContact:true,curvedCandidates:Math.Abs(normal)>.1);
                         approaches+=report.Attempts;steps+=report.Steps;
                         diagnostic?.Invoke("approach "+report.Status+" attempts="+report.Attempts+
@@ -530,24 +547,24 @@ namespace MuMech.Landing
                         // approach alternatives through whole-history replay
                         // and closed-loop scenarios before ranking a join.
                         var recorded=EvaluatePrefix(env,propulsion,limits,initial,settings,burn,
-                            Math.Min(20000,settings.MaxSteps-steps),true,token);
+                            Math.Min(20000,settings.MaxSteps-steps),true,workToken);
                         steps+=recorded.Steps;
                         if(recorded.Outcome!=D.Outcome.Advanced){unresolved++;continue;}
                         int tried=0;
                         foreach(var proposal in report.Ranked)
                         {
-                            if(token.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
+                            if(workToken.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
                             if(tried>=12)break;
                             if(best!=null&&!P.Better(proposal.Result,best.Combined.Result,
                                 settings.Approach.Common.TargetTolerance))break;
                             if(steps>=settings.MaxSteps){exhausted=true;break;}
                             tried++;
                             var descent=F.Evaluate(env,propulsion,limits,recorded.End,approachSettings,proposal.Profile,
-                                Math.Min(20000,settings.MaxSteps-steps),true,token);
+                                Math.Min(20000,settings.MaxSteps-steps),true,workToken);
                             steps+=descent.Result.Steps;
                             if(steps>=settings.MaxSteps){exhausted=true;break;}
                             var joined=Combine(env,propulsion,limits,initial,settings,recorded,approachSettings,descent,
-                                Math.Min(60000,settings.MaxSteps-steps),out int replaySteps,token,diagnostic);
+                                Math.Min(60000,settings.MaxSteps-steps),out int replaySteps,workToken,diagnostic);
                             steps+=replaySteps;
                             if(joined==null){unresolved++;continue;}
                             if(steps>=settings.MaxSteps){exhausted=true;break;}
@@ -556,14 +573,24 @@ namespace MuMech.Landing
                                 initial.UT+joined.Deorbit.Delay,
                                 initial.UT+joined.Deorbit.Delay+joined.Deorbit.Duration,joined.HandoffUT);
                             var screen=AtmosphericUncertaintyReplay.Validate(env,propulsion,limits,tracker,
-                                Math.Min(240000,settings.MaxSteps-steps),token,execution);
+                                Math.Min(240000,settings.MaxSteps-steps),workToken,execution);
                             steps+=screen.Steps;
                             if(!screen.Passed){diagnostic?.Invoke("scenario rejected: "+screen.Reason);unresolved++;continue;}
+                            // The evidence is complete. Expiry at this exact
+                            // boundary may stop improvement, not erase it.
                             if(token.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
                             feasible++;
                             if(best==null||P.Better(joined.Combined.Result,best.Combined.Result,
                                 settings.Approach.Common.TargetTolerance))
-                            {best=joined;bestScenarios=screen;}
+                            {
+                                best=joined;bestScenarios=screen;
+                                diagnostic?.Invoke("validated candidate miss="+best.OriginalMiss+" mass="+best.Combined.Result.End.Mass);
+                            }
+                            if(workToken.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
+                            // Interactive landing needs a feasible trajectory,
+                            // not maximum fuel optimisation at all costs.
+                            if(stopAtFirstTarget&&best.OriginalMiss<=settings.Approach.Common.TargetTolerance)
+                                return Finish(P.SearchStatus.SampledTargetFeasible);
                             break;
                         }
                         if(exhausted)break;
@@ -572,7 +599,7 @@ namespace MuMech.Landing
                 }
                 if(exhausted)break;
             }
-            if(token.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
+            if(workToken.IsCancellationRequested)return Finish(P.SearchStatus.Cancelled);
             return Finish(exhausted?P.SearchStatus.BudgetExhausted:best==null?P.SearchStatus.NoDemonstratedLanding:
                 best.OriginalMiss<=settings.Approach.Common.TargetTolerance?P.SearchStatus.SampledTargetFeasible:P.SearchStatus.SampledFeasibleMiss);
         }

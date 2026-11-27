@@ -929,8 +929,13 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.False(frame.TargetMatches(basis,(target+X*.01).Unit,target,t1));
         }
 
-        [Fact]
-        public void RepresentativeDunaOrbitToTouchdownThroughProductionAdmission()
+        [Theory]
+        [InlineData(0)] // ordinary bounded search
+        [InlineData(1)] // deterministic deadline at completed target validation
+        [InlineData(2)] // explicit cancellation at the same boundary
+        [InlineData(3)] // production stop-at-first-validated-target policy
+        [InlineData(4)] // deadline before any work
+        public void RepresentativeDunaOrbitToTouchdownThroughProductionAdmission(int completion)
         {
             // Fixed target set before search. Enough propellant and thrust
             // for a representative small rocket-powered Duna lander.
@@ -954,7 +959,35 @@ namespace MechJebLibTest.LandingPredictionTests
             Assert.NotNull(set);
             var strategic=new Strategic.Settings(set,preparation:45,engagementLead:45);
             var diagnostics=new System.Collections.Generic.List<string>();
-            var report=Strategic.Search(env,engine,lim,initial,strategic,diagnostic:diagnostics.Add);
+            using var deadline=new CancellationTokenSource();
+            using var userCancel=new CancellationTokenSource();
+            if(completion==4)deadline.Cancel();
+            var report=Strategic.Search(env,engine,lim,initial,strategic,userCancel.Token,
+                diagnostic:line=>{
+                    diagnostics.Add(line);
+                    if(!line.StartsWith("validated candidate"))return;
+                    // Use the first validated TARGET, not an off-target
+                    // safe contact. No wall-clock race in this regression.
+                    string missText=line.Substring("validated candidate miss=".Length).Split(' ')[0];
+                    if(!double.TryParse(missText,out double miss)||miss>set.Common.TargetTolerance)return;
+                    if(completion==1)deadline.Cancel();
+                    if(completion==2)userCancel.Cancel();
+                },optimizationBudget:deadline.Token,stopAtFirstTarget:completion==3);
+            if(completion==2||completion==4)
+            {
+                Assert.Equal(completion==2?P.SearchStatus.Cancelled:P.SearchStatus.BudgetExhausted,report.Status);
+                if(completion==2)Assert.True(userCancel.IsCancellationRequested);
+                Assert.Null(report.Best);
+                Assert.Null(report.ValidatedTarget(set.Common.TargetTolerance));
+                return;
+            }
+            if(completion==1)
+            {
+                Assert.True(deadline.IsCancellationRequested);
+                Assert.Equal(P.SearchStatus.BudgetExhausted,report.Status);
+            }
+            if(completion==3)Assert.Equal(P.SearchStatus.SampledTargetFeasible,report.Status);
+            Assert.Same(report.Best,report.ValidatedTarget(set.Common.TargetTolerance));
             string details="orbital-admission-fixture status="+report.Status+" prefixes="+report.Prefixes+
                 " approaches="+report.Approaches+" steps="+report.Steps+" feasible="+report.Feasible+
                 " unresolved="+report.Unresolved+" miss="+report.Best?.OriginalMiss+"\n"+string.Join("\n",diagnostics);

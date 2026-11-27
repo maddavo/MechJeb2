@@ -250,3 +250,5 @@ Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m
 Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m5.8` — immutable stock atmospheric evaluation with spatial solar temperature, and spherical-coordinate powered guidance candidate in the existing search. Not flight-test approved until realistic acceptance succeeds.
 
 Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m5.9` — incremental body-fixed PQS terrain sampling, immutable terrain-aware propagation, physical corridor checks, and automatic orbital terrain refinement/replanning. Experimental pending acceptance.
+
+Current integrated landing increment: `2.16.0-landing.20261127.duna-integrated-m5.10` — separate search-budget expiry from explicit cancellation; retain fully validated targeted trajectories and terminate interactive optimisation at first validated target. Terrain and live admission checks remain required.
