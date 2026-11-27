@@ -23,7 +23,7 @@ namespace MuMech.Landing
         private bool warpSawRate;
         internal void CancelWarp()
         {
-            if(warpOwned||warpReturning)Core.Warp.MinimumWarp(true);
+            if(warpOwned||warpReturning)Core.Warp.StopOwnedLandingWarp();
             warpOwned=false;warpReturning=false;warpExit=double.NaN;unpackedUT=double.NaN;
         }
         private bool OwnsControls()=>Core.Landing.Enabled&&DunaLandingAdmission.OwnsActuators(
@@ -34,7 +34,7 @@ namespace MuMech.Landing
             TimeWarp.CurrentRateIndex==0&&Math.Abs(VesselState.Time-Planetarium.GetUniversalTime())<=.05);
         private void ReturnToPhysics()
         {
-            Core.Warp.MinimumWarp(true);
+            Core.Warp.StopOwnedLandingWarp();
             warpReturning=true;warpOwned=false;unpackedUT=double.NaN;
             Status="Returning to 1x for landing trajectory revalidation";
         }
@@ -96,7 +96,7 @@ namespace MuMech.Landing
                     {CancelWarp();return Finish("landing context changed during warp");}
                     if(warpReturning)
                     {
-                        if(!PhysicsReady()){unpackedUT=double.NaN;Core.Warp.MinimumWarp(true);return this;}
+                        if(!PhysicsReady()){unpackedUT=double.NaN;Core.Warp.StopOwnedLandingWarp();return this;}
                         // Require a subsequent fresh physical tick, not
                         // merely the frame on which KSP unpacked.
                         if(!D.Finite(unpackedUT)){unpackedUT=VesselState.Time;return this;}
@@ -169,7 +169,7 @@ namespace MuMech.Landing
         internal string ForecastText()
         {
             if(hazardMode)return "Integrated forecast invalidated: "+hazardReason;
-            double now=VesselState.Time;
+            double now=warpOwned||warpReturning?Planetarium.GetUniversalTime():VesselState.Time;
             if(terminalExtension||now>=tracker.EndUT)return "Integrated contact epoch expired; terminal extension";
             var end=tracker.Plan.Result.End;
             Vector3d world=MainBody.position+DunaIntegratedPreview.WorldAt(MainBody,snapshot.Frame,

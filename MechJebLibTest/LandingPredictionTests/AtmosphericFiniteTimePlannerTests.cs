@@ -883,6 +883,30 @@ namespace MechJebLibTest.LandingPredictionTests
                 Assert.True(double.IsNaN(MuMech.Landing.DunaLandingAdmission.WarpExitUT(env,warpTracker,powered,0,0,0,0,true,true,false)));
                 Console.WriteLine("Eagle warp exit lead="+(initial.UT+report.Best.Deorbit.Delay-exit)+
                     " positionError="+resumed.PositionError+" velocityError="+resumed.VelocityError);
+                // Following the finite deorbit and engine tail, test any
+                // second vacuum coast against its *changed* osculating
+                // orbit. The available interval is allowed to be absent.
+                var coast=report.Best.Combined.Reference.FirstOrDefault(p=>
+                    p.State.UT>=report.Best.HandoffUT&&p.Command.Throttle==0&&p.State.Throttle<=1e-4);
+                if(coast.State.Valid)
+                {
+                    double secondExit=MuMech.Landing.DunaLandingAdmission.WarpExitUT(env,warpTracker,coast.State,
+                        0,0,0,0,true,true,false);
+                    if(D.Finite(secondExit))
+                    {
+                        Assert.True(Strategic.TryOrbit(env,coast.State,out var transfer));
+                        Assert.True(Strategic.KeplerState(env,coast.State,transfer,secondExit-coast.State.UT,
+                            out var r2,out var v2));
+                        Assert.True(r2.Length>env.Radius+env.AtmosphereTop+5000);
+                        var second=new D.State(secondExit,r2,v2,coast.State.Mass,coast.State.Forward);
+                        var secondDecision=warpTracker.Track(second,env.PhysicalClearance(second),
+                            4.9947751881921194,1,env.Mu/r2.Length/r2.Length,.1);
+                        Assert.True(secondDecision.Valid,secondDecision.Reason);
+                        Assert.Equal(0,secondDecision.Command.Throttle);
+                        Console.WriteLine("Eagle second vacuum warp seconds="+(secondExit-coast.State.UT)+
+                            " positionError="+secondDecision.PositionError+" velocityError="+secondDecision.VelocityError);
+                    }
+                }
                 foreach(var trial in report.Scenarios.Trials)
                 {
                     Console.WriteLine("Eagle stock scenario "+trial.Name+" outcome="+trial.Outcome+

@@ -88,7 +88,7 @@ namespace MuMech
         }
 
         // Turn SAS on during regular warp for compatibility with PersistentRotation
-        private void SetTimeWarpRate(int rateIndex, bool instant)
+        private void SetTimeWarpRate(int rateIndex, bool instant, bool forceDecrease = false)
         {
             if (rateIndex != TimeWarp.CurrentRateIndex)
             {
@@ -96,7 +96,7 @@ namespace MuMech
                     Part.vessel.ActionGroups.SetGroup(KSPActionGroup.SAS, true);
 
                 lastAskedIndex = rateIndex;
-                if (WarpPaused)
+                if (WarpPaused && !forceDecrease)
                 {
                     ScreenMessages.PostScreenMessage(
                         Localizer.Format("#MechJeb_WarpHelper_scrmsg")); //"MJ : Warp paused - resume in the Warp Helper menu"
@@ -283,6 +283,17 @@ namespace MuMech
 
             SetTimeWarpRate(TimeWarp.CurrentRateIndex - 1, instant);
             return true;
+        }
+
+        // Stop an owned landing warp even if the user has paused MJ
+        // warp management. Pause prevents further acceleration; it must
+        // not prevent returning to physics before a scheduled burn.
+        // Keep the existing public MinimumWarp signature/behaviour.
+        internal void StopOwnedLandingWarp()
+        {
+            warpToUT = 0.0;
+            if (TimeWarp.CurrentRateIndex != 0)
+                SetTimeWarpRate(0, true, forceDecrease: true);
         }
 
         public bool MinimumWarp(bool instant = false)
